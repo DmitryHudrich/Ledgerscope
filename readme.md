@@ -41,6 +41,22 @@ api/       — HTTP/gRPC surface
 - **Service split (in progress):** Rust engine retains tracking/heuristics; accounts/users/statistics are being extracted into a separate C# service, connected via gRPC (tonic ↔ Grpc.Net.Client)
 - **Observability:** OpenTelemetry/OTLP across both runtimes, Jaeger for tracing
 
+## Running with Docker
+
+The whole stack — SPA, C# public API, Rust engine, Postgres, Redis, the egress
+proxy, and the observability suite — comes up from one compose file:
+
+```sh
+cd infrastructure
+cp .env.example .env      # fill in ETHERSCAN_API_KEY + ALCHEMY_API_KEY
+docker compose up -d --build
+```
+
+Frontend on http://localhost:8081, C# API on :5107, engine on :8080, Grafana on
+:3000. All calls to external chain APIs are routed through the `proxy` service
+(SOCKS5), never dialled directly. See [`infrastructure/README.md`](infrastructure/README.md)
+for the proxy chaining options, configuration overrides, and image layout.
+
 ## Current State
 
 ### Risk & Heuristics Engine (`RiskService`)

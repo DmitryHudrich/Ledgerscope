@@ -215,13 +215,26 @@ impl Confidence {
     pub const HIGH: Self = Self(75);
     pub const CERTAIN: Self = Self(100);
 
+    /// Clamps to the valid 0-100 range instead of panicking, so a corrupt
+    /// persisted value or an out-of-range external feed degrades gracefully
+    /// rather than taking down the request.
     pub fn new(value: u8) -> Self {
-        assert!(value <= 100);
-        Self(value)
+        Self(value.min(100))
+    }
+
+    /// Strict constructor for callers that must reject out-of-range input
+    /// rather than silently clamp it.
+    pub fn try_new(value: u8) -> Option<Self> {
+        (value <= 100).then_some(Self(value))
     }
 
     pub fn value(self) -> u8 {
         self.0
+    }
+
+    /// Confidence as a `0.0..=1.0` fraction, for weighting/probability math.
+    pub fn fraction(self) -> f64 {
+        self.0 as f64 / 100.0
     }
 }
 

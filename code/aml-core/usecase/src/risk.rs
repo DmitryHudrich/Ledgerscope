@@ -851,10 +851,14 @@ where
             return Ok(None);
         }
 
+        // More distinct senders past the floor → more convincing that this is
+        // a shared per-customer deposit address.
+        let strength =
+            senders.len() as f64 / self.heuristics.deposit_reuse_min_senders.max(1) as f64;
         Ok(Some(ClusterEvidence::new(
             senders,
             ClusteringHeuristic::DepositAddressReuse,
-            Confidence::MEDIUM,
+            graded_confidence(strength),
             Some(format!(
                 "All senders route to deposit address {}",
                 deposit_addr
@@ -929,10 +933,13 @@ where
             .map(|t| t.to().clone())
             .collect();
 
+        // The less it retains relative to the 5% cap, the sharper the peel:
+        // retaining the whole 5% is borderline, retaining ~0% is textbook.
+        let strength = 0.05 / retained_ratio.as_f64().max(f64::MIN_POSITIVE);
         Ok(Some(ClusterEvidence::new(
             chain_addrs,
             ClusteringHeuristic::PeelingChain,
-            Confidence::HIGH,
+            graded_confidence(strength),
             Some(format!(
                 "Address retains only {:.1}% of inflow",
                 retained_ratio.as_f64() * 100.0
@@ -996,10 +1003,19 @@ where
             .unwrap_or_default();
         addrs.sort_by(|a, b| a.bytes().cmp(b.bytes()));
 
+        // Strength = how far the peak overshoots the threshold it had to clear
+        // to fire (baseline·multiplier when there's a baseline, else the flat
+        // min_count floor).
+        let fire_threshold = if baseline > 0.0 {
+            baseline * cfg.burst_multiplier
+        } else {
+            cfg.burst_min_count as f64
+        };
+        let strength = peak_count as f64 / fire_threshold.max(1.0);
         Ok(Some(ClusterEvidence::new(
             addrs,
             ClusteringHeuristic::TemporalBurst,
-            Confidence::MEDIUM,
+            graded_confidence(strength),
             Some(format!(
                 "Burst of {peak_count} transfers in a {window_secs}s window (baseline median {baseline:.1}) around {addr}"
             )),
@@ -1057,10 +1073,13 @@ where
         let mut addrs: Vec<Address> = addrs.into_iter().collect();
         addrs.sort_by(|a, b| a.bytes().cmp(b.bytes()));
 
+        // More repetitions of the same rounded amount past the floor →
+        // stronger structuring signal.
+        let strength = count as f64 / cfg.fixed_amount_min_count.max(1) as f64;
         Ok(Some(ClusterEvidence::new(
             addrs,
             ClusteringHeuristic::FixedAmountClustering,
-            Confidence::MEDIUM,
+            graded_confidence(strength),
             Some(format!(
                 "{count} transfers cluster into the same ~${} bucket around {addr}",
                 cfg.fixed_amount_bucket_usd as i64
@@ -1115,10 +1134,14 @@ where
         let mut addrs: Vec<Address> = counterparties.into_iter().collect();
         addrs.sort_by(|a, b| a.bytes().cmp(b.bytes()));
 
+        // The faster funds pass through relative to the cap, the more it looks
+        // like a pure conduit: a median at the cap is borderline, a near-zero
+        // median is textbook pass-through.
+        let strength = cfg.dwell_max_secs as f64 / (median_delta as f64 + 1.0);
         Ok(Some(ClusterEvidence::new(
             addrs,
             ClusteringHeuristic::DwellTimePassThrough,
-            Confidence::MEDIUM,
+            graded_confidence(strength),
             Some(format!(
                 "Median dwell time {median_delta}s across {count} in/out matched pairs (cap {}s) — pass-through pattern at {addr}",
                 cfg.dwell_max_secs
@@ -1284,10 +1307,13 @@ where
         addresses.extend(via);
         addresses.push(y.clone());
 
+        // The more independent intermediaries converge on one cash-out past
+        // the min_fanin floor, the stronger the structuring pattern.
+        let strength = via_count as f64 / cfg.min_fanin.max(1) as f64;
         Ok(Some(ClusterEvidence::new(
             addresses,
             ClusteringHeuristic::SmurfingCycle,
-            Confidence::MEDIUM,
+            graded_confidence(strength),
             Some(format!(
                 "{via_count} intermediaries route from {addr} to cash-out {y} within {}s (depth ≤ {})",
                 cfg.smurf_window.as_secs(),
@@ -1433,6 +1459,22 @@ where
     }
 }
 
+/// Map a heuristic's signal strength to a graded `[LOW, CERTAIN]` confidence.
+///
+/// `strength` is normalised so that `1.0` means the detector only just cleared
+/// its firing threshold and larger values mean the pattern is progressively
+/// more pronounced (3× the minimum fan-out, a peel retaining a tenth of the
+/// 5% cap, …). The mapping `25 + 75·(1 − 1/strength)` is monotonic and
+/// saturates toward `CERTAIN`, so a borderline match reports ~LOW and an
+/// overwhelming one approaches CERTAIN — instead of every detector pinning a
+/// flat MEDIUM regardless of how strong the evidence is. `strength` below 1.0
+/// (or NaN) is clamped to the LOW floor; `+∞` maps to CERTAIN.
+fn graded_confidence(strength: f64) -> Confidence {
+    let s = strength.max(1.0); // f64::max drops NaN, so NaN → 1.0
+    let v = 25.0 + 75.0 * (1.0 - 1.0 / s);
+    Confidence::new(v.round() as u8)
+}
+
 /// Slide a time-window over `transfers` (sorted by timestamp) and return
 /// evidence if any window contains at least `min_unique` distinct counterparties
 /// produced by `counterparty`. Returns the maximal-coverage window.
@@ -1491,10 +1533,14 @@ where
         return None;
     }
     let n = addresses.len();
+    // Confidence scales with how far the unique-counterparty count overshoots
+    // the firing threshold: a burst to exactly `min_unique` is weak, one to
+    // several times that is strong.
+    let confidence = graded_confidence(n as f64 / min_unique.max(1) as f64);
     Some(ClusterEvidence::new(
         addresses,
         heuristic,
-        Confidence::MEDIUM,
+        confidence,
         Some(note(n, window.as_secs())),
     ))
 }
@@ -2554,5 +2600,39 @@ mod score_config_tests {
         };
         let signals = vec![sig(100, addr(1))];
         assert_eq!(cfg.aggregate(&signals).value(), 50);
+    }
+}
+
+#[cfg(test)]
+mod graded_confidence_tests {
+    use super::graded_confidence;
+    use domain::primitives::Confidence;
+
+    #[test]
+    fn at_threshold_reports_low_floor() {
+        assert_eq!(graded_confidence(1.0), Confidence::LOW);
+    }
+
+    #[test]
+    fn below_threshold_and_nan_clamp_to_low() {
+        assert_eq!(graded_confidence(0.3), Confidence::LOW);
+        assert_eq!(graded_confidence(f64::NAN), Confidence::LOW);
+    }
+
+    #[test]
+    fn saturates_toward_certain() {
+        assert_eq!(graded_confidence(f64::INFINITY), Confidence::CERTAIN);
+        // A strongly-overshooting signal should approach, without exceeding, CERTAIN.
+        let strong = graded_confidence(100.0);
+        assert!(strong > Confidence::HIGH);
+        assert!(strong.value() <= 100);
+    }
+
+    #[test]
+    fn is_monotonic_in_strength() {
+        let a = graded_confidence(1.5).value();
+        let b = graded_confidence(3.0).value();
+        let c = graded_confidence(6.0).value();
+        assert!(a < b && b < c, "expected {a} < {b} < {c}");
     }
 }

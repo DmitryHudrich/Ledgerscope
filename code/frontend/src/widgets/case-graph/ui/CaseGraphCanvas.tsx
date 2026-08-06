@@ -7,6 +7,7 @@ import { GraphLegend } from '@/widgets/case-graph/ui/GraphLegend'
 type CaseGraphCanvasProps = {
   graph: GraphData
   layout: GraphLayoutMode
+  showEdgeLabels?: boolean
   rootNodeIds: ReadonlySet<string> | null
   selectedNodeId: string
   visibleNodeIds: ReadonlySet<string> | null
@@ -22,6 +23,7 @@ type CaseGraphCanvasProps = {
 export function CaseGraphCanvas({
   graph,
   layout,
+  showEdgeLabels,
   rootNodeIds,
   selectedNodeId,
   visibleNodeIds,
@@ -48,6 +50,7 @@ export function CaseGraphCanvas({
         <SigmaGraphAdapter
           graph={graph}
           layout={layout}
+          showEdgeLabels={showEdgeLabels}
           rootNodeIds={rootNodeIds}
           selectedNodeId={selectedNodeId}
           visibleNodeIds={visibleNodeIds}

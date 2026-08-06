@@ -26,10 +26,10 @@ import { GraphTimeline } from '@/features/graph-timeline'
 import { GroupsPanel } from '@/features/group-manager'
 import { LabelsPanel } from '@/features/label-manager'
 import { ViewsPanel } from '@/features/view-manager'
-import { CaseGraphCanvas, NodeInspector } from '@/widgets/case-graph'
+import { CaseGraphCanvas, GraphEdgeSettings, NodeInspector } from '@/widgets/case-graph'
 import { CaseOverviewPanel } from '@/pages/case-workspace/ui/CaseOverviewPanel'
 import { getErrorMessage } from '@/shared/api'
-import { GRAPH_LAYOUT_OPTIONS, type GraphLayoutMode, type XY } from '@/shared/graph'
+import { GRAPH_LAYOUT_OPTIONS, useEdgeDisplay, type GraphLayoutMode, type XY } from '@/shared/graph'
 import { useDebouncedValue } from '@/shared/lib/use-debounced-value'
 import { useQueryClient } from '@tanstack/react-query'
 import { Alert, AlertDescription, AlertTitle } from '@/shared/ui/alert'
@@ -65,10 +65,15 @@ export function CaseWorkspacePage() {
   const [selectedBlockRange, setSelectedBlockRange] = useState<{ from: number; to: number } | null>(null)
   const [clusterNodeIds, setClusterNodeIds] = useState<Set<string> | null>(null)
 
+  const [edgeDisplay, setEdgeDisplay] = useEdgeDisplay()
+
   const exportRef = useRef<(() => Map<string, XY>) | null>(null)
   const debouncedQuery = useDebouncedValue(query, 200)
 
-  const graphData = useMemo(() => buildGraphData(graph.nodes, graph.edges), [graph.nodes, graph.edges])
+  const graphData = useMemo(
+    () => buildGraphData(graph.nodes, graph.edges, { edgeDisplay }),
+    [graph.nodes, graph.edges, edgeDisplay],
+  )
 
   const rootNodeIds = useMemo(
     () => (graph.rootAddress ? new Set([graph.rootAddress]) : null),
@@ -130,12 +135,14 @@ export function CaseWorkspacePage() {
       graphData.edges
         .filter((edge) => {
           const nodeOk = !visibleNodeIds || (visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target))
-          const timeOk = !timeline || timeline.edgeIds.has(edge.id)
+          // Aggregated edges span multiple blocks, so their ids can't match the
+          // per-transfer timeline set — fall back to node-window filtering.
+          const timeOk = !timeline || edgeDisplay.aggregate || timeline.edgeIds.has(edge.id)
           return nodeOk && timeOk
         })
         .map((edge) => edge.id),
     )
-  }, [visibleNodeIds, timeline, graphData.edges])
+  }, [visibleNodeIds, timeline, graphData.edges, edgeDisplay.aggregate])
 
   const selectedDetails = useMemo(
     () => (selectedNodeId ? buildNodeDetails(selectedNodeId, graph.nodesByAddress, graph.edges) : null),
@@ -356,6 +363,7 @@ export function CaseWorkspacePage() {
               ))}
             </SelectContent>
           </Select>
+          <GraphEdgeSettings value={edgeDisplay} onChange={setEdgeDisplay} />
           <span className='hidden text-xs text-muted-foreground tabular-nums sm:inline'>
             {nodeCount} nodes · {edgeCount} edges
           </span>
@@ -380,6 +388,7 @@ export function CaseWorkspacePage() {
               key={canvasKey}
               graph={graphData}
               layout={layout}
+              showEdgeLabels={edgeDisplay.showLabels}
               rootNodeIds={rootNodeIds}
               selectedNodeId={selectedNodeId}
               visibleNodeIds={visibleNodeIds}

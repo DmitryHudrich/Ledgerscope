@@ -8,3 +8,11 @@ export type {
   GraphNode,
   XY,
 } from '@/shared/graph/contract/graph'
+export {
+  DEFAULT_EDGE_DISPLAY,
+  colorForSymbol,
+  getEdgeDisplay,
+  setEdgeDisplay,
+  useEdgeDisplay,
+} from '@/shared/graph/model/edge-display'
+export type { EdgeDisplaySettings } from '@/shared/graph/model/edge-display'

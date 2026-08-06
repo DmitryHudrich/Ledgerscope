@@ -291,27 +291,22 @@ impl TagHistoryEvent {
 pub enum TagAggregationStrategy {
     /// Maximum `risk_score` among active tags. Default.
     MaxActive,
-    /// Sum of `risk_score * confidence_weight` across active tags, capped
-    /// at 100. Confidence weights: Low=0.25, Medium=0.5, High=0.75,
-    /// Confirmed=1.0.
+    /// Combine active tags as independent evidence via a confidence-weighted
+    /// noisy-OR (`1 − Π(1 − riskᵢ·confᵢ)`). Bounded in [0,100] without a hard
+    /// clamp, monotonic, and — unlike a plain weighted sum — it does not
+    /// saturate to 100 after a handful of medium-strength tags. A tag's
+    /// confidence scales its contribution continuously (0-100), so a
+    /// low-confidence tag can no longer swing the score as hard as a
+    /// confirmed one.
     WeightedSum,
-    /// Maximum `risk_score` among active tags with `Confidence::CERTAIN`
-    /// ("Confirmed") only. `CLEAN` (0) if none exist.
+    /// Maximum `risk_score` among active tags at `Confidence::CERTAIN`
+    /// ("Confirmed") confidence. `CLEAN` (0) if none exist.
     MaxConfirmedOnly,
 }
 
 impl Default for TagAggregationStrategy {
     fn default() -> Self {
         Self::MaxActive
-    }
-}
-
-fn confidence_weight(c: Confidence) -> f64 {
-    match c.value() {
-        v if v >= Confidence::CERTAIN.value() => 1.0,
-        v if v >= Confidence::HIGH.value() => 0.75,
-        v if v >= Confidence::MEDIUM.value() => 0.5,
-        _ => 0.25,
     }
 }
 
@@ -333,20 +328,106 @@ pub fn aggregate_risk_score(
             RiskScore::new(max)
         }
         TagAggregationStrategy::WeightedSum => {
-            let total: f64 = active
+            // Noisy-OR over per-tag evidence probabilities
+            // pᵢ = (risk_score/100) · confidence_fraction, combined as
+            // 1 − Π(1 − pᵢ). Naturally bounded, no arbitrary cap.
+            let retained: f64 = active
                 .iter()
-                .map(|t| t.risk_score().value() as f64 * confidence_weight(t.confidence()))
-                .sum();
-            RiskScore::new(total.round().clamp(0.0, 100.0) as u8)
+                .map(|t| 1.0 - (t.risk_score().value() as f64 / 100.0) * t.confidence().fraction())
+                .product();
+            RiskScore::new(((1.0 - retained) * 100.0).round().clamp(0.0, 100.0) as u8)
         }
         TagAggregationStrategy::MaxConfirmedOnly => {
             let max = active
                 .iter()
-                .filter(|t| t.confidence() == Confidence::CERTAIN)
+                .filter(|t| t.confidence().value() >= Confidence::CERTAIN.value())
                 .map(|t| t.risk_score().value())
                 .max()
                 .unwrap_or(0);
             RiskScore::new(max)
         }
+    }
+}
+
+#[cfg(test)]
+mod aggregation_tests {
+    use super::*;
+
+    fn tag(risk: u8, confidence: Confidence) -> LabelTag {
+        LabelTag::new(
+            TagCategory::Scam,
+            None,
+            TagSource::InternalAnalyst,
+            confidence,
+            RiskScore::new(risk),
+            None,
+            None,
+            None,
+        )
+    }
+
+    #[test]
+    fn empty_is_clean_for_every_strategy() {
+        let now = Utc::now();
+        for s in [
+            TagAggregationStrategy::MaxActive,
+            TagAggregationStrategy::WeightedSum,
+            TagAggregationStrategy::MaxConfirmedOnly,
+        ] {
+            assert_eq!(aggregate_risk_score(&[], s, now), RiskScore::CLEAN);
+        }
+    }
+
+    #[test]
+    fn max_active_ignores_confidence() {
+        let now = Utc::now();
+        let tags = [tag(100, Confidence::LOW)];
+        assert_eq!(
+            aggregate_risk_score(&tags, TagAggregationStrategy::MaxActive, now).value(),
+            100
+        );
+    }
+
+    #[test]
+    fn weighted_sum_scales_with_confidence() {
+        let now = Utc::now();
+        let low = aggregate_risk_score(
+            &[tag(100, Confidence::LOW)],
+            TagAggregationStrategy::WeightedSum,
+            now,
+        );
+        let certain = aggregate_risk_score(
+            &[tag(100, Confidence::CERTAIN)],
+            TagAggregationStrategy::WeightedSum,
+            now,
+        );
+        // risk 100 @ LOW(25) → p=0.25 → 25; @ CERTAIN → 100.
+        assert_eq!(low.value(), 25);
+        assert_eq!(certain.value(), 100);
+        assert!(low.value() < certain.value());
+    }
+
+    #[test]
+    fn weighted_sum_noisy_or_does_not_hard_saturate() {
+        let now = Utc::now();
+        // Two independent risk-50 @ CERTAIN tags: noisy-OR 1-(0.5·0.5)=0.75.
+        // A plain capped sum would have hit 100 here.
+        let combined = aggregate_risk_score(
+            &[tag(50, Confidence::CERTAIN), tag(50, Confidence::CERTAIN)],
+            TagAggregationStrategy::WeightedSum,
+            now,
+        );
+        assert_eq!(combined.value(), 75);
+    }
+
+    #[test]
+    fn max_confirmed_only_considers_certain_tags() {
+        let now = Utc::now();
+        let tags = [tag(100, Confidence::HIGH), tag(80, Confidence::CERTAIN)];
+        // The risk-100 tag is only HIGH confidence, so it's excluded.
+        assert_eq!(
+            aggregate_risk_score(&tags, TagAggregationStrategy::MaxConfirmedOnly, now).value(),
+            80
+        );
     }
 }

@@ -104,7 +104,13 @@ pub async fn apply_tag(
                 .await?;
         }
         Some(mut old_tag) => {
+            // Same `(category, source)`, equal-or-lower confidence: the same
+            // source is re-reporting, so refresh its data in place. Crucially
+            // also carry the new confidence — otherwise the tag would keep its
+            // old (higher) confidence while its risk_score/sanction data came
+            // from a less-certain report, leaving the two out of sync.
             old_tag.set_label_name(input.label_name);
+            old_tag.set_confidence(input.confidence);
             old_tag.set_risk_score(input.risk_score);
             old_tag.set_sanction_list(input.sanction_list);
             old_tag.set_expires_at(input.expires_at);

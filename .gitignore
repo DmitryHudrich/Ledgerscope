@@ -17,3 +17,6 @@ project.lock.json
 *.nupkg
 *.snupkg
 appsettings.*.local.json
+
+# Docker Compose secrets (API keys, JWT/engine signing keys).
+infrastructure/.env

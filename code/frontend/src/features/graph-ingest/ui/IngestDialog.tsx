@@ -4,6 +4,7 @@ import { toast } from 'sonner'
 
 import type { CaseAddress } from '@/entities/case'
 import { startIngest } from '@/entities/graph-insight'
+import { loadIngestPrefs, saveIngestPrefs } from '@/features/graph-ingest/lib/ingest-prefs'
 import { waitForIngestJob } from '@/features/graph-ingest/lib/wait-for-job'
 import { getErrorMessage } from '@/shared/api'
 import { Button } from '@/shared/ui/button'
@@ -35,13 +36,14 @@ function toNumber(value: string): number | null {
 }
 
 export function IngestDialog({ caseId, addresses, onIngested }: IngestDialogProps) {
+  const saved = loadIngestPrefs(caseId)
   const [open, setOpen] = useState(false)
   const [address, setAddress] = useState(addresses[0]?.address ?? '')
   const [chainId, setChainId] = useState(String(addresses[0]?.chainId ?? 1))
-  const [fromBlock, setFromBlock] = useState('')
-  const [toBlock, setToBlock] = useState('')
-  const [maxDepth, setMaxDepth] = useState('3')
-  const [maxNodes, setMaxNodes] = useState('500')
+  const [fromBlock, setFromBlock] = useState(saved.fromBlock ?? '')
+  const [toBlock, setToBlock] = useState(saved.toBlock ?? '')
+  const [maxDepth, setMaxDepth] = useState(saved.maxDepth ?? '3')
+  const [maxNodes, setMaxNodes] = useState(saved.maxNodes ?? '500')
   const [phase, setPhase] = useState<string | null>(null)
 
   const busy = phase !== null
@@ -67,6 +69,7 @@ export function IngestDialog({ caseId, addresses, onIngested }: IngestDialogProp
       await waitForIngestJob(caseId, jobId, {
         onProgress: (status) => setPhase(`Ingest: ${status.status}…`),
       })
+      saveIngestPrefs(caseId, { fromBlock, toBlock, maxDepth, maxNodes })
       toast.success('Ingest complete')
       setOpen(false)
       setPhase(null)
@@ -88,6 +91,11 @@ export function IngestDialog({ caseId, addresses, onIngested }: IngestDialogProp
         if (next) {
           setAddress(addresses[0]?.address ?? '')
           setChainId(String(addresses[0]?.chainId ?? 1))
+          const prefs = loadIngestPrefs(caseId)
+          setFromBlock(prefs.fromBlock ?? '')
+          setToBlock(prefs.toBlock ?? '')
+          setMaxDepth(prefs.maxDepth ?? '3')
+          setMaxNodes(prefs.maxNodes ?? '500')
         }
       }}
     >

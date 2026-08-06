@@ -1,0 +1,11 @@
+**/bin/
+**/obj/
+**/out/
+.vs/
+.idea/
+*.user
+.git/
+.claude/
+Dockerfile
+.dockerignore
+appsettings.*.local.json

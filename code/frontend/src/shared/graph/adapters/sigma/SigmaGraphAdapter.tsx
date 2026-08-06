@@ -54,6 +54,7 @@ type SigmaNodeAttrs = {
 type SigmaEdgeAttrs = {
   size: number
   color: string
+  label?: string
   type?: string
   curvature?: number
 }
@@ -63,6 +64,7 @@ type NodePosition = { x: number; y: number }
 export const SigmaGraphAdapter = ({
   graph,
   layout,
+  showEdgeLabels = false,
   rootNodeIds = null,
   selectedNodeId = '',
   visibleNodeIds = null,
@@ -86,8 +88,11 @@ export const SigmaGraphAdapter = ({
   const onPositionsChangeRef = useRef(onPositionsChange)
   const onExportReadyRef = useRef(onExportReady)
   const layoutRef = useRef(layout)
+  const showEdgeLabelsRef = useRef(showEdgeLabels)
   const graphSignatureRef = useRef('')
   const [canRender, setCanRender] = useState(false)
+
+  showEdgeLabelsRef.current = showEdgeLabels
 
   rootNodeIdsRef.current = rootNodeIds
   selectedNodeIdRef.current = selectedNodeId
@@ -157,7 +162,7 @@ export const SigmaGraphAdapter = ({
     const sigmaGraph = preparedGraph
 
     const renderer = new Sigma<SigmaNodeAttrs, SigmaEdgeAttrs>(sigmaGraph, container, {
-      renderEdgeLabels: false,
+      renderEdgeLabels: showEdgeLabelsRef.current,
       defaultNodeType: 'bordered',
       defaultEdgeType: 'arrow',
       nodeProgramClasses: {
@@ -168,6 +173,8 @@ export const SigmaGraphAdapter = ({
       },
       labelColor: { color: GRAPH_THEME.label },
       edgeLabelColor: { color: GRAPH_THEME.label },
+      edgeLabelSize: 9,
+      edgeLabelFont: 'ui-monospace, SFMono-Regular, Menlo, monospace',
       labelDensity: 0.04,
       labelGridCellSize: 120,
       labelSize: 10,
@@ -244,10 +251,11 @@ export const SigmaGraphAdapter = ({
         const [source, target] = sigmaGraph.extremities(edge)
         const isConnected = source === activeNodeId || target === activeNodeId
 
+        // Keep the edge's own colour (currencies stay distinguishable); emphasise
+        // the selected neighbourhood with a thicker line instead of a recolour.
         return {
           ...data,
-          color: isConnected ? GRAPH_THEME.edgeActive : data.color,
-          size: isConnected ? Math.max(data.size * 1.15, data.size) : data.size,
+          size: isConnected ? data.size * 1.6 : data.size,
         }
       },
     })
@@ -293,6 +301,15 @@ export const SigmaGraphAdapter = ({
   useEffect(() => {
     rendererRef.current?.refresh()
   }, [selectedNodeId, visibleNodeIds, visibleEdgeIds, rootNodeIds])
+
+  useEffect(() => {
+    const renderer = rendererRef.current
+    if (!renderer) {
+      return
+    }
+    renderer.setSetting('renderEdgeLabels', showEdgeLabels)
+    renderer.refresh()
+  }, [showEdgeLabels])
 
   return (
     <div className='relative h-full min-h-[360px] w-full'>
@@ -350,7 +367,8 @@ function buildGraph(
     const total = pairTotals.get(key) ?? 1
     const base: SigmaEdgeAttrs = {
       size: mapWeightToEdgeSize(edge.weight ?? 1),
-      color: GRAPH_THEME.edge,
+      color: edge.color ?? GRAPH_THEME.edge,
+      label: edge.label,
     }
     if (total > 1) {
       const index = pairSeen.get(key) ?? 0

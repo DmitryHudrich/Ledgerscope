@@ -1,0 +1,15 @@
+# Build artefacts — never ship the host's target/ into the build context, it
+# defeats cargo-chef's layer cache and adds gigabytes to every `docker build`.
+target/
+**/target/
+
+# On-disk provider caches (etherscan/moralis/trongrid file_cache dirs).
+etherscan_cache/
+moralis_cache/
+trongrid_cache/
+
+.git/
+.gitignore
+.claude/
+Dockerfile
+.dockerignore

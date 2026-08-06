@@ -13,6 +13,8 @@ export type GraphEdge = {
   target: string
   label?: string
   weight?: number
+  /** Line colour (e.g. per-currency tint). Falls back to the theme edge colour. */
+  color?: string | null
 }
 
 export type GraphData = {
@@ -38,6 +40,8 @@ export function isGraphLayoutMode(value: string): value is GraphLayoutMode {
 export type GraphAdapterProps = {
   graph: GraphData
   layout: GraphLayoutMode
+  /** Draw the per-edge text labels (amount / currency / count). */
+  showEdgeLabels?: boolean
   rootNodeIds?: ReadonlySet<string> | null
   selectedNodeId?: string
   visibleNodeIds?: ReadonlySet<string> | null

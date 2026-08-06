@@ -153,9 +153,10 @@ pub fn tag_category_str(c: TagCategory) -> &'static str {
     }
 }
 
-/// Same thresholds as `domain::label_tag::confidence_weight` — kept in sync
-/// by hand since that one drives score aggregation and this one is purely
-/// display, but both should call the same tag "high" vs "confirmed".
+/// Purely-display banding of the continuous 0-100 confidence onto the four
+/// named tiers (`low`/`medium`/`high`/`confirmed`). Score aggregation now uses
+/// the raw fraction (`Confidence::fraction`) rather than these buckets, so this
+/// mapping only affects how a tag's confidence is labelled in responses.
 pub fn confidence_str(c: Confidence) -> &'static str {
     match c.value() {
         v if v >= Confidence::CERTAIN.value() => "confirmed",
