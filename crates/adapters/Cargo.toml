@@ -1,0 +1,17 @@
+[package]
+name = "ledgerscope-adapters"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "adapters"
+
+[dependencies]
+ledgerscope-domain.workspace = true
+ledgerscope-application.workspace = true
+
+async-trait.workspace = true
+async-stream.workspace = true
+reqwest.workspace = true
+serde_json.workspace = true
+hex.workspace = true

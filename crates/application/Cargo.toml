@@ -1,0 +1,16 @@
+[package]
+name = "ledgerscope-application"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "application"
+
+[dependencies]
+ledgerscope-domain.workspace = true
+
+async-trait.workspace = true
+futures.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+rangemap.workspace = true
