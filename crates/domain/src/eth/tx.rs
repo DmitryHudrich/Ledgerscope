@@ -1,22 +1,23 @@
+use alloy_primitives::{Bytes, TxHash, U256};
 use bon::Builder;
 
 use crate::eth::EthAddress;
 
 #[derive(Eq, Clone, Hash, PartialEq, Builder)]
 pub struct EthTx {
-    pub(crate) tx_hash: String,
+    pub(crate) tx_hash: TxHash,
     pub(crate) block_number: u64,
     pub(crate) timestamp: u64,
 
-    pub(crate) amount: u128,
+    pub(crate) amount: U256,
 
     pub(crate) from: EthAddress,
     pub(crate) to: Option<EthAddress>,
-    pub(crate) data: Vec<u8>,
+    pub(crate) data: Bytes,
 }
 
 impl EthTx {
-    pub fn tx_hash(&self) -> &str {
+    pub fn tx_hash(&self) -> &TxHash {
         &self.tx_hash
     }
 
@@ -28,7 +29,7 @@ impl EthTx {
         self.timestamp
     }
 
-    pub fn amount(&self) -> u128 {
+    pub fn amount(&self) -> U256 {
         self.amount
     }
 
@@ -40,7 +41,7 @@ impl EthTx {
         self.to.as_ref()
     }
 
-    pub fn data(&self) -> &[u8] {
+    pub fn data(&self) -> &Bytes {
         &self.data
     }
 }

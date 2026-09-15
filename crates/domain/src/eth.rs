@@ -6,6 +6,8 @@ pub mod tx;
 
 pub use address::{EthAddress, EthAddressParseError};
 pub use block::BlockRef;
-pub use graph::{ContractAction, Interaction, InteractionEdge, InteractionGraph, TxMeta};
+pub use graph::{
+    ContractAction, Interaction, InteractionEdge, InteractionGraph, InteractionKind, TxMeta,
+};
 pub use receipt::{EthLog, EthReceipt};
 pub use tx::EthTx;

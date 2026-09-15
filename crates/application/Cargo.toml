@@ -14,3 +14,4 @@ futures.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 rangemap.workspace = true
+alloy-primitives.workspace = true

@@ -1,5 +1,6 @@
 use std::io;
 
+use alloy_primitives::{Bytes, TxHash};
 use futures::stream::BoxStream;
 
 use domain::eth::{BlockRef, EthAddress, EthReceipt, EthTx};
@@ -15,14 +16,10 @@ pub trait EthTxSource: Send + Sync {
 
 #[async_trait::async_trait]
 pub trait EthRpcSource: Send + Sync {
-    async fn call(
-        &self,
-        to: &EthAddress,
-        data: &[u8],
-        block: BlockRef,
-    ) -> Result<Vec<u8>, io::Error>;
+    async fn call(&self, to: &EthAddress, data: &[u8], block: BlockRef)
+    -> Result<Bytes, io::Error>;
 
-    async fn code(&self, address: &EthAddress, block: BlockRef) -> Result<Vec<u8>, io::Error>;
+    async fn code(&self, address: &EthAddress, block: BlockRef) -> Result<Bytes, io::Error>;
 
-    async fn receipt(&self, tx_hash: &str) -> Result<Option<EthReceipt>, io::Error>;
+    async fn receipt(&self, tx_hash: &TxHash) -> Result<Option<EthReceipt>, io::Error>;
 }

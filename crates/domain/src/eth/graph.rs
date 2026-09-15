@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 
+use alloy_primitives::{TxHash, U256};
 use petgraph::{graph::NodeIndex, prelude::StableGraph};
 
-use crate::eth::{EthAddress, EthTx};
+use crate::eth::{EthAddress, EthReceipt, EthTx};
 
 #[derive(Clone, Debug)]
 pub enum ContractAction {
@@ -10,7 +11,7 @@ pub enum ContractAction {
         from: EthAddress,
         to: EthAddress,
 
-        amount: u64,
+        amount: U256,
         token_name: String,
     },
     Other,
@@ -21,7 +22,7 @@ pub struct NativeTransfer {
     from: EthAddress,
     to: EthAddress,
 
-    amount: u128,
+    amount: U256,
 }
 
 impl NativeTransfer {
@@ -33,7 +34,7 @@ impl NativeTransfer {
         &self.to
     }
 
-    pub fn amount(&self) -> u128 {
+    pub fn amount(&self) -> U256 {
         self.amount
     }
 }
@@ -54,7 +55,7 @@ impl TryFrom<EthTx> for NativeTransfer {
 }
 
 #[derive(Clone, Debug)]
-pub enum Interaction {
+pub enum InteractionKind {
     Protocol,
     NativeTransfer(NativeTransfer),
     ContractDeployment {
@@ -68,16 +69,16 @@ pub enum Interaction {
     },
 }
 
-impl Interaction {
+impl InteractionKind {
     fn endpoints(&self) -> (&EthAddress, &EthAddress) {
         match self {
-            Interaction::Protocol => todo!(),
-            Interaction::NativeTransfer(NativeTransfer { from, to, .. }) => (from, to),
-            Interaction::ContractDeployment {
+            InteractionKind::Protocol => todo!(),
+            InteractionKind::NativeTransfer(NativeTransfer { from, to, .. }) => (from, to),
+            InteractionKind::ContractDeployment {
                 contract_address,
                 deployer,
             } => (deployer, contract_address),
-            Interaction::ContractInteraction {
+            InteractionKind::ContractInteraction {
                 contract_address,
                 interactor,
                 contract_interaction_type,
@@ -90,14 +91,38 @@ impl Interaction {
 }
 
 #[derive(Clone, Debug)]
+pub struct Interaction {
+    receipt: EthReceipt,
+    kind: InteractionKind,
+}
+
+impl Interaction {
+    pub fn new(receipt: EthReceipt, kind: InteractionKind) -> Self {
+        Self { receipt, kind }
+    }
+
+    pub fn receipt(&self) -> &EthReceipt {
+        &self.receipt
+    }
+
+    pub fn kind(&self) -> &InteractionKind {
+        &self.kind
+    }
+
+    fn endpoints(&self) -> (&EthAddress, &EthAddress) {
+        self.kind.endpoints()
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct TxMeta {
-    tx_hash: String,
+    tx_hash: TxHash,
     block_number: u64,
     timestamp: u64,
 }
 
 impl TxMeta {
-    pub fn tx_hash(&self) -> &str {
+    pub fn tx_hash(&self) -> &TxHash {
         &self.tx_hash
     }
 
@@ -113,7 +138,7 @@ impl TxMeta {
 impl From<&EthTx> for TxMeta {
     fn from(tx: &EthTx) -> Self {
         Self {
-            tx_hash: tx.tx_hash.clone(),
+            tx_hash: tx.tx_hash,
             block_number: tx.block_number,
             timestamp: tx.timestamp,
         }

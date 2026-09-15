@@ -10,3 +10,4 @@ name = "domain"
 bon.workspace = true
 hex.workspace = true
 petgraph.workspace = true
+alloy-primitives.workspace = true

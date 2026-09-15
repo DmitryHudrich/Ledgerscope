@@ -1,7 +1,7 @@
 use serde::Serialize;
 
 use application::eth::GraphSnapshot;
-use domain::eth::{ContractAction, EthAddress, Interaction, InteractionEdge};
+use domain::eth::{ContractAction, EthAddress, Interaction, InteractionEdge, InteractionKind};
 
 #[derive(Serialize)]
 pub struct GraphResponse {
@@ -80,21 +80,27 @@ impl From<&InteractionEdge> for EdgeResponse {
 
 impl From<&Interaction> for InteractionResponse {
     fn from(interaction: &Interaction) -> Self {
-        match interaction {
-            Interaction::Protocol => Self::Protocol,
-            Interaction::NativeTransfer(transfer) => Self::NativeTransfer {
+        interaction.kind().into()
+    }
+}
+
+impl From<&InteractionKind> for InteractionResponse {
+    fn from(kind: &InteractionKind) -> Self {
+        match kind {
+            InteractionKind::Protocol => Self::Protocol,
+            InteractionKind::NativeTransfer(transfer) => Self::NativeTransfer {
                 from: transfer.from().to_string(),
                 to: transfer.to().to_string(),
                 amount: transfer.amount().to_string(),
             },
-            Interaction::ContractDeployment {
+            InteractionKind::ContractDeployment {
                 contract_address,
                 deployer,
             } => Self::ContractDeployment {
                 deployer: deployer.to_string(),
                 contract_address: contract_address.to_string(),
             },
-            Interaction::ContractInteraction {
+            InteractionKind::ContractInteraction {
                 contract_address,
                 interactor,
                 contract_interaction_type,
@@ -129,16 +135,19 @@ impl From<&ContractAction> for ContractActionResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use domain::eth::{EthTx, TxMeta, graph::NativeTransfer};
+    use alloy_primitives::{Bytes, U256, b256};
+    use domain::eth::{EthReceipt, EthTx, TxMeta, graph::NativeTransfer};
     use serde_json::json;
 
     #[test]
     fn wire_shape() {
         let tx = EthTx::builder()
-            .tx_hash("0xabc".to_owned())
+            .tx_hash(b256!(
+                "0xabababababababababababababababababababababababababababababababab"
+            ))
             .block_number(21_000_000)
             .timestamp(1_737_000_000)
-            .amount(1_500_000_000_000_000_000u128)
+            .amount(U256::from(1_500_000_000_000_000_000u128))
             .from(
                 "0x1111111111111111111111111111111111111111"
                     .parse()
@@ -147,29 +156,37 @@ mod tests {
             .to("0x2222222222222222222222222222222222222222"
                 .parse()
                 .unwrap())
-            .data(vec![])
+            .data(Bytes::new())
             .build();
         let meta = TxMeta::from(&tx);
-        let native = Interaction::NativeTransfer(NativeTransfer::try_from(tx).ok().unwrap());
+        let receipt = EthReceipt::new(true, None, Vec::new());
 
-        let erc20 = Interaction::ContractInteraction {
-            contract_address: "0x3333333333333333333333333333333333333333"
-                .parse()
-                .unwrap(),
-            interactor: "0x1111111111111111111111111111111111111111"
-                .parse()
-                .unwrap(),
-            contract_interaction_type: ContractAction::Erc20Transfer {
-                from: "0x1111111111111111111111111111111111111111"
+        let native = Interaction::new(
+            receipt.clone(),
+            InteractionKind::NativeTransfer(NativeTransfer::try_from(tx).ok().unwrap()),
+        );
+
+        let erc20 = Interaction::new(
+            receipt,
+            InteractionKind::ContractInteraction {
+                contract_address: "0x3333333333333333333333333333333333333333"
                     .parse()
                     .unwrap(),
-                to: "0x2222222222222222222222222222222222222222"
+                interactor: "0x1111111111111111111111111111111111111111"
                     .parse()
                     .unwrap(),
-                amount: 1_000_000,
-                token_name: "USDC".to_owned(),
+                contract_interaction_type: ContractAction::Erc20Transfer {
+                    from: "0x1111111111111111111111111111111111111111"
+                        .parse()
+                        .unwrap(),
+                    to: "0x2222222222222222222222222222222222222222"
+                        .parse()
+                        .unwrap(),
+                    amount: U256::from(1_000_000),
+                    token_name: "USDC".to_owned(),
+                },
             },
-        };
+        );
 
         let response = GraphResponse::new(
             vec!["0x1111111111111111111111111111111111111111".to_owned()],
@@ -184,7 +201,7 @@ mod tests {
                 "nodes": ["0x1111111111111111111111111111111111111111"],
                 "edges": [
                     {
-                        "tx_hash": "0xabc",
+                        "tx_hash": "0xabababababababababababababababababababababababababababababababab",
                         "block_number": 21_000_000,
                         "timestamp": 1_737_000_000,
                         "kind": "native_transfer",
@@ -193,7 +210,7 @@ mod tests {
                         "amount": "1500000000000000000"
                     },
                     {
-                        "tx_hash": "0xabc",
+                        "tx_hash": "0xabababababababababababababababababababababababababababababababab",
                         "block_number": 21_000_000,
                         "timestamp": 1_737_000_000,
                         "kind": "contract_interaction",

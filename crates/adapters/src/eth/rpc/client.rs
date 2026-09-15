@@ -2,6 +2,7 @@ use std::io;
 
 use serde_json::Value;
 
+use alloy_primitives::{Bytes, TxHash};
 use application::{
     BoxStream,
     eth::ports::{EthRpcSource, EthTxSource},
@@ -70,7 +71,7 @@ impl EthRpcSource for RpcTxSource {
         to: &EthAddress,
         data: &[u8],
         block: BlockRef,
-    ) -> Result<Vec<u8>, io::Error> {
+    ) -> Result<Bytes, io::Error> {
         let params = serde_json::json!([
             {
                 "to": to.to_string(),
@@ -87,7 +88,7 @@ impl EthRpcSource for RpcTxSource {
         }
     }
 
-    async fn code(&self, address: &EthAddress, block: BlockRef) -> Result<Vec<u8>, io::Error> {
+    async fn code(&self, address: &EthAddress, block: BlockRef) -> Result<Bytes, io::Error> {
         let params = serde_json::json!([address.to_string(), block_param(block)]);
 
         let result = self.request("eth_getCode", params).await?;
@@ -98,8 +99,8 @@ impl EthRpcSource for RpcTxSource {
         }
     }
 
-    async fn receipt(&self, tx_hash: &str) -> Result<Option<EthReceipt>, io::Error> {
-        let params = serde_json::json!([tx_hash]);
+    async fn receipt(&self, tx_hash: &TxHash) -> Result<Option<EthReceipt>, io::Error> {
+        let params = serde_json::json!([tx_hash.to_string()]);
 
         let result = self.request("eth_getTransactionReceipt", params).await?;
 

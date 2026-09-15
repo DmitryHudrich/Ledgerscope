@@ -1,14 +1,16 @@
+use alloy_primitives::{B256, Bytes};
+
 use crate::eth::EthAddress;
 
 #[derive(Debug, Clone)]
 pub struct EthLog {
     address: EthAddress,
-    topics: Vec<[u8; 32]>,
-    data: Vec<u8>,
+    topics: Vec<B256>,
+    data: Bytes,
 }
 
 impl EthLog {
-    pub fn new(address: EthAddress, topics: Vec<[u8; 32]>, data: Vec<u8>) -> Self {
+    pub fn new(address: EthAddress, topics: Vec<B256>, data: Bytes) -> Self {
         Self {
             address,
             topics,
@@ -20,11 +22,11 @@ impl EthLog {
         &self.address
     }
 
-    pub fn topics(&self) -> &[[u8; 32]] {
+    pub fn topics(&self) -> &[B256] {
         &self.topics
     }
 
-    pub fn data(&self) -> &[u8] {
+    pub fn data(&self) -> &Bytes {
         &self.data
     }
 }

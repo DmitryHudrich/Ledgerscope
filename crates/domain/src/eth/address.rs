@@ -1,7 +1,9 @@
 use std::{fmt, str::FromStr};
 
-#[derive(Eq, Clone, Hash, PartialEq)]
-pub struct EthAddress(Vec<u8>);
+use alloy_primitives::{Address, B256};
+
+#[derive(Eq, Copy, Clone, Hash, PartialEq)]
+pub struct EthAddress(Address);
 
 impl std::fmt::Debug for EthAddress {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -24,23 +26,21 @@ impl FromStr for EthAddress {
     type Err = EthAddressParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let stripped = s.strip_prefix("0x").unwrap_or(s);
-        let bytes = hex::decode(stripped).map_err(|e| EthAddressParseError(e.to_string()))?;
+        Address::from_str(s)
+            .map(EthAddress)
+            .map_err(|e| EthAddressParseError(e.to_string()))
+    }
+}
 
-        if bytes.len() != 20 {
-            return Err(EthAddressParseError(format!(
-                "expected 20 bytes, got {}",
-                bytes.len()
-            )));
-        }
-
-        Ok(EthAddress(bytes))
+impl From<Address> for EthAddress {
+    fn from(address: Address) -> Self {
+        EthAddress(address)
     }
 }
 
 impl From<[u8; 20]> for EthAddress {
     fn from(bytes: [u8; 20]) -> Self {
-        EthAddress(bytes.to_vec())
+        EthAddress(Address::from(bytes))
     }
 }
 
@@ -48,24 +48,34 @@ impl TryFrom<Vec<u8>> for EthAddress {
     type Error = EthAddressParseError;
 
     fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
-        if bytes.len() != 20 {
-            return Err(EthAddressParseError(format!(
-                "expected 20 bytes, got {}",
-                bytes.len()
-            )));
-        }
-        Ok(EthAddress(bytes))
+        Address::try_from(bytes.as_slice())
+            .map(EthAddress)
+            .map_err(|_| EthAddressParseError(format!("expected 20 bytes, got {}", bytes.len())))
     }
 }
 
 impl fmt::Display for EthAddress {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "0x{}", hex::encode(&self.0))
+        write!(f, "0x{}", self.hex())
     }
 }
 
 impl EthAddress {
+    pub const ZERO: Self = EthAddress(Address::ZERO);
+
+    pub fn from_word(word: B256) -> Self {
+        EthAddress(Address::from_word(word))
+    }
+
+    pub fn address(&self) -> Address {
+        self.0
+    }
+
     pub fn hex(&self) -> String {
-        hex::encode(&self.0)
+        hex::encode(self.0)
+    }
+
+    pub fn checksummed(&self) -> String {
+        self.0.to_checksum(None)
     }
 }
