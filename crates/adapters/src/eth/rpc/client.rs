@@ -4,9 +4,9 @@ use serde_json::Value;
 
 use application::{
     BoxStream,
-    eth::ports::{BlockRef, EthReceipt, EthRpcSource, EthTxSource},
+    eth::ports::{EthRpcSource, EthTxSource},
 };
-use domain::eth::{EthAddress, EthTx};
+use domain::eth::{BlockRef, EthAddress, EthReceipt, EthTx};
 
 use crate::eth::rpc::parse::{hex_to_bytes, parse_block, parse_receipt};
 

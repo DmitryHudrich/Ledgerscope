@@ -58,8 +58,10 @@ impl EthFetcher {
                         let block_number = tx.block_number();
                         let meta = TxMeta::from(&tx);
 
+                        let interaction =
+                            self.tx_classificator.classificate(tx).await.expect("Later");
+
                         let mut graph_lock = self.graph.lock().await;
-                        let interaction = self.tx_classificator.classificate(tx).expect("Later");
                         graph_lock.insert(InteractionEdge::new(meta, interaction));
                         drop(graph_lock);
 

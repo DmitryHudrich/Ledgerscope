@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{io, sync::Arc};
 
 use domain::eth::{
     EthAddress, EthTx,
@@ -10,6 +10,7 @@ use crate::eth::EthRpcSource;
 #[derive(Debug)]
 pub enum ClassificateError {
     InvariantNarushen,
+    Rpc(io::Error),
 }
 
 pub struct FulliestEthTxClassificator {
@@ -22,12 +23,14 @@ impl FulliestEthTxClassificator {
     }
 }
 
+#[async_trait::async_trait]
 pub trait EthTxClassificator: Send + Sync {
-    fn classificate(&self, tx: EthTx) -> Result<Interaction, ClassificateError>;
+    async fn classificate(&self, tx: EthTx) -> Result<Interaction, ClassificateError>;
 }
 
+#[async_trait::async_trait]
 impl EthTxClassificator for FulliestEthTxClassificator {
-    fn classificate(&self, tx: EthTx) -> Result<Interaction, ClassificateError> {
+    async fn classificate(&self, tx: EthTx) -> Result<Interaction, ClassificateError> {
         const ZEROXWALLET: [u8; 20] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 
         if tx.to() == Some(&EthAddress::from(ZEROXWALLET)) {
@@ -39,6 +42,12 @@ impl EthTxClassificator for FulliestEthTxClassificator {
                 NativeTransfer::try_from(tx).map_err(|_| ClassificateError::InvariantNarushen)?,
             ));
         };
+
+        let _receipt = self
+            .rpc_service
+            .receipt(tx.tx_hash())
+            .await
+            .map_err(ClassificateError::Rpc)?;
 
         unimplemented!()
     }

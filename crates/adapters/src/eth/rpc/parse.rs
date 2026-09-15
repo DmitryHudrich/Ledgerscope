@@ -1,7 +1,6 @@
 use serde_json::Value;
 
-use application::eth::ports::{EthLog, EthReceipt};
-use domain::eth::{EthAddress, EthTx};
+use domain::eth::{EthAddress, EthLog, EthReceipt, EthTx};
 
 pub fn hex_to_u64(s: &str) -> u64 {
     u64::from_str_radix(s.trim_start_matches("0x"), 16).unwrap_or(0)
