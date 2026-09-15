@@ -14,6 +14,7 @@
   --series-eoa: #2a78d6;
   --series-focus: #eb6834;
   --series-contract: #1baf7a;
+  --series-token: #8b5cf6;
   --edge: #9a9992;
 
   --accent: #2a78d6;
@@ -48,6 +49,7 @@
   --series-eoa: #3987e5;
   --series-focus: #d95926;
   --series-contract: #199e70;
+  --series-token: #a78bfa;
   --edge: #6b6b66;
 
   --accent: #3987e5;
@@ -517,6 +519,7 @@ input[type='range'] {
 }
 
 .dot {
+  display: inline-block;
   width: 8px;
   height: 8px;
   border-radius: 50%;
@@ -541,10 +544,100 @@ input[type='range'] {
   color: var(--series-focus);
 }
 
+.dot-token,
+.swatch-token {
+  background: var(--series-token);
+  color: var(--series-token);
+}
+
+.swatch-line {
+  height: 3px;
+  width: 14px;
+  border-radius: 2px;
+  border: none;
+  box-shadow: none;
+}
+
+.swatch-dashed {
+  background: repeating-linear-gradient(
+    90deg,
+    var(--edge) 0 4px,
+    transparent 4px 7px
+  );
+}
+
 .legend-note {
   margin: 8px 0 0;
   font-size: 11px;
   color: var(--text-muted);
+}
+
+.asset-list {
+  display: grid;
+  gap: 4px;
+}
+
+.asset-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.asset-symbol {
+  font-family: var(--mono);
+  max-width: 88px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.asset-amount {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.asset-count {
+  min-width: 56px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+
+.asset-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.asset-table th {
+  text-align: left;
+  font-weight: 500;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  padding: 0 0 4px;
+}
+
+.asset-table th.num,
+.asset-table td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.asset-table td {
+  padding: 3px 0;
+  border-top: 1px solid var(--hairline);
+}
+
+.asset-table td:first-child {
+  white-space: nowrap;
+}
+
+.asset-table td .dot {
+  margin-right: 6px;
+  vertical-align: middle;
 }
 
 .toolrail {
@@ -624,6 +717,17 @@ input[type='range'] {
 .tip-rows dd {
   margin: 0;
   font-variant-numeric: tabular-nums;
+}
+
+.tip-assets {
+  margin-top: 7px;
+  padding-top: 7px;
+  border-top: 1px solid var(--hairline);
+}
+
+.tip-assets dt {
+  font-family: var(--mono);
+  color: var(--series-token);
 }
 
 .drawer {
@@ -865,6 +969,21 @@ input[type='range'] {
   gap: 5px;
   font-size: 11px;
   color: var(--text-secondary);
+}
+
+.tag-failed {
+  color: var(--critical);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.table tr.failed td {
+  color: var(--text-muted);
+}
+
+.table tr.failed .cell-link {
+  text-decoration: line-through;
 }
 
 .state {

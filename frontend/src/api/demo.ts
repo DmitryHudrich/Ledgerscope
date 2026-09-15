@@ -1,6 +1,12 @@
 import type { GraphEdge, GraphQuery, GraphResponse, Interaction, TxMeta } from './types';
 
-const TOKENS = ['USDC', 'USDT', 'DAI', 'WETH', 'LINK'];
+const TOKENS: Array<{ symbol: string; decimals: number }> = [
+  { symbol: 'USDC', decimals: 6 },
+  { symbol: 'USDT', decimals: 6 },
+  { symbol: 'DAI', decimals: 18 },
+  { symbol: 'WETH', decimals: 18 },
+  { symbol: 'LINK', decimals: 18 },
+];
 
 function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
@@ -43,6 +49,7 @@ export function demoGraph(query: GraphQuery): GraphResponse {
 
   const hubs = Array.from({ length: 4 }, () => makeAddress(rand));
   const contracts = Array.from({ length: 5 }, () => makeAddress(rand));
+  const tokens = TOKENS.map((token) => ({ ...token, address: makeAddress(rand) }));
   const peers = Array.from({ length: 34 }, () => makeAddress(rand));
 
   const nodes = new Set<string>([focus, ...hubs, ...contracts, ...peers]);
@@ -54,6 +61,7 @@ export function demoGraph(query: GraphQuery): GraphResponse {
       tx_hash: makeHash(rand),
       block_number: blockNumber,
       timestamp: baseTime + (blockNumber - fromBlock) * 12,
+      succeeded: rand() > 0.06,
     };
   };
 
@@ -72,19 +80,25 @@ export function demoGraph(query: GraphQuery): GraphResponse {
       action: { kind: 'other' },
     });
 
-  const tokenTransfer = (from: string, to: string, contract: string, units: number) =>
+  const tokenTransfer = (from: string, to: string, contract: string, units: number) => {
+    const token = tokens[Math.floor(rand() * tokens.length)];
+    const raw =
+      BigInt(Math.max(1, Math.round(units * 1000))) * 10n ** BigInt(token.decimals) / 1000n;
     emit({
       kind: 'contract_interaction',
       interactor: from,
       contract_address: contract,
       action: {
         kind: 'erc20_transfer',
+        token: token.address,
         from,
         to,
-        amount: String(Math.max(1, Math.round(units))),
-        token_name: TOKENS[Math.floor(rand() * TOKENS.length)],
+        amount: raw.toString(),
+        token_name: token.symbol,
+        decimals: token.decimals,
       },
     });
+  };
 
   for (const contract of contracts) {
     emit({

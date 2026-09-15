@@ -16,6 +16,24 @@ pub fn hex_to_bytes(s: &str) -> Bytes {
     hex::decode(s).unwrap_or_default().into()
 }
 
+pub fn parse_block_receipts(receipts: &Value) -> Vec<(TxHash, EthReceipt)> {
+    let receipts = match receipts.as_array() {
+        Some(receipts) => receipts,
+        None => return Vec::new(),
+    };
+
+    receipts
+        .iter()
+        .filter_map(|receipt| {
+            let tx_hash = receipt["transactionHash"]
+                .as_str()?
+                .parse::<TxHash>()
+                .ok()?;
+            Some((tx_hash, parse_receipt(receipt)))
+        })
+        .collect()
+}
+
 pub fn parse_receipt(receipt: &Value) -> EthReceipt {
     let succeeded = receipt["status"]
         .as_str()

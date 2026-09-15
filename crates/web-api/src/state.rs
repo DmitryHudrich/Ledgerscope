@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 
-use adapters::eth::RpcTxSource;
+use adapters::eth::{DEFAULT_RATE_LIMIT_RPS, RpcTxSource};
 use application::eth::{EthFetcher, classificator::FulliestEthTxClassificator};
 use reqwest::Proxy;
 
@@ -29,7 +29,12 @@ impl AppState {
         let http_client = client.build().context("failed to build the HTTP client")?;
 
         let rpc_url = std::env::var("ETH_RPC_URL").context("ETH_RPC_URL must be set")?;
-        let rpc_source = Arc::new(RpcTxSource::new(http_client, rpc_url));
+        let rate_limit_rps = match std::env::var("ETH_RPC_RPS") {
+            Ok(rps) => rps.parse().context("ETH_RPC_RPS must be a number")?,
+            Err(_) => DEFAULT_RATE_LIMIT_RPS,
+        };
+        let rpc_source =
+            Arc::new(RpcTxSource::new(http_client, rpc_url).with_rate_limit(rate_limit_rps));
         let eth_tx_source = rpc_source.clone();
         let tx_classificator = Arc::new(FulliestEthTxClassificator::new(rpc_source));
 

@@ -1,15 +1,16 @@
 import { useMemo, useState } from 'react';
 
-import { edgeEndpoints, edgeLabel, edgeWei } from '../api/edges';
+import { edgeEndpoints, edgeLabel, edgeTransfer, type EdgeTransfer } from '../api/edges';
 import type { GraphEdge } from '../api/types';
 import type { GraphModel } from '../graph/model';
 import {
   formatCount,
-  formatEth,
   formatRelative,
   formatTimestamp,
+  formatUnits,
   shortAddress,
   shortHash,
+  unitsToNumber,
 } from '../lib/format';
 import { IconChevron } from './Icons';
 
@@ -17,7 +18,7 @@ const ROW_LIMIT = 500;
 
 export const SHEET_HEIGHT = { collapsed: 40, expanded: 320 } as const;
 
-type SortKey = 'block' | 'value';
+type SortKey = 'block' | 'value' | 'asset';
 
 interface Props {
   model: GraphModel;
@@ -36,14 +37,25 @@ export function TxSheet({ model, scope, open, onOpenChange, onScopeClear, onSele
   const rows = useMemo(() => {
     const links = scope ? (model.linksByNode.get(scope) ?? []) : model.links;
 
-    const all: Array<{ tx: GraphEdge; wei: bigint }> = [];
+    const all: Array<{ tx: GraphEdge; transfer: EdgeTransfer | null; magnitude: number }> = [];
     for (const link of links) {
-      for (const tx of link.txs) all.push({ tx, wei: edgeWei(tx) });
+      for (const tx of link.txs) {
+        const transfer = edgeTransfer(tx);
+        all.push({
+          tx,
+          transfer,
+          magnitude: transfer ? unitsToNumber(transfer.amount, transfer.decimals) : -1,
+        });
+      }
     }
     all.sort((a, b) => {
       let delta: number;
       if (sort === 'block') delta = a.tx.block_number - b.tx.block_number;
-      else delta = a.wei === b.wei ? 0 : a.wei < b.wei ? -1 : 1;
+      else if (sort === 'asset') {
+        const left = a.transfer?.symbol ?? '';
+        const right = b.transfer?.symbol ?? '';
+        delta = left.localeCompare(right);
+      } else delta = a.magnitude - b.magnitude;
       return descending ? -delta : delta;
     });
     return all;
@@ -106,7 +118,12 @@ export function TxSheet({ model, scope, open, onOpenChange, onScopeClear, onSele
                 <th>To</th>
                 <th className="num">
                   <button type="button" onClick={() => toggleSort('value')}>
-                    Value (ETH){arrow('value')}
+                    Amount{arrow('value')}
+                  </button>
+                </th>
+                <th>
+                  <button type="button" onClick={() => toggleSort('asset')}>
+                    Asset{arrow('asset')}
                   </button>
                 </th>
                 <th>Type</th>
@@ -114,15 +131,10 @@ export function TxSheet({ model, scope, open, onOpenChange, onScopeClear, onSele
               </tr>
             </thead>
             <tbody>
-              {rows.slice(0, ROW_LIMIT).map(({ tx, wei }, index) => {
+              {rows.slice(0, ROW_LIMIT).map(({ tx, transfer }, index) => {
                 const endpoints = edgeEndpoints(tx);
-                const native = tx.kind === 'native_transfer';
-                const token =
-                  tx.kind === 'contract_interaction' && tx.action.kind === 'erc20_transfer'
-                    ? tx.action
-                    : null;
                 return (
-                  <tr key={`${tx.tx_hash}:${index}`}>
+                  <tr key={`${tx.tx_hash}:${index}`} className={tx.succeeded ? undefined : 'failed'}>
                     <td className="num">{formatCount(tx.block_number)}</td>
                     <td title={formatTimestamp(tx.timestamp)}>{formatRelative(tx.timestamp)}</td>
                     <td className="mono">
@@ -151,17 +163,26 @@ export function TxSheet({ model, scope, open, onOpenChange, onScopeClear, onSele
                         '—'
                       )}
                     </td>
-                    <td className="num">{native ? formatEth(wei) : '—'}</td>
+                    <td className="num">
+                      {transfer ? formatUnits(transfer.amount, transfer.decimals) : '—'}
+                    </td>
+                    <td>
+                      {transfer ? (
+                        <span className="tag" title={transfer.native ? 'ETH' : transfer.key}>
+                          <span
+                            className={`dot dot-${transfer.native ? 'focus' : 'token'}`}
+                            aria-hidden="true"
+                          />
+                          <code className="mono">{transfer.symbol}</code>
+                        </span>
+                      ) : (
+                        '—'
+                      )}
+                    </td>
                     <td>
                       <span className="tag">
-                        {token ? (
-                          <>
-                            {formatCount(Number(token.amount))}{' '}
-                            <code className="mono">{token.token_name}</code>
-                          </>
-                        ) : (
-                          edgeLabel(tx)
-                        )}
+                        {edgeLabel(tx)}
+                        {!tx.succeeded && <span className="tag-failed">reverted</span>}
                       </span>
                     </td>
                     <td className="mono">{shortHash(tx.tx_hash)}</td>

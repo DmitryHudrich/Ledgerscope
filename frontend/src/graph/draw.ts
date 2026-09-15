@@ -43,6 +43,12 @@ export function nodeColor(node: GraphNode, palette: VizPalette): string {
   return palette.eoa;
 }
 
+export function linkColor(link: GraphLink, palette: VizPalette, lit: boolean): string {
+  if (link.tone === 'token' || link.tone === 'mixed') return palette.token;
+  if (link.tone === 'call') return palette.edge;
+  return lit ? nodeColor(link.source, palette) : palette.edge;
+}
+
 export function toWorld(t: Transform, sx: number, sy: number): { x: number; y: number } {
   return { x: (sx - t.x) / t.k, y: (sy - t.y) / t.k };
 }
@@ -182,12 +188,13 @@ function drawLink(
 ): void {
   if (alpha <= 0.02) return;
   const { transform: t, palette } = scene;
-  const color = lit ? nodeColor(link.source, palette) : palette.edge;
+  const color = linkColor(link, palette, lit);
   const width = Math.max(link.width, lit ? 1.6 : 1) / t.k;
+  const tinted = !lit && (link.tone === 'token' || link.tone === 'mixed');
 
-  ctx.strokeStyle = withAlpha(color, alpha * (lit ? 0.92 : 0.62));
+  ctx.strokeStyle = withAlpha(color, alpha * (lit ? 0.92 : tinted ? 0.52 : 0.62));
   ctx.lineWidth = width;
-  ctx.setLineDash(link.calls === link.count ? [6 / t.k, 5 / t.k] : []);
+  ctx.setLineDash(link.tone === 'call' ? [6 / t.k, 5 / t.k] : []);
 
   if (link.selfLoop) {
     const { cx, cy, r } = loopGeometry(link.source);
@@ -231,7 +238,7 @@ function drawFlow(ctx: CanvasRenderingContext2D, link: GraphLink, scene: Scene):
   const { transform: t, palette } = scene;
   const count = Math.min(3, 1 + Math.floor(link.count / 3));
   const period = 2100;
-  const color = nodeColor(link.source, palette);
+  const color = linkColor(link, palette, true);
   const r = Math.max(1.5, link.width * 0.75) / t.k;
 
   ctx.fillStyle = withAlpha(color, 0.95);

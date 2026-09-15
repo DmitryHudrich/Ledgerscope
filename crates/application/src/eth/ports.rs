@@ -3,7 +3,7 @@ use std::io;
 use alloy_primitives::{Bytes, TxHash};
 use futures::stream::BoxStream;
 
-use domain::eth::{BlockRef, EthAddress, EthReceipt, EthTx};
+use domain::eth::{BlockRef, EthAddress, EthReceipt, MinedTx};
 
 #[async_trait::async_trait]
 pub trait EthTxSource: Send + Sync {
@@ -11,7 +11,7 @@ pub trait EthTxSource: Send + Sync {
         &self,
         lower_block: u64,
         highest_block: u64,
-    ) -> BoxStream<'_, Result<EthTx, io::Error>>;
+    ) -> BoxStream<'_, Result<MinedTx, io::Error>>;
 }
 
 #[async_trait::async_trait]

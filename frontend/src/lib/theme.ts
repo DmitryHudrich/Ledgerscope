@@ -31,6 +31,7 @@ export interface VizPalette {
   eoa: string;
   contract: string;
   focus: string;
+  token: string;
   edge: string;
 }
 
@@ -44,6 +45,7 @@ const ROLES: Record<keyof VizPalette, string> = {
   eoa: '--series-eoa',
   contract: '--series-contract',
   focus: '--series-focus',
+  token: '--series-token',
   edge: '--edge',
 };
 

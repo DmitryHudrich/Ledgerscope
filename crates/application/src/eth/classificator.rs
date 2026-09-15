@@ -1,9 +1,10 @@
-use std::{io, sync::Arc};
+use std::{collections::HashMap, fmt, io, sync::Arc};
 
 use alloy_primitives::{B256, Bytes, U256, b256};
+use tokio::sync::{Mutex, OnceCell};
 
 use domain::eth::{
-    BlockRef, EthAddress, EthLog, EthTx,
+    BlockRef, EthAddress, EthLog, MinedTx,
     graph::{ContractAction, Interaction, InteractionKind, NativeTransfer},
 };
 
@@ -14,6 +15,10 @@ const TRANSFER_TOPIC_SIGNATURE: B256 =
 
 const SYMBOL_SELECTOR: [u8; 4] = [0x95, 0xd8, 0x9b, 0x41];
 
+const DECIMALS_SELECTOR: [u8; 4] = [0x31, 0x3c, 0xe5, 0x67];
+
+const DEFAULT_DECIMALS: u8 = 18;
+
 #[derive(Debug)]
 pub enum ClassificateError {
     InvariantNarushen,
@@ -21,24 +26,118 @@ pub enum ClassificateError {
     Rpc(io::Error),
 }
 
+impl fmt::Display for ClassificateError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ClassificateError::InvariantNarushen => write!(f, "transaction broke its own shape"),
+            ClassificateError::ReceiptMissing => write!(f, "node knows no receipt for it"),
+            ClassificateError::Rpc(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for ClassificateError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            ClassificateError::Rpc(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+struct AskAgainLater;
+
+#[derive(Clone)]
+struct TokenMeta {
+    symbol: String,
+    decimals: u8,
+}
+
 pub struct FulliestEthTxClassificator {
     rpc_service: Arc<dyn EthRpcSource>,
+    token_meta: Mutex<HashMap<EthAddress, Arc<OnceCell<TokenMeta>>>>,
 }
 
 impl FulliestEthTxClassificator {
     pub fn new(rpc_service: Arc<dyn EthRpcSource>) -> Self {
-        Self { rpc_service }
+        Self {
+            rpc_service,
+            token_meta: Mutex::new(HashMap::new()),
+        }
     }
 
-    async fn token_name(&self, token: &EthAddress) -> Result<String, ClassificateError> {
+    async fn token_meta(&self, token: &EthAddress) -> TokenMeta {
+        let meta = {
+            let mut token_meta = self.token_meta.lock().await;
+            token_meta.entry(*token).or_default().clone()
+        };
+
+        match meta.get_or_try_init(|| self.ask_token_meta(token)).await {
+            Ok(meta) => meta.clone(),
+            Err(AskAgainLater) => TokenMeta {
+                symbol: token.to_string(),
+                decimals: DEFAULT_DECIMALS,
+            },
+        }
+    }
+
+    async fn ask_token_meta(&self, token: &EthAddress) -> Result<TokenMeta, AskAgainLater> {
+        let (symbol, decimals) = tokio::join!(
+            self.ask_token_symbol(token),
+            self.ask_token_decimals(token)
+        );
+
+        Ok(TokenMeta {
+            symbol: symbol?,
+            decimals: decimals?,
+        })
+    }
+
+    async fn ask_token_symbol(&self, token: &EthAddress) -> Result<String, AskAgainLater> {
         let returned = self
             .rpc_service
             .call(token, &SYMBOL_SELECTOR, BlockRef::Latest)
-            .await
-            .map_err(ClassificateError::Rpc)?;
+            .await;
 
-        Ok(decode_symbol(&returned).unwrap_or_else(|| token.to_string()))
+        match returned {
+            Ok(returned) => Ok(decode_symbol(&returned).unwrap_or_else(|| token.to_string())),
+            Err(error) if answered_with_revert(&error) => {
+                tracing::warn!("{token} has no symbol(), naming it by address from now on");
+                Ok(token.to_string())
+            }
+            Err(error) => {
+                tracing::warn!(
+                    "symbol() on {token} failed, naming it by address this time: {error}"
+                );
+                Err(AskAgainLater)
+            }
+        }
     }
+
+    async fn ask_token_decimals(&self, token: &EthAddress) -> Result<u8, AskAgainLater> {
+        let returned = self
+            .rpc_service
+            .call(token, &DECIMALS_SELECTOR, BlockRef::Latest)
+            .await;
+
+        match returned {
+            Ok(returned) => Ok(decode_decimals(&returned).unwrap_or(DEFAULT_DECIMALS)),
+            Err(error) if answered_with_revert(&error) => {
+                tracing::warn!("{token} has no decimals(), assuming {DEFAULT_DECIMALS} from now on");
+                Ok(DEFAULT_DECIMALS)
+            }
+            Err(error) => {
+                tracing::warn!(
+                    "decimals() on {token} failed, assuming {DEFAULT_DECIMALS} this time: {error}"
+                );
+                Err(AskAgainLater)
+            }
+        }
+    }
+}
+
+fn answered_with_revert(error: &io::Error) -> bool {
+    error.to_string().contains("execution reverted")
 }
 
 struct Erc20Transfer {
@@ -91,20 +190,20 @@ fn decode_symbol(returned: &Bytes) -> Option<String> {
         .filter(|name| !name.is_empty())
 }
 
+fn decode_decimals(returned: &Bytes) -> Option<u8> {
+    let word = returned.get(..32)?;
+    u8::try_from(U256::from_be_slice(word)).ok().filter(|d| *d <= 36)
+}
+
 #[async_trait::async_trait]
 pub trait EthTxClassificator: Send + Sync {
-    async fn classificate(&self, tx: EthTx) -> Result<Interaction, ClassificateError>;
+    async fn classificate(&self, mined: MinedTx) -> Result<Interaction, ClassificateError>;
 }
 
 #[async_trait::async_trait]
 impl EthTxClassificator for FulliestEthTxClassificator {
-    async fn classificate(&self, tx: EthTx) -> Result<Interaction, ClassificateError> {
-        let receipt = self
-            .rpc_service
-            .receipt(tx.tx_hash())
-            .await
-            .map_err(ClassificateError::Rpc)?
-            .ok_or(ClassificateError::ReceiptMissing)?;
+    async fn classificate(&self, mined: MinedTx) -> Result<Interaction, ClassificateError> {
+        let (tx, receipt) = mined.into_parts();
 
         if tx.to() == Some(&EthAddress::ZERO) {
             return Ok(Interaction::new(receipt, InteractionKind::Protocol));
@@ -139,12 +238,17 @@ impl EthTxClassificator for FulliestEthTxClassificator {
         let erc20 = receipt.logs().iter().find_map(decode_erc20_transfer);
 
         let contract_interaction_type = match erc20 {
-            Some(transfer) => ContractAction::Erc20Transfer {
-                from: transfer.from,
-                to: transfer.to,
-                amount: transfer.amount,
-                token_name: self.token_name(&transfer.token).await?,
-            },
+            Some(transfer) => {
+                let meta = self.token_meta(&transfer.token).await;
+                ContractAction::Erc20Transfer {
+                    token: transfer.token,
+                    from: transfer.from,
+                    to: transfer.to,
+                    amount: transfer.amount,
+                    token_name: meta.symbol,
+                    decimals: meta.decimals,
+                }
+            }
             None => ContractAction::Other,
         };
 

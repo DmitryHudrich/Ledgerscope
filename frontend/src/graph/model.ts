@@ -1,13 +1,26 @@
 import {
-  contractAddressOf,
+  ETH_ASSET,
+  contractAddressesOf,
   edgeEndpoints,
-  edgeWei,
-  isContractEdge,
+  edgeFlavor,
+  edgeTransfer,
+  type EdgeTransfer,
 } from '../api/edges';
 import type { GraphEdge, GraphResponse } from '../api/types';
 import { weiToEth } from '../lib/format';
 
 export type NodeKind = 'focus' | 'contract' | 'eoa';
+
+export type LinkTone = 'eth' | 'token' | 'mixed' | 'call';
+
+export interface AssetFlow {
+  key: string;
+  symbol: string;
+  decimals: number;
+  native: boolean;
+  amount: bigint;
+  count: number;
+}
 
 export interface GraphNode {
   id: string;
@@ -16,6 +29,9 @@ export interface GraphNode {
   outCount: number;
   valueIn: bigint;
   valueOut: bigint;
+
+  assetsIn: Map<string, AssetFlow>;
+  assetsOut: Map<string, AssetFlow>;
 
   turnover: number;
 
@@ -43,10 +59,14 @@ export interface GraphLink {
   count: number;
 
   value: bigint;
+  assets: AssetFlow[];
 
   weight: number;
 
+  transfers: number;
   calls: number;
+  failed: number;
+  tone: LinkTone;
   width: number;
 
   curve: number;
@@ -59,6 +79,10 @@ export interface GraphStats {
   txs: number;
   contracts: number;
   volume: bigint;
+  assets: AssetFlow[];
+  transfers: number;
+  tokenTransfers: number;
+  calls: number;
   minBlock: number;
   maxBlock: number;
   firstSeen: number;
@@ -66,6 +90,7 @@ export interface GraphStats {
 
   hiddenNodes: number;
   hiddenTxs: number;
+  failedTxs: number;
 }
 
 export interface GraphFilters {
@@ -73,9 +98,11 @@ export interface GraphFilters {
 
   minEth: number;
 
-  showCalls: boolean;
+  showNative: boolean;
 
-  showTransfers: boolean;
+  showTokens: boolean;
+
+  showCalls: boolean;
 
   hideIsolated: boolean;
 }
@@ -101,20 +128,26 @@ export const EMPTY_MODEL: GraphModel = {
     txs: 0,
     contracts: 0,
     volume: 0n,
+    assets: [],
+    transfers: 0,
+    tokenTransfers: 0,
+    calls: 0,
     minBlock: 0,
     maxBlock: 0,
     firstSeen: 0,
     lastSeen: 0,
     hiddenNodes: 0,
     hiddenTxs: 0,
+    failedTxs: 0,
   },
 };
 
 export const DEFAULT_FILTERS: GraphFilters = {
   focus: '',
   minEth: 0,
+  showNative: true,
+  showTokens: true,
   showCalls: true,
-  showTransfers: true,
   hideIsolated: true,
 };
 
@@ -130,6 +163,8 @@ function blank(id: string, kind: NodeKind): GraphNode {
     outCount: 0,
     valueIn: 0n,
     valueOut: 0n,
+    assetsIn: new Map(),
+    assetsOut: new Map(),
     turnover: 0,
     degree: 0,
     firstBlock: Number.POSITIVE_INFINITY,
@@ -142,6 +177,49 @@ function blank(id: string, kind: NodeKind): GraphNode {
     vx: 0,
     vy: 0,
   };
+}
+
+function bump(into: Map<string, AssetFlow>, transfer: EdgeTransfer): void {
+  let flow = into.get(transfer.key);
+  if (!flow) {
+    flow = {
+      key: transfer.key,
+      symbol: transfer.symbol,
+      decimals: transfer.decimals,
+      native: transfer.native,
+      amount: 0n,
+      count: 0,
+    };
+    into.set(transfer.key, flow);
+  }
+  flow.amount += transfer.amount;
+  flow.count += 1;
+}
+
+function merge(into: Map<string, AssetFlow>, flows: Iterable<AssetFlow>): void {
+  for (const flow of flows) {
+    const current = into.get(flow.key);
+    if (current) {
+      current.amount += flow.amount;
+      current.count += flow.count;
+    } else {
+      into.set(flow.key, { ...flow });
+    }
+  }
+}
+
+export function sortedAssets(flows: Iterable<AssetFlow>): AssetFlow[] {
+  return [...flows].sort((a, b) => {
+    if (a.native !== b.native) return a.native ? -1 : 1;
+    if (a.count !== b.count) return b.count - a.count;
+    return a.symbol.localeCompare(b.symbol);
+  });
+}
+
+function toneOf(ethCount: number, tokenCount: number, transfers: number): LinkTone {
+  if (transfers === 0) return 'call';
+  if (ethCount > 0 && tokenCount > 0) return 'mixed';
+  return tokenCount > 0 ? 'token' : 'eth';
 }
 
 export function buildGraph(
@@ -157,8 +235,7 @@ export function buildGraph(
 
   const contracts = new Set<string>();
   for (const edge of response.edges) {
-    const address = contractAddressOf(edge);
-    if (address) contracts.add(address.toLowerCase());
+    for (const address of contractAddressesOf(edge)) contracts.add(address.toLowerCase());
   }
 
   const kindOf = (id: string): NodeKind =>
@@ -180,22 +257,26 @@ export function buildGraph(
   };
 
   const bundles = new Map<string, GraphLink>();
-  let volume = 0n;
-  let minBlock = Number.POSITIVE_INFINITY;
-  let maxBlock = 0;
-  let firstSeen = Number.POSITIVE_INFINITY;
-  let lastSeen = 0;
+  const bundleAssets = new Map<string, Map<string, AssetFlow>>();
+  const ethCounts = new Map<string, number>();
+  const tokenCounts = new Map<string, number>();
   let hiddenTxs = 0;
 
   for (const edge of response.edges) {
-
     const endpoints = edgeEndpoints(edge);
     if (!endpoints) {
       hiddenTxs += 1;
       continue;
     }
-    const isCall = isContractEdge(edge);
-    if (isCall ? !filters.showCalls : !filters.showTransfers) {
+
+    const flavor = edgeFlavor(edge);
+    const allowed =
+      flavor === 'native'
+        ? filters.showNative
+        : flavor === 'token'
+          ? filters.showTokens
+          : filters.showCalls;
+    if (!allowed) {
       hiddenTxs += 1;
       continue;
     }
@@ -212,27 +293,54 @@ export function buildGraph(
         txs: [],
         count: 0,
         value: 0n,
+        assets: [],
         weight: 0,
+        transfers: 0,
         calls: 0,
+        failed: 0,
+        tone: 'call',
         width: 1,
         curve: 0,
         selfLoop: from === to,
       };
       bundles.set(key, bundle);
+      bundleAssets.set(key, new Map());
     }
+
     bundle.txs.push(edge);
     bundle.count += 1;
-    bundle.value += edgeWei(edge);
-    if (isCall) bundle.calls += 1;
+    if (!edge.succeeded) bundle.failed += 1;
+
+    const transfer = edge.succeeded ? edgeTransfer(edge) : null;
+    if (transfer) {
+      bundle.transfers += 1;
+      if (transfer.native) {
+        bundle.value += transfer.amount;
+        ethCounts.set(key, (ethCounts.get(key) ?? 0) + 1);
+      } else {
+        tokenCounts.set(key, (tokenCounts.get(key) ?? 0) + 1);
+      }
+      bump(bundleAssets.get(key)!, transfer);
+    } else {
+      bundle.calls += 1;
+    }
   }
 
   const links: GraphLink[] = [];
   for (const bundle of bundles.values()) {
-    if (minWei > 0n && bundle.value < minWei) {
+    const flows = bundleAssets.get(bundle.id)!;
+    const carriesToken = [...flows.values()].some((flow) => !flow.native);
+    if (minWei > 0n && !carriesToken && bundle.value < minWei) {
       hiddenTxs += bundle.count;
       continue;
     }
     bundle.weight = weiToEth(bundle.value);
+    bundle.assets = sortedAssets(flows.values());
+    bundle.tone = toneOf(
+      ethCounts.get(bundle.id) ?? 0,
+      tokenCounts.get(bundle.id) ?? 0,
+      bundle.transfers,
+    );
     links.push(bundle);
   }
 
@@ -251,6 +359,13 @@ export function buildGraph(
     else neighbors.set(a, new Set([b]));
   };
 
+  const totalAssets = new Map<string, AssetFlow>();
+  let volume = 0n;
+  let minBlock = Number.POSITIVE_INFINITY;
+  let maxBlock = 0;
+  let firstSeen = Number.POSITIVE_INFINITY;
+  let lastSeen = 0;
+
   for (const link of links) {
     const source = link.source;
     const target = link.target;
@@ -260,8 +375,12 @@ export function buildGraph(
     target.inCount += link.count;
     target.valueIn += link.value;
 
+    merge(source.assetsOut, link.assets);
+    merge(target.assetsIn, link.assets);
+    merge(totalAssets, link.assets);
+    volume += link.value;
+
     for (const edge of link.txs) {
-      volume += edgeWei(edge);
       if (edge.block_number < minBlock) minBlock = edge.block_number;
       if (edge.block_number > maxBlock) maxBlock = edge.block_number;
       if (edge.timestamp && edge.timestamp < firstSeen) firstSeen = edge.timestamp;
@@ -291,7 +410,9 @@ export function buildGraph(
   const nodes = [...byId.values()];
   let maxTurnover = 0;
   let maxDegree = 0;
+  let maxNodeTxs = 0;
   let maxLinkWeight = 0;
+  let maxLinkCount = 0;
   for (const node of nodes) {
     node.turnover = weiToEth(node.valueIn + node.valueOut);
     node.degree = neighbors.get(node.id)?.size ?? 0;
@@ -299,28 +420,42 @@ export function buildGraph(
     if (node.firstSeen === Number.POSITIVE_INFINITY) node.firstSeen = 0;
     if (node.turnover > maxTurnover) maxTurnover = node.turnover;
     if (node.degree > maxDegree) maxDegree = node.degree;
+    const txs = node.inCount + node.outCount;
+    if (txs > maxNodeTxs) maxNodeTxs = txs;
   }
   for (const link of links) {
     if (link.weight > maxLinkWeight) maxLinkWeight = link.weight;
+    if (link.count > maxLinkCount) maxLinkCount = link.count;
   }
 
   for (const node of nodes) {
     const byValue = maxTurnover > 0 ? Math.sqrt(node.turnover / maxTurnover) : 0;
     const byDegree = maxDegree > 0 ? Math.sqrt(node.degree / maxDegree) : 0;
+    const byTxs =
+      maxNodeTxs > 0 ? Math.sqrt((node.inCount + node.outCount) / maxNodeTxs) : 0;
     node.r =
       NODE_MIN_R +
-      NODE_MAX_GROWTH * Math.max(byValue, byDegree * 0.7) +
+      NODE_MAX_GROWTH * Math.max(byValue, byDegree * 0.7, byTxs * 0.55) +
       (node.kind === 'focus' ? FOCUS_BONUS : 0);
   }
   for (const link of links) {
-    const t = maxLinkWeight > 0 ? Math.sqrt(link.weight / maxLinkWeight) : 0;
-    link.width = 1 + 4 * t;
+    const byValue = maxLinkWeight > 0 ? Math.sqrt(link.weight / maxLinkWeight) : 0;
+    const byCount = maxLinkCount > 0 ? Math.sqrt(link.count / maxLinkCount) : 0;
+    link.width = 1 + 4 * Math.max(byValue, byCount * 0.7);
   }
 
   assignCurves(links);
   seedPositions(nodes);
 
-  const hiddenNodes = Math.max(0, new Set(response.nodes.map((n) => n.toLowerCase())).size - nodes.length);
+  const hiddenNodes = Math.max(
+    0,
+    new Set(response.nodes.map((n) => n.toLowerCase())).size - nodes.length,
+  );
+
+  const transfers = links.reduce((sum, link) => sum + link.transfers, 0);
+  const tokenTransfers = [...totalAssets.values()]
+    .filter((flow) => !flow.native)
+    .reduce((sum, flow) => sum + flow.count, 0);
 
   return {
     nodes,
@@ -334,14 +469,43 @@ export function buildGraph(
       txs: links.reduce((sum, link) => sum + link.count, 0),
       contracts: nodes.filter((n) => n.kind === 'contract').length,
       volume,
+      assets: sortedAssets(totalAssets.values()),
+      transfers,
+      tokenTransfers,
+      calls: links.reduce((sum, link) => sum + link.calls, 0),
       minBlock: Number.isFinite(minBlock) ? minBlock : 0,
       maxBlock,
       firstSeen: Number.isFinite(firstSeen) ? firstSeen : 0,
       lastSeen,
       hiddenNodes,
       hiddenTxs,
+      failedTxs: links.reduce((sum, link) => sum + link.failed, 0),
     },
   };
+}
+
+export function netFlow(node: GraphNode): AssetFlow[] {
+  const keys = new Set([...node.assetsIn.keys(), ...node.assetsOut.keys()]);
+  const out: AssetFlow[] = [];
+  for (const key of keys) {
+    const inflow = node.assetsIn.get(key);
+    const outflow = node.assetsOut.get(key);
+    const sample = inflow ?? outflow;
+    if (!sample) continue;
+    out.push({
+      key,
+      symbol: sample.symbol,
+      decimals: sample.decimals,
+      native: sample.native,
+      amount: (inflow?.amount ?? 0n) - (outflow?.amount ?? 0n),
+      count: (inflow?.count ?? 0) + (outflow?.count ?? 0),
+    });
+  }
+  return sortedAssets(out);
+}
+
+export function assetLabel(flow: AssetFlow): string {
+  return flow.native ? ETH_ASSET : flow.symbol;
 }
 
 function assignCurves(links: GraphLink[]): void {

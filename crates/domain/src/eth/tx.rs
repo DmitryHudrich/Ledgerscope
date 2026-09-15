@@ -1,9 +1,9 @@
 use alloy_primitives::{Bytes, TxHash, U256};
 use bon::Builder;
 
-use crate::eth::EthAddress;
+use crate::eth::{EthAddress, EthReceipt};
 
-#[derive(Eq, Clone, Hash, PartialEq, Builder)]
+#[derive(Eq, Clone, Debug, Hash, PartialEq, Builder)]
 pub struct EthTx {
     pub(crate) tx_hash: TxHash,
     pub(crate) block_number: u64,
@@ -43,5 +43,29 @@ impl EthTx {
 
     pub fn data(&self) -> &Bytes {
         &self.data
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct MinedTx {
+    tx: EthTx,
+    receipt: EthReceipt,
+}
+
+impl MinedTx {
+    pub fn new(tx: EthTx, receipt: EthReceipt) -> Self {
+        Self { tx, receipt }
+    }
+
+    pub fn tx(&self) -> &EthTx {
+        &self.tx
+    }
+
+    pub fn receipt(&self) -> &EthReceipt {
+        &self.receipt
+    }
+
+    pub fn into_parts(self) -> (EthTx, EthReceipt) {
+        (self.tx, self.receipt)
     }
 }

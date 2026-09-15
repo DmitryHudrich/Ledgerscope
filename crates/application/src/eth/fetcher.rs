@@ -52,18 +52,28 @@ impl EthFetcher {
         self.eth_tx_source
             .txs(lower_block, highest_block)
             .await
-            .for_each_concurrent(20, |tx| async move {
-                match tx {
-                    Ok(tx) => {
-                        let block_number = tx.block_number();
-                        let meta = TxMeta::from(&tx);
+            .for_each_concurrent(20, |mined| async move {
+                match mined {
+                    Ok(mined) => {
+                        let block_number = mined.tx().block_number();
+                        let meta = TxMeta::from(mined.tx());
 
-                        let interaction =
-                            self.tx_classificator.classificate(tx).await.expect("Later");
+                        let interaction = match self.tx_classificator.classificate(mined).await {
+                            Ok(interaction) => interaction,
+                            Err(e) => {
+                                tracing::error!("skipping {}: {}", meta.tx_hash(), e);
+                                return;
+                            }
+                        };
 
                         let mut graph_lock = self.graph.lock().await;
-                        graph_lock.insert(InteractionEdge::new(meta, interaction));
+                        let placed =
+                            graph_lock.insert(InteractionEdge::new(meta.clone(), interaction));
                         drop(graph_lock);
+
+                        if !placed {
+                            tracing::debug!("{} has no endpoints to draw", meta.tx_hash());
+                        }
 
                         let mut seeded_lock = self.seeded_range.lock().await;
                         seeded_lock.insert(block_number..=block_number);

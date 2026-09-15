@@ -1,6 +1,14 @@
-import { formatCompact, formatCount, formatEth, formatTimestamp } from '../lib/format';
-import type { GraphFilters, GraphModel } from '../graph/model';
+import {
+  formatCompact,
+  formatCount,
+  formatEth,
+  formatTimestamp,
+  formatUnits,
+} from '../lib/format';
+import { assetLabel, type GraphFilters, type GraphModel } from '../graph/model';
 import { IconSearch } from './Icons';
+
+const ASSET_PREVIEW = 6;
 
 interface Props {
   model: GraphModel;
@@ -43,10 +51,18 @@ export function SidePanel({
           <div className="stat-grid">
             <Stat label="Addresses" value={formatCount(stats.nodes)} />
             <Stat label="Flows" value={formatCount(stats.links)} />
-            <Stat label="Transactions" value={formatCount(stats.txs)} />
-            <Stat label="Volume" value={formatEth(stats.volume)} unit="ETH" />
+            <Stat label="Transfers" value={formatCount(stats.transfers)} />
+            <Stat label="ETH moved" value={formatEth(stats.volume)} unit="ETH" />
           </div>
           <dl className="meta-list">
+            <div>
+              <dt>Token transfers</dt>
+              <dd>{formatCount(stats.tokenTransfers)}</dd>
+            </div>
+            <div>
+              <dt>Contract calls</dt>
+              <dd>{formatCount(stats.calls)}</dd>
+            </div>
             <div>
               <dt>Blocks</dt>
               <dd>
@@ -61,6 +77,12 @@ export function SidePanel({
               <dt>Last tx</dt>
               <dd>{formatTimestamp(stats.lastSeen)}</dd>
             </div>
+            {stats.failedTxs > 0 && (
+              <div>
+                <dt>Reverted</dt>
+                <dd>{formatCount(stats.failedTxs)} tx</dd>
+              </div>
+            )}
             {stats.hiddenTxs > 0 && (
               <div>
                 <dt>Filtered out</dt>
@@ -100,7 +122,7 @@ export function SidePanel({
 
           <div className="control">
             <div className="control-head">
-              <label htmlFor="f-min">Minimum flow</label>
+              <label htmlFor="f-min">Minimum ETH flow</label>
               <span className="control-value">
                 {filters.minEth <= 0 ? 'any' : `${formatCompact(filters.minEth)} ETH`}
               </span>
@@ -119,10 +141,18 @@ export function SidePanel({
           <label className="check">
             <input
               type="checkbox"
-              checked={filters.showTransfers}
-              onChange={(e) => patch({ showTransfers: e.target.checked })}
+              checked={filters.showNative}
+              onChange={(e) => patch({ showNative: e.target.checked })}
             />
-            Value transfers
+            ETH transfers
+          </label>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={filters.showTokens}
+              onChange={(e) => patch({ showTokens: e.target.checked })}
+            />
+            Token transfers
           </label>
           <label className="check">
             <input
@@ -130,7 +160,7 @@ export function SidePanel({
               checked={filters.showCalls}
               onChange={(e) => patch({ showCalls: e.target.checked })}
             />
-            Contract interactions
+            Contract calls & deployments
           </label>
           <label className="check">
             <input
@@ -140,7 +170,42 @@ export function SidePanel({
             />
             Hide unconnected addresses
           </label>
+
+          <button
+            type="button"
+            className="btn btn-ghost"
+            style={{ marginTop: 8 }}
+            onClick={() =>
+              patch({ showNative: true, showTokens: true, showCalls: false, minEth: 0 })
+            }
+          >
+            Transfers only
+          </button>
         </section>
+
+        {stats.assets.length > 0 && (
+          <section className="panel-section">
+            <h2 className="panel-title">Assets moved · {formatCount(stats.assets.length)}</h2>
+            <div className="asset-list">
+              {stats.assets.slice(0, ASSET_PREVIEW).map((flow) => (
+                <div className="asset-row" key={flow.key} title={flow.native ? 'ETH' : flow.key}>
+                  <span
+                    className={`dot dot-${flow.native ? 'focus' : 'token'}`}
+                    aria-hidden="true"
+                  />
+                  <span className="asset-symbol">{assetLabel(flow)}</span>
+                  <span className="asset-amount">{formatUnits(flow.amount, flow.decimals)}</span>
+                  <span className="asset-count">{formatCount(flow.count)} tx</span>
+                </div>
+              ))}
+            </div>
+            {stats.assets.length > ASSET_PREVIEW && (
+              <p className="legend-note">
+                +{formatCount(stats.assets.length - ASSET_PREVIEW)} more assets in this range.
+              </p>
+            )}
+          </section>
+        )}
 
         <section className="panel-section">
           <h2 className="panel-title">Legend</h2>
@@ -149,9 +214,21 @@ export function SidePanel({
             <LegendRow kind="eoa" label="Wallet (EOA)" count={counts.eoa} />
             <LegendRow kind="contract" label="Contract" count={counts.contract} square />
           </div>
+          <div className="legend">
+            <div className="legend-row">
+              <span className="swatch swatch-line swatch-token" aria-hidden="true" />
+              Token transfer edge
+            </div>
+            <div className="legend-row">
+              <span className="swatch swatch-line swatch-dashed" aria-hidden="true" />
+              Contract call edge
+            </div>
+          </div>
           <p className="legend-note">
-            Node size = ETH turnover · edge width = ETH moved · dashed edge = contract interaction ·
-            arrow and moving dots point from sender to receiver. Token transfers carry no ETH value.
+            Edges connect sender to receiver: for an ERC-20 transfer that is the token's{' '}
+            <code className="mono">from</code>/<code className="mono">to</code>, not the contract
+            you called. Node size = ETH turnover, counterparties and tx count · edge width = ETH
+            moved and tx count · the minimum-flow slider only filters ETH-only edges.
           </p>
         </section>
       </div>

@@ -24,6 +24,45 @@ export function formatEth(wei: bigint): string {
   return formatCount(Math.round(value));
 }
 
+export function unitsToNumber(raw: bigint, decimals: number): number {
+  if (decimals <= 0) return Number(raw);
+  const base = 10n ** BigInt(decimals);
+  const whole = raw / base;
+  const fraction = raw % base;
+  return Number(whole) + Number(fraction) / Number(base);
+}
+
+export function formatUnits(raw: bigint, decimals: number): string {
+  const negative = raw < 0n;
+  const value = negative ? -raw : raw;
+  const sign = negative ? '−' : '';
+
+  if (value === 0n) return '0';
+
+  const base = decimals > 0 ? 10n ** BigInt(decimals) : 1n;
+  const whole = value / base;
+  const fraction = value % base;
+
+  if (whole >= 1000n) return sign + formatCount(Number(whole));
+
+  if (whole > 0n) {
+    const digits = fraction.toString().padStart(decimals, '0').slice(0, 4).replace(/0+$/, '');
+    return `${sign}${whole}${digits ? `.${digits}` : ''}`;
+  }
+
+  const digits = fraction.toString().padStart(decimals, '0');
+  const firstSignificant = digits.search(/[1-9]/);
+  if (firstSignificant < 0) return '0';
+  if (firstSignificant >= 6) return `${sign}<0.000001`;
+
+  const trimmed = digits.slice(0, firstSignificant + 4).replace(/0+$/, '');
+  return `${sign}0.${trimmed}`;
+}
+
+export function formatAmount(raw: bigint, decimals: number, symbol: string): string {
+  return `${formatUnits(raw, decimals)} ${symbol}`;
+}
+
 export function formatCount(value: number): string {
   return value.toLocaleString('en-US');
 }

@@ -20,6 +20,7 @@ pub struct EdgeResponse {
     tx_hash: String,
     block_number: u64,
     timestamp: u64,
+    succeeded: bool,
 
     #[serde(flatten)]
     interaction: InteractionResponse,
@@ -49,10 +50,12 @@ pub enum InteractionResponse {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ContractActionResponse {
     Erc20Transfer {
+        token: String,
         from: String,
         to: String,
         amount: String,
         token_name: String,
+        decimals: u8,
     },
     Other,
 }
@@ -73,6 +76,7 @@ impl From<&InteractionEdge> for EdgeResponse {
             tx_hash: meta.tx_hash().to_string(),
             block_number: meta.block_number(),
             timestamp: meta.timestamp(),
+            succeeded: edge.interaction().receipt().succeeded(),
             interaction: edge.interaction().into(),
         }
     }
@@ -117,15 +121,19 @@ impl From<&ContractAction> for ContractActionResponse {
     fn from(action: &ContractAction) -> Self {
         match action {
             ContractAction::Erc20Transfer {
+                token,
                 from,
                 to,
                 amount,
                 token_name,
+                decimals,
             } => Self::Erc20Transfer {
+                token: token.to_string(),
                 from: from.to_string(),
                 to: to.to_string(),
                 amount: amount.to_string(),
                 token_name: token_name.clone(),
+                decimals: *decimals,
             },
             ContractAction::Other => Self::Other,
         }
@@ -176,6 +184,9 @@ mod tests {
                     .parse()
                     .unwrap(),
                 contract_interaction_type: ContractAction::Erc20Transfer {
+                    token: "0x3333333333333333333333333333333333333333"
+                        .parse()
+                        .unwrap(),
                     from: "0x1111111111111111111111111111111111111111"
                         .parse()
                         .unwrap(),
@@ -184,6 +195,7 @@ mod tests {
                         .unwrap(),
                     amount: U256::from(1_000_000),
                     token_name: "USDC".to_owned(),
+                    decimals: 6,
                 },
             },
         );
@@ -204,6 +216,7 @@ mod tests {
                         "tx_hash": "0xabababababababababababababababababababababababababababababababab",
                         "block_number": 21_000_000,
                         "timestamp": 1_737_000_000,
+                        "succeeded": true,
                         "kind": "native_transfer",
                         "from": "0x1111111111111111111111111111111111111111",
                         "to": "0x2222222222222222222222222222222222222222",
@@ -213,15 +226,18 @@ mod tests {
                         "tx_hash": "0xabababababababababababababababababababababababababababababababab",
                         "block_number": 21_000_000,
                         "timestamp": 1_737_000_000,
+                        "succeeded": true,
                         "kind": "contract_interaction",
                         "interactor": "0x1111111111111111111111111111111111111111",
                         "contract_address": "0x3333333333333333333333333333333333333333",
                         "action": {
                             "kind": "erc20_transfer",
+                            "token": "0x3333333333333333333333333333333333333333",
                             "from": "0x1111111111111111111111111111111111111111",
                             "to": "0x2222222222222222222222222222222222222222",
                             "amount": "1000000",
-                            "token_name": "USDC"
+                            "token_name": "USDC",
+                            "decimals": 6
                         }
                     }
                 ]

@@ -9,7 +9,7 @@ import {
   type Simulation,
 } from 'd3-force';
 
-import { formatCount, formatEth, shortAddress } from '../lib/format';
+import { formatCount, formatEth, formatUnits, shortAddress } from '../lib/format';
 import type { VizPalette } from '../lib/theme';
 import {
   contentBounds,
@@ -20,7 +20,7 @@ import {
   type LabelMode,
   type Transform,
 } from './draw';
-import type { GraphLink, GraphModel, GraphNode } from './model';
+import { assetLabel, netFlow, type GraphLink, type GraphModel, type GraphNode } from './model';
 
 export interface GraphHandle {
   fit(): void;
@@ -76,7 +76,7 @@ export function GraphCanvas({
   const retained = useRef<{ nodes: Set<string>; links: Set<string> } | null>(null);
   const dirty = useRef(true);
 
-  const fitMode = useRef<'off' | 'follow' | 'once'>('follow');
+  const fitMode = useRef<'off' | 'once'>('once');
 
   const [hover, setHover] = useState<Hover | null>(null);
 
@@ -115,20 +115,21 @@ export function GraphCanvas({
       .force('collide', forceCollide<GraphNode>((node) => node.r + 7).iterations(2))
       .force('x', forceX(0).strength(0.035))
       .force('y', forceY(0).strength(0.035))
-      .velocityDecay(0.34)
-      .alphaDecay(0.021);
+      .velocityDecay(0.42)
+      .alphaDecay(0.045)
+      .alphaMin(0.01);
 
     sim.stop();
-    sim.tick(Math.round(Math.min(220, Math.max(50, 14000 / nodes.length))));
+    const budget = nodes.length > 1200 ? 90 : nodes.length > 400 ? 170 : 320;
+    for (let i = 0; i < budget && sim.alpha() > sim.alphaMin(); i += 1) sim.tick();
 
     simulation.current = sim;
     sim.on('tick', () => {
       dirty.current = true;
     });
 
-    fitMode.current = 'follow';
+    fitMode.current = 'once';
     dirty.current = true;
-    sim.alpha(0.45).restart();
 
     return () => {
       sim.on('tick', null);
@@ -140,7 +141,6 @@ export function GraphCanvas({
     const sim = simulation.current;
     if (!sim) return;
     if (frozen) sim.stop();
-    else sim.alpha(Math.max(sim.alpha(), 0.12)).restart();
     dirty.current = true;
   }, [frozen, model]);
 
@@ -181,11 +181,10 @@ export function GraphCanvas({
       const hoverLink = hoveredLink.current;
       const settling = (simulation.current?.alpha() ?? 0) > 0.005 && !frozen;
 
-      if (fitMode.current !== 'off' && state.model.nodes.length > 0) {
+      if (fitMode.current === 'once' && state.model.nodes.length > 0) {
         const settled = ease(transform.current, fitTarget(state.model, size.current));
         dirty.current = true;
-        if (fitMode.current === 'follow' && !settling) fitMode.current = 'once';
-        if (fitMode.current === 'once' && settled) fitMode.current = 'off';
+        if (settled) fitMode.current = 'off';
       }
 
       let sets = retained.current;
@@ -469,7 +468,18 @@ const KIND_LABEL: Record<GraphNode['kind'], string> = {
   eoa: 'Wallet',
 };
 
+const TONE_LABEL: Record<GraphLink['tone'], string> = {
+  eth: 'ETH transfers',
+  token: 'Token transfers',
+  mixed: 'ETH + token transfers',
+  call: 'Contract interactions',
+};
+
+const TIP_ASSETS = 4;
+
 function NodeTip({ node }: { node: GraphNode }) {
+  const tokens = netFlow(node).filter((flow) => !flow.native && flow.amount !== 0n);
+
   return (
     <>
       <div className="tip-head">
@@ -495,6 +505,25 @@ function NodeTip({ node }: { node: GraphNode }) {
           <dd>{formatCount(node.degree)}</dd>
         </div>
       </dl>
+      {tokens.length > 0 && (
+        <dl className="tip-rows tip-assets">
+          {tokens.slice(0, TIP_ASSETS).map((flow) => (
+            <div key={flow.key}>
+              <dt>{assetLabel(flow)}</dt>
+              <dd>
+                {flow.amount > 0n ? '+' : ''}
+                {formatUnits(flow.amount, flow.decimals)}
+              </dd>
+            </div>
+          ))}
+          {tokens.length > TIP_ASSETS && (
+            <div>
+              <dt>…</dt>
+              <dd>+{formatCount(tokens.length - TIP_ASSETS)} more</dd>
+            </div>
+          )}
+        </dl>
+      )}
     </>
   );
 }
@@ -503,26 +532,39 @@ function LinkTip({ link }: { link: GraphLink }) {
   return (
     <>
       <div className="tip-head">
-        <span className="tip-kind">
-          {link.calls === link.count
-            ? 'Contract interactions'
-            : link.calls > 0
-              ? 'Mixed'
-              : 'Transfers'}
-        </span>
+        <span className={`dot dot-${link.tone === 'call' ? 'eoa' : 'token'}`} aria-hidden="true" />
+        <span className="tip-kind">{TONE_LABEL[link.tone]}</span>
       </div>
       <div className="tip-address">
         {shortAddress(link.source.id, 8, 4)} → {shortAddress(link.target.id, 8, 4)}
       </div>
       <dl className="tip-rows">
-        <div>
-          <dt>Value</dt>
-          <dd>{formatEth(link.value)} ETH</dd>
-        </div>
-        <div>
-          <dt>Txs</dt>
-          <dd>{formatCount(link.count)}</dd>
-        </div>
+        {link.assets.slice(0, TIP_ASSETS).map((flow) => (
+          <div key={flow.key}>
+            <dt>{assetLabel(flow)}</dt>
+            <dd>
+              {formatUnits(flow.amount, flow.decimals)} · {formatCount(flow.count)} tx
+            </dd>
+          </div>
+        ))}
+        {link.assets.length > TIP_ASSETS && (
+          <div>
+            <dt>…</dt>
+            <dd>+{formatCount(link.assets.length - TIP_ASSETS)} assets</dd>
+          </div>
+        )}
+        {link.calls > 0 && (
+          <div>
+            <dt>Calls</dt>
+            <dd>{formatCount(link.calls)}</dd>
+          </div>
+        )}
+        {link.failed > 0 && (
+          <div>
+            <dt>Reverted</dt>
+            <dd>{formatCount(link.failed)}</dd>
+          </div>
+        )}
       </dl>
     </>
   );

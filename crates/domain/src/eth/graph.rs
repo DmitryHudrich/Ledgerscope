@@ -8,11 +8,13 @@ use crate::eth::{EthAddress, EthReceipt, EthTx};
 #[derive(Clone, Debug)]
 pub enum ContractAction {
     Erc20Transfer {
+        token: EthAddress,
         from: EthAddress,
         to: EthAddress,
 
         amount: U256,
         token_name: String,
+        decimals: u8,
     },
     Other,
 }
@@ -70,21 +72,21 @@ pub enum InteractionKind {
 }
 
 impl InteractionKind {
-    fn endpoints(&self) -> (&EthAddress, &EthAddress) {
+    fn endpoints(&self) -> Option<(&EthAddress, &EthAddress)> {
         match self {
-            InteractionKind::Protocol => todo!(),
-            InteractionKind::NativeTransfer(NativeTransfer { from, to, .. }) => (from, to),
+            InteractionKind::Protocol => None,
+            InteractionKind::NativeTransfer(NativeTransfer { from, to, .. }) => Some((from, to)),
             InteractionKind::ContractDeployment {
                 contract_address,
                 deployer,
-            } => (deployer, contract_address),
+            } => Some((deployer, contract_address)),
             InteractionKind::ContractInteraction {
                 contract_address,
                 interactor,
                 contract_interaction_type,
             } => match contract_interaction_type {
-                ContractAction::Erc20Transfer { from, to, .. } => (from, to),
-                ContractAction::Other => (interactor, contract_address),
+                ContractAction::Erc20Transfer { from, to, .. } => Some((from, to)),
+                ContractAction::Other => Some((interactor, contract_address)),
             },
         }
     }
@@ -109,7 +111,7 @@ impl Interaction {
         &self.kind
     }
 
-    fn endpoints(&self) -> (&EthAddress, &EthAddress) {
+    fn endpoints(&self) -> Option<(&EthAddress, &EthAddress)> {
         self.kind.endpoints()
     }
 }
@@ -178,11 +180,15 @@ impl InteractionGraph {
         }
     }
 
-    pub fn insert(&mut self, edge: InteractionEdge) {
-        let (from, to) = edge.interaction().endpoints();
-        let node_from = self.get_or_create_node(from);
-        let node_to = self.get_or_create_node(to);
+    pub fn insert(&mut self, edge: InteractionEdge) -> bool {
+        let Some((from, to)) = edge.interaction().endpoints() else {
+            return false;
+        };
+        let (from, to) = (*from, *to);
+        let node_from = self.get_or_create_node(&from);
+        let node_to = self.get_or_create_node(&to);
         self.graph.add_edge(node_from, node_to, edge);
+        true
     }
 
     fn get_or_create_node(&mut self, address: &EthAddress) -> NodeIndex {

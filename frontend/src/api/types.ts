@@ -2,16 +2,19 @@ export interface TxMeta {
   tx_hash: string;
   block_number: number;
   timestamp: number;
+  succeeded: boolean;
 }
 
 export type ContractAction =
   | {
       kind: 'erc20_transfer';
+      token: string;
       from: string;
       to: string;
 
       amount: string;
       token_name: string;
+      decimals: number;
     }
   | { kind: 'other' };
 

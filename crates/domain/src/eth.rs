@@ -10,4 +10,4 @@ pub use graph::{
     ContractAction, Interaction, InteractionEdge, InteractionGraph, InteractionKind, TxMeta,
 };
 pub use receipt::{EthLog, EthReceipt};
-pub use tx::EthTx;
+pub use tx::{EthTx, MinedTx};
