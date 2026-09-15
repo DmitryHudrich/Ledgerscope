@@ -1,20 +1,42 @@
-/** Wire format of `GET /graph` — mirrors `crates/web-api/src/dto.rs`. */
-
-export interface TxResponse {
+export interface TxMeta {
   tx_hash: string;
   block_number: number;
   timestamp: number;
-  /** Wei, decimal string (u128 on the server side). */
-  amount: string;
-  from: string;
-  to: string | null;
-  /** Calldata, `0x`-prefixed hex. */
-  data: string;
 }
+
+export type ContractAction =
+  | {
+      kind: 'erc20_transfer';
+      from: string;
+      to: string;
+
+      amount: string;
+      token_name: string;
+    }
+  | { kind: 'other' };
+
+export type Interaction =
+  | { kind: 'protocol' }
+  | {
+      kind: 'native_transfer';
+      from: string;
+      to: string;
+
+      amount: string;
+    }
+  | { kind: 'contract_deployment'; deployer: string; contract_address: string }
+  | {
+      kind: 'contract_interaction';
+      interactor: string;
+      contract_address: string;
+      action: ContractAction;
+    };
+
+export type GraphEdge = TxMeta & Interaction;
 
 export interface GraphResponse {
   nodes: string[];
-  edges: TxResponse[];
+  edges: GraphEdge[];
 }
 
 export interface GraphQuery {

@@ -1,10 +1,12 @@
-import type { GraphResponse, TxResponse } from '../api/types';
-import { hasCalldata, parseWei, weiToEth } from '../lib/format';
+import {
+  contractAddressOf,
+  edgeEndpoints,
+  edgeWei,
+  isContractEdge,
+} from '../api/edges';
+import type { GraphEdge, GraphResponse } from '../api/types';
+import { weiToEth } from '../lib/format';
 
-/**
- * `focus` is the wallet the query was seeded from; `contract` is inferred from
- * calldata landing on the address (the API exposes no code flag).
- */
 export type NodeKind = 'focus' | 'contract' | 'eoa';
 
 export interface GraphNode {
@@ -14,16 +16,16 @@ export interface GraphNode {
   outCount: number;
   valueIn: bigint;
   valueOut: bigint;
-  /** ETH turnover (in + out), what node area encodes. */
+
   turnover: number;
-  /** Distinct counterparties. */
+
   degree: number;
   firstBlock: number;
   lastBlock: number;
   firstSeen: number;
   lastSeen: number;
   r: number;
-  // Written by d3-force.
+
   index?: number;
   x: number;
   y: number;
@@ -37,15 +39,16 @@ export interface GraphLink {
   id: string;
   source: GraphNode;
   target: GraphNode;
-  txs: TxResponse[];
+  txs: GraphEdge[];
   count: number;
+
   value: bigint;
-  /** ETH moved across the whole bundle, what stroke width encodes. */
+
   weight: number;
-  /** Bundle carrying calldata (contract calls) rather than plain transfers. */
+
   calls: number;
   width: number;
-  /** Bow of the quadratic curve; opposite signs separate reciprocal flows. */
+
   curve: number;
   selfLoop: boolean;
 }
@@ -60,20 +63,20 @@ export interface GraphStats {
   maxBlock: number;
   firstSeen: number;
   lastSeen: number;
-  /** Nodes/txs dropped by the active filters. */
+
   hiddenNodes: number;
   hiddenTxs: number;
 }
 
 export interface GraphFilters {
   focus: string;
-  /** Drop bundles moving less than this many ETH. */
+
   minEth: number;
-  /** Include transactions carrying calldata. */
+
   showCalls: boolean;
-  /** Include plain value transfers. */
+
   showTransfers: boolean;
-  /** Drop addresses left without a visible edge. */
+
   hideIsolated: boolean;
 }
 
@@ -141,13 +144,6 @@ function blank(id: string, kind: NodeKind): GraphNode {
   };
 }
 
-/**
- * Folds the raw tx list into a node-link model: one bundle per ordered
- * (from -> to) pair, carrying its transactions for the detail views.
- *
- * `previous` seeds coordinates for addresses that survive a filter change, so
- * re-filtering nudges the layout instead of reshuffling it.
- */
 export function buildGraph(
   response: GraphResponse,
   filters: GraphFilters,
@@ -159,11 +155,10 @@ export function buildGraph(
       ? BigInt(Math.round(filters.minEth * 1e6)) * 10n ** 12n
       : 0n;
 
-  // Calldata anywhere on an address marks it a contract, even if the tx that
-  // proved it is later filtered out.
   const contracts = new Set<string>();
-  for (const tx of response.edges) {
-    if (tx.to && hasCalldata(tx.data)) contracts.add(tx.to.toLowerCase());
+  for (const edge of response.edges) {
+    const address = contractAddressOf(edge);
+    if (address) contracts.add(address.toLowerCase());
   }
 
   const kindOf = (id: string): NodeKind =>
@@ -192,20 +187,21 @@ export function buildGraph(
   let lastSeen = 0;
   let hiddenTxs = 0;
 
-  for (const tx of response.edges) {
-    // Contract creations have no recipient and therefore no edge to draw.
-    if (!tx.to) {
+  for (const edge of response.edges) {
+
+    const endpoints = edgeEndpoints(edge);
+    if (!endpoints) {
       hiddenTxs += 1;
       continue;
     }
-    const isCall = hasCalldata(tx.data);
+    const isCall = isContractEdge(edge);
     if (isCall ? !filters.showCalls : !filters.showTransfers) {
       hiddenTxs += 1;
       continue;
     }
 
-    const from = tx.from.toLowerCase();
-    const to = tx.to.toLowerCase();
+    const from = endpoints.from.toLowerCase();
+    const to = endpoints.to.toLowerCase();
     const key = `${from}>${to}`;
     let bundle = bundles.get(key);
     if (!bundle) {
@@ -224,14 +220,12 @@ export function buildGraph(
       };
       bundles.set(key, bundle);
     }
-    bundle.txs.push(tx);
+    bundle.txs.push(edge);
     bundle.count += 1;
-    bundle.value += parseWei(tx.amount);
+    bundle.value += edgeWei(edge);
     if (isCall) bundle.calls += 1;
   }
 
-  // Value threshold applies to the bundle, not the single tx — a stream of dust
-  // between two addresses is exactly the pattern worth keeping visible.
   const links: GraphLink[] = [];
   for (const bundle of bundles.values()) {
     if (minWei > 0n && bundle.value < minWei) {
@@ -266,17 +260,17 @@ export function buildGraph(
     target.inCount += link.count;
     target.valueIn += link.value;
 
-    for (const tx of link.txs) {
-      volume += parseWei(tx.amount);
-      if (tx.block_number < minBlock) minBlock = tx.block_number;
-      if (tx.block_number > maxBlock) maxBlock = tx.block_number;
-      if (tx.timestamp && tx.timestamp < firstSeen) firstSeen = tx.timestamp;
-      if (tx.timestamp > lastSeen) lastSeen = tx.timestamp;
+    for (const edge of link.txs) {
+      volume += edgeWei(edge);
+      if (edge.block_number < minBlock) minBlock = edge.block_number;
+      if (edge.block_number > maxBlock) maxBlock = edge.block_number;
+      if (edge.timestamp && edge.timestamp < firstSeen) firstSeen = edge.timestamp;
+      if (edge.timestamp > lastSeen) lastSeen = edge.timestamp;
       for (const node of [source, target]) {
-        if (tx.block_number < node.firstBlock) node.firstBlock = tx.block_number;
-        if (tx.block_number > node.lastBlock) node.lastBlock = tx.block_number;
-        if (tx.timestamp && tx.timestamp < node.firstSeen) node.firstSeen = tx.timestamp;
-        if (tx.timestamp > node.lastSeen) node.lastSeen = tx.timestamp;
+        if (edge.block_number < node.firstBlock) node.firstBlock = edge.block_number;
+        if (edge.block_number > node.lastBlock) node.lastBlock = edge.block_number;
+        if (edge.timestamp && edge.timestamp < node.firstSeen) node.firstSeen = edge.timestamp;
+        if (edge.timestamp > node.lastSeen) node.lastSeen = edge.timestamp;
       }
     }
 
@@ -286,8 +280,6 @@ export function buildGraph(
     relate(target.id, source.id);
   }
 
-  // Addresses the API listed that no surviving edge touches — contract
-  // creations and anything the filters emptied out.
   if (filters.hideIsolated) {
     for (const [id, node] of byId) {
       if (!kept.has(id) && node.kind !== 'focus') byId.delete(id);
@@ -312,8 +304,6 @@ export function buildGraph(
     if (link.weight > maxLinkWeight) maxLinkWeight = link.weight;
   }
 
-  // Area-proportional-ish sizing on turnover, with a floor from connectivity so
-  // a busy zero-value hub is still a visible node.
   for (const node of nodes) {
     const byValue = maxTurnover > 0 ? Math.sqrt(node.turnover / maxTurnover) : 0;
     const byDegree = maxDegree > 0 ? Math.sqrt(node.degree / maxDegree) : 0;
@@ -354,7 +344,6 @@ export function buildGraph(
   };
 }
 
-/** Reciprocal bundles bow to opposite sides so neither hides the other. */
 function assignCurves(links: GraphLink[]): void {
   const pairs = new Map<string, number>();
   for (const link of links) {
@@ -372,11 +361,6 @@ function assignCurves(links: GraphLink[]): void {
   }
 }
 
-/**
- * d3 only auto-places nodes whose coordinates are NaN, and ours start at the
- * origin, so unseeded nodes get a phyllotaxis spiral — deterministic, evenly
- * spread, and it unfolds without the first-tick explosion.
- */
 function seedPositions(nodes: GraphNode[]): void {
   const radius = 14 * Math.sqrt(Math.max(nodes.length, 1));
   const golden = Math.PI * (3 - Math.sqrt(5));

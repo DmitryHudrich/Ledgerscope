@@ -21,7 +21,7 @@ import {
 import { readPalette, useTheme, type VizPalette } from './lib/theme';
 
 const INITIAL_DRAFT: QueryDraft = {
-  // vitalik.eth — a busy, well-known address, so the default query shows shape.
+
   wallet: '0xd8da6bf26964af9d7eed9e03e53415d37aa96045',
   from: '21000000',
   to: '21000010',
@@ -51,7 +51,6 @@ export default function App() {
   const modelRef = useRef<GraphModel>(EMPTY_MODEL);
   const requestId = useRef(0);
 
-  // The canvas can't read CSS variables, so re-snapshot them on theme change.
   useEffect(() => {
     setPalette(readPalette());
   }, [theme]);
@@ -72,7 +71,6 @@ export default function App() {
     modelRef.current = model;
   }, [model]);
 
-  // Drop a selection that the current filters removed from the graph.
   useEffect(() => {
     if (selectedId && !model.byId.has(selectedId)) setSelectedId(null);
     if (sheetScope && !model.byId.has(sheetScope)) setSheetScope(null);
@@ -116,10 +114,8 @@ export default function App() {
     }
   }, [draft, demo]);
 
-  // First paint shows the generated sample rather than an empty stage.
   useEffect(() => {
     void run();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const select = useCallback((id: string | null) => {

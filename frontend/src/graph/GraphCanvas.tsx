@@ -75,25 +75,16 @@ export function GraphCanvas({
   const focusMix = useRef(0);
   const retained = useRef<{ nodes: Set<string>; links: Set<string> } | null>(null);
   const dirty = useRef(true);
-  /**
-   * 'follow' tracks the layout while it settles, 'once' eases to a single fit,
-   * and any pan/zoom drops to 'off' so the view stops fighting the user.
-   */
+
   const fitMode = useRef<'off' | 'follow' | 'once'>('follow');
 
-  // Tooltip *content* is React state (changes rarely); its *position* is written
-  // straight to the DOM on pointermove so hovering never re-renders the app.
   const [hover, setHover] = useState<Hover | null>(null);
 
-  // Props the animation loop reads each frame, kept in a ref so the loop is
-  // never torn down and rebuilt.
   const live = useRef({ model, palette, selectedId, searchMatches, labelMode, showGrid, showFlow });
   live.current = { model, palette, selectedId, searchMatches, labelMode, showGrid, showFlow };
   useEffect(() => {
     dirty.current = true;
   }, [palette, selectedId, searchMatches, labelMode, showGrid, showFlow]);
-
-  // ---- simulation -------------------------------------------------------
 
   useEffect(() => {
     const nodes = model.nodes;
@@ -127,8 +118,6 @@ export function GraphCanvas({
       .velocityDecay(0.34)
       .alphaDecay(0.021);
 
-    // Unfold off-screen first: the user gets a readable layout instead of the
-    // big-bang first second. Larger graphs get fewer warm-up ticks.
     sim.stop();
     sim.tick(Math.round(Math.min(220, Math.max(50, 14000 / nodes.length))));
 
@@ -155,8 +144,6 @@ export function GraphCanvas({
     dirty.current = true;
   }, [frozen, model]);
 
-  // ---- sizing -----------------------------------------------------------
-
   useEffect(() => {
     const container = containerRef.current;
     const canvas = canvasRef.current;
@@ -178,8 +165,6 @@ export function GraphCanvas({
     observer.observe(container);
     return () => observer.disconnect();
   }, []);
-
-  // ---- render loop ------------------------------------------------------
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -203,7 +188,6 @@ export function GraphCanvas({
         if (fitMode.current === 'once' && settled) fitMode.current = 'off';
       }
 
-      // Build the focus sets — or keep the last ones while the dim fades out.
       let sets = retained.current;
       if (active || hoverLink) {
         const nodeIds = new Set<string>();
@@ -258,8 +242,6 @@ export function GraphCanvas({
     return () => cancelAnimationFrame(frame);
   }, [frozen]);
 
-  // ---- pointer interaction ---------------------------------------------
-
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -292,7 +274,7 @@ export function GraphCanvas({
       const t = transform.current;
       const factor = Math.exp(-event.deltaY * (event.deltaMode === 1 ? 0.05 : 0.0016));
       const k = clamp(t.k * factor, MIN_ZOOM, MAX_ZOOM);
-      // Keep the world point under the cursor pinned while scaling.
+
       t.x = point.x - ((point.x - t.x) / t.k) * k;
       t.y = point.y - ((point.y - t.y) / t.k) * k;
       t.k = k;
@@ -361,7 +343,7 @@ export function GraphCanvas({
 
       if (dragNode) {
         if (!frozen) simulation.current?.alphaTarget(0);
-        // A dragged node stays pinned; a plain click just selects it.
+
         if (wasClick) {
           dragNode.fx = null;
           dragNode.fy = null;
@@ -416,8 +398,6 @@ export function GraphCanvas({
       canvas.removeEventListener('dblclick', onDoubleClick);
     };
   }, [frozen, onSelect]);
-
-  // ---- imperative controls ---------------------------------------------
 
   useImperativeHandle(
     handle,
@@ -524,7 +504,11 @@ function LinkTip({ link }: { link: GraphLink }) {
     <>
       <div className="tip-head">
         <span className="tip-kind">
-          {link.calls === link.count ? 'Contract calls' : 'Transfers'}
+          {link.calls === link.count
+            ? 'Contract interactions'
+            : link.calls > 0
+              ? 'Mixed'
+              : 'Transfers'}
         </span>
       </div>
       <div className="tip-address">
@@ -569,7 +553,6 @@ function fitTarget(
   };
 }
 
-/** Moves `current` a step toward `goal`; returns true once it has arrived. */
 function ease(current: Transform, goal: Transform | null): boolean {
   if (!goal) return true;
   const rate = 0.16;

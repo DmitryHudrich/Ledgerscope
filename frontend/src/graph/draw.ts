@@ -14,20 +14,20 @@ export interface Scene {
   model: GraphModel;
   palette: VizPalette;
   transform: Transform;
-  /** CSS pixels. */
+
   width: number;
   height: number;
-  /** Device-pixel ratio baked into the context transform. */
+
   dpr: number;
   activeId: string | null;
   selectedId: string | null;
   highlightNodes: Set<string> | null;
   highlightLinks: Set<string> | null;
   searchMatches: Set<string>;
-  /** 0 = everything at full strength, 1 = context fully dimmed. */
+
   focusMix: number;
   labelMode: LabelMode;
-  /** ms, drives the flow animation. */
+
   time: number;
   showGrid: boolean;
   showFlow: boolean;
@@ -51,7 +51,6 @@ export function toScreen(t: Transform, wx: number, wy: number): { x: number; y: 
   return { x: wx * t.k + t.x, y: wy * t.k + t.y };
 }
 
-/** Control point of the quadratic that renders a bundle's bow. */
 function controlPoint(link: GraphLink): { cx: number; cy: number } {
   const { source, target } = link;
   const mx = (source.x + target.x) / 2;
@@ -71,7 +70,6 @@ export function pointOnLink(link: GraphLink, t: number): { x: number; y: number 
   };
 }
 
-/** Centre of a self-loop's circle, parked above the node. */
 function loopGeometry(node: GraphNode): { cx: number; cy: number; r: number } {
   const r = node.r * 0.95 + 7;
   return { cx: node.x, cy: node.y - node.r - r * 0.55, r };
@@ -80,7 +78,6 @@ function loopGeometry(node: GraphNode): { cx: number; cy: number; r: number } {
 export function drawScene(ctx: CanvasRenderingContext2D, scene: Scene): void {
   const { transform: t, palette, model, width, height, dpr } = scene;
 
-  // Everything below works in CSS pixels; the device-pixel scale lives here.
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.fillStyle = palette.plane;
   ctx.fillRect(0, 0, width, height);
@@ -91,7 +88,6 @@ export function drawScene(ctx: CanvasRenderingContext2D, scene: Scene): void {
   ctx.setTransform(dpr * t.k, 0, 0, dpr * t.k, dpr * t.x, dpr * t.y);
   ctx.lineCap = 'round';
 
-  // Pad the cull box by the largest node so half-visible marks still draw.
   const pad = 80 / t.k;
   const view = {
     minX: -t.x / t.k - pad,
@@ -130,7 +126,6 @@ export function drawScene(ctx: CanvasRenderingContext2D, scene: Scene): void {
     visible.push(node);
   }
 
-  // Context first, then the highlighted set, so focus always sits on top.
   const highlightNodes = scene.highlightNodes;
   for (const node of visible) {
     if (highlightNodes?.has(node.id)) continue;
@@ -210,8 +205,6 @@ function drawLink(
   ctx.stroke();
   ctx.setLineDash([]);
 
-  // The quadratic's tangent at t=1 is exactly (target - control), so the head
-  // sits square on the curve without solving for the boundary crossing.
   let dx = link.target.x - cx;
   let dy = link.target.y - cy;
   const len = Math.hypot(dx, dy);
@@ -233,7 +226,6 @@ function drawLink(
   ctx.fill();
 }
 
-/** Dots travelling source -> target: direction readable without reading arrows. */
 function drawFlow(ctx: CanvasRenderingContext2D, link: GraphLink, scene: Scene): void {
   if (link.selfLoop) return;
   const { transform: t, palette } = scene;
@@ -275,7 +267,6 @@ function drawNode(
   ctx.fill();
   ctx.shadowBlur = 0;
 
-  // 2px surface ring keeps overlapping nodes legible against each other.
   ctx.strokeStyle = withAlpha(palette.plane, alpha * 0.95);
   ctx.lineWidth = 2 / t.k;
   traceNodeShape(ctx, node);
@@ -298,7 +289,6 @@ function drawNode(
   }
 }
 
-/** Shape is the redundant channel for node kind — colour never carries it alone. */
 function traceNodeShape(ctx: CanvasRenderingContext2D, node: GraphNode): void {
   ctx.beginPath();
   if (node.kind === 'contract') {
@@ -333,7 +323,7 @@ function drawLabels(
     if (scene.searchMatches.has(node.id)) return true;
     if (scene.labelMode === 'all') return true;
     if (highlight) return false;
-    // Auto: label a node once it is big enough on screen to own the space.
+
     return node.r * t.k > 11;
   });
 
@@ -357,7 +347,7 @@ function drawLabels(
     taken.push(box);
 
     const lit = !highlight || highlight.has(node.id);
-    // Surface-coloured halo instead of a plate: readable over links, quiet.
+
     ctx.strokeStyle = withAlpha(palette.plane, lit ? 0.9 : 0.5);
     ctx.lineWidth = 3 / t.k;
     ctx.strokeText(text, x, y);
@@ -413,7 +403,7 @@ export function findLinkAt(
       }
       continue;
     }
-    // Sampling the bow beats solving it; 8 steps is plenty at hover tolerance.
+
     let previous = pointOnLink(link, 0);
     for (let i = 1; i <= 8; i += 1) {
       const current = pointOnLink(link, i / 8);

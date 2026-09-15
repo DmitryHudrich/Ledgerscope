@@ -3,6 +3,12 @@ use std::{fmt, str::FromStr};
 #[derive(Eq, Clone, Hash, PartialEq)]
 pub struct EthAddress(Vec<u8>);
 
+impl std::fmt::Debug for EthAddress {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("EthAddress").field(&self.hex()).finish()
+    }
+}
+
 #[derive(Debug)]
 pub struct EthAddressParseError(String);
 

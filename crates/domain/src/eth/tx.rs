@@ -4,15 +4,15 @@ use crate::eth::EthAddress;
 
 #[derive(Eq, Clone, Hash, PartialEq, Builder)]
 pub struct EthTx {
-    tx_hash: String,
-    block_number: u64,
-    timestamp: u64,
+    pub(crate) tx_hash: String,
+    pub(crate) block_number: u64,
+    pub(crate) timestamp: u64,
 
-    amount: u128,
+    pub(crate) amount: u128,
 
-    from: EthAddress,
-    to: Option<EthAddress>,
-    data: Vec<u8>,
+    pub(crate) from: EthAddress,
+    pub(crate) to: Option<EthAddress>,
+    pub(crate) data: Vec<u8>,
 }
 
 impl EthTx {

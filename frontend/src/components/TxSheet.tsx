@@ -1,14 +1,13 @@
 import { useMemo, useState } from 'react';
 
-import type { TxResponse } from '../api/types';
+import { edgeEndpoints, edgeLabel, edgeWei } from '../api/edges';
+import type { GraphEdge } from '../api/types';
 import type { GraphModel } from '../graph/model';
 import {
   formatCount,
   formatEth,
   formatRelative,
   formatTimestamp,
-  methodId,
-  parseWei,
   shortAddress,
   shortHash,
 } from '../lib/format';
@@ -16,14 +15,13 @@ import { IconChevron } from './Icons';
 
 const ROW_LIMIT = 500;
 
-/** Shared with the stage so the overlays can keep clear of the sheet. */
 export const SHEET_HEIGHT = { collapsed: 40, expanded: 320 } as const;
 
 type SortKey = 'block' | 'value';
 
 interface Props {
   model: GraphModel;
-  /** Address the table is scoped to, or null for the whole graph. */
+
   scope: string | null;
   open: boolean;
   onOpenChange: (next: boolean) => void;
@@ -37,10 +35,10 @@ export function TxSheet({ model, scope, open, onOpenChange, onScopeClear, onSele
 
   const rows = useMemo(() => {
     const links = scope ? (model.linksByNode.get(scope) ?? []) : model.links;
-    // Wei is parsed once per row, not once per comparison.
-    const all: Array<{ tx: TxResponse; wei: bigint }> = [];
+
+    const all: Array<{ tx: GraphEdge; wei: bigint }> = [];
     for (const link of links) {
-      for (const tx of link.txs) all.push({ tx, wei: parseWei(tx.amount) });
+      for (const tx of link.txs) all.push({ tx, wei: edgeWei(tx) });
     }
     all.sort((a, b) => {
       let delta: number;
@@ -116,43 +114,53 @@ export function TxSheet({ model, scope, open, onOpenChange, onScopeClear, onSele
               </tr>
             </thead>
             <tbody>
-              {rows.slice(0, ROW_LIMIT).map(({ tx, wei }) => {
-                const method = methodId(tx.data);
+              {rows.slice(0, ROW_LIMIT).map(({ tx, wei }, index) => {
+                const endpoints = edgeEndpoints(tx);
+                const native = tx.kind === 'native_transfer';
+                const token =
+                  tx.kind === 'contract_interaction' && tx.action.kind === 'erc20_transfer'
+                    ? tx.action
+                    : null;
                 return (
-                  <tr key={tx.tx_hash}>
+                  <tr key={`${tx.tx_hash}:${index}`}>
                     <td className="num">{formatCount(tx.block_number)}</td>
                     <td title={formatTimestamp(tx.timestamp)}>{formatRelative(tx.timestamp)}</td>
                     <td className="mono">
-                      <button
-                        type="button"
-                        className="cell-link"
-                        onClick={() => onSelect(tx.from.toLowerCase())}
-                      >
-                        {shortAddress(tx.from, 8, 6)}
-                      </button>
-                    </td>
-                    <td className="mono">
-                      {tx.to ? (
+                      {endpoints ? (
                         <button
                           type="button"
                           className="cell-link"
-                          onClick={() => onSelect(tx.to!.toLowerCase())}
+                          onClick={() => onSelect(endpoints.from.toLowerCase())}
                         >
-                          {shortAddress(tx.to, 8, 6)}
+                          {shortAddress(endpoints.from, 8, 6)}
                         </button>
                       ) : (
-                        <span className="tag">contract creation</span>
+                        '—'
                       )}
                     </td>
-                    <td className="num">{formatEth(wei)}</td>
+                    <td className="mono">
+                      {endpoints ? (
+                        <button
+                          type="button"
+                          className="cell-link"
+                          onClick={() => onSelect(endpoints.to.toLowerCase())}
+                        >
+                          {shortAddress(endpoints.to, 8, 6)}
+                        </button>
+                      ) : (
+                        '—'
+                      )}
+                    </td>
+                    <td className="num">{native ? formatEth(wei) : '—'}</td>
                     <td>
                       <span className="tag">
-                        {method ? (
+                        {token ? (
                           <>
-                            call <code className="mono">{method}</code>
+                            {formatCount(Number(token.amount))}{' '}
+                            <code className="mono">{token.token_name}</code>
                           </>
                         ) : (
-                          'transfer'
+                          edgeLabel(tx)
                         )}
                       </span>
                     </td>

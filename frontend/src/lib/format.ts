@@ -1,9 +1,5 @@
-const PICO_ETH_PER_WEI = 10n ** 6n; // wei / 1e6 == ETH * 1e12
+const PICO_ETH_PER_WEI = 10n ** 6n;
 
-/**
- * Wei -> ETH as a JS number. Divides in BigInt down to 1e-12 ETH before
- * touching floating point, so ordinary balances stay exact.
- */
 export function weiToEth(wei: bigint): number {
   const negative = wei < 0n;
   const pico = (negative ? -wei : wei) / PICO_ETH_PER_WEI;
@@ -76,13 +72,4 @@ export function formatRelative(seconds: number): string {
     }
   }
   return formatTimestamp(seconds);
-}
-
-/** Calldata is `0x` for a plain value transfer; anything longer is a call. */
-export function hasCalldata(data: string): boolean {
-  return typeof data === 'string' && data.length > 2;
-}
-
-export function methodId(data: string): string | null {
-  return hasCalldata(data) && data.length >= 10 ? data.slice(0, 10) : null;
 }

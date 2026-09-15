@@ -29,18 +29,28 @@ Other scripts: `npm run build` (typecheck + production bundle into `dist/`),
 
 ## What it draws
 
-`GET /graph?wallet=&from=&to=` returns `{ nodes: string[], edges: Tx[] }`. The UI
-folds that into:
+`GET /graph?wallet=&from=&to=` returns `{ nodes: string[], edges: GraphEdge[] }`.
+The server classifies each transaction before it reaches the graph, so an edge is
+a tagged interaction — `native_transfer`, `contract_deployment`,
+`contract_interaction` (whose `action` may be an `erc20_transfer`) or `protocol` —
+carrying the `tx_hash`/`block_number`/`timestamp` it came from. See
+`src/api/types.ts`; `src/api/edges.ts` derives endpoints and value from it and
+must stay in step with `Interaction::endpoints` on the server.
+
+The UI folds that into:
 
 - **Nodes** — one per address. Area encodes ETH turnover (with a floor derived
   from connectivity, so a busy zero-value hub stays visible). Kind is carried by
   both colour *and* shape: the queried wallet is a ringed circle, a plain wallet
-  a circle, a contract a rounded square. Contract-ness is inferred from calldata
-  landing on the address, since the API exposes no code flag.
-- **Edges** — one per ordered `(from → to)` pair, carrying every transaction
-  between them. Stroke width encodes value moved; a dashed stroke means the
-  bundle is calldata only. Reciprocal pairs bow to opposite sides. Direction is
+  a circle, a contract a rounded square. Contract-ness comes from the server's
+  classification — any address it names as a deployment or call target.
+- **Edges** — one per ordered `(from → to)` pair, carrying every interaction
+  between them. Stroke width encodes ETH moved; a dashed stroke means the bundle
+  touches contracts only. Reciprocal pairs bow to opposite sides. Direction is
   redundant: arrowhead plus animated dots.
+
+Only `native_transfer` moves ETH — ERC-20 amounts are token units and are shown
+in the transaction sheet rather than folded into any ETH total.
 
 Selecting or hovering a node dims everything outside its neighbourhood. The
 transaction sheet at the bottom is the table view of the same data and can be

@@ -11,7 +11,6 @@ interface Props {
   matchCount: number;
 }
 
-/** Slider position (0–100) <-> minimum bundle value, log-spaced 0.0001–100 ETH. */
 export function sliderToEth(position: number): number {
   if (position <= 0) return 0;
   return 10 ** ((position / 100) * 6 - 4);
@@ -131,7 +130,7 @@ export function SidePanel({
               checked={filters.showCalls}
               onChange={(e) => patch({ showCalls: e.target.checked })}
             />
-            Contract calls
+            Contract interactions
           </label>
           <label className="check">
             <input
@@ -151,8 +150,8 @@ export function SidePanel({
             <LegendRow kind="contract" label="Contract" count={counts.contract} square />
           </div>
           <p className="legend-note">
-            Node size = ETH turnover · edge width = value moved · dashed edge = calldata only ·
-            arrow and moving dots point from sender to receiver.
+            Node size = ETH turnover · edge width = ETH moved · dashed edge = contract interaction ·
+            arrow and moving dots point from sender to receiver. Token transfers carry no ETH value.
           </p>
         </section>
       </div>

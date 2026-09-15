@@ -1,9 +1,5 @@
 import type { GraphQuery, GraphResponse } from './types';
 
-/**
- * Vite proxies `/api` to the web-api binary (see vite.config.ts). Override with
- * `VITE_API_BASE` when serving the built bundle from somewhere else.
- */
 const API_BASE = import.meta.env.VITE_API_BASE ?? '/api';
 
 export class ApiError extends Error {

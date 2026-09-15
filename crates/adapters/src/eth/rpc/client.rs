@@ -2,10 +2,13 @@ use std::io;
 
 use serde_json::Value;
 
-use application::{BoxStream, eth::ports::EthTxSource};
-use domain::eth::EthTx;
+use application::{
+    BoxStream,
+    eth::ports::{BlockRef, EthReceipt, EthRpcSource, EthTxSource},
+};
+use domain::eth::{EthAddress, EthTx};
 
-use crate::eth::rpc::parse::parse_block;
+use crate::eth::rpc::parse::{hex_to_bytes, parse_block, parse_receipt};
 
 pub struct RpcTxSource {
     http_client: reqwest::Client,
@@ -18,6 +21,93 @@ impl RpcTxSource {
             http_client,
             rpc_url,
         }
+    }
+
+    async fn request(&self, method: &str, params: Value) -> Result<Value, io::Error> {
+        let body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": method,
+            "params": params,
+        });
+
+        let mut response: Value = self
+            .http_client
+            .post(&self.rpc_url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(io::Error::other)?
+            .error_for_status()
+            .map_err(io::Error::other)?
+            .json()
+            .await
+            .map_err(io::Error::other)?;
+
+        if let Some(error) = response.get("error").filter(|error| !error.is_null()) {
+            return Err(io::Error::other(format!("{method} failed: {error}")));
+        }
+
+        Ok(response["result"].take())
+    }
+}
+
+fn block_param(block: BlockRef) -> Value {
+    match block {
+        BlockRef::Latest => Value::from("latest"),
+        BlockRef::Number(number) => Value::from(format!("0x{number:x}")),
+    }
+}
+
+fn hex_data(bytes: &[u8]) -> String {
+    format!("0x{}", hex::encode(bytes))
+}
+
+#[async_trait::async_trait]
+impl EthRpcSource for RpcTxSource {
+    async fn call(
+        &self,
+        to: &EthAddress,
+        data: &[u8],
+        block: BlockRef,
+    ) -> Result<Vec<u8>, io::Error> {
+        let params = serde_json::json!([
+            {
+                "to": to.to_string(),
+                "data": hex_data(data),
+            },
+            block_param(block),
+        ]);
+
+        let result = self.request("eth_call", params).await?;
+
+        match result.as_str() {
+            Some(encoded) => Ok(hex_to_bytes(encoded)),
+            None => Err(io::Error::other("eth_call returned no data")),
+        }
+    }
+
+    async fn code(&self, address: &EthAddress, block: BlockRef) -> Result<Vec<u8>, io::Error> {
+        let params = serde_json::json!([address.to_string(), block_param(block)]);
+
+        let result = self.request("eth_getCode", params).await?;
+
+        match result.as_str() {
+            Some(encoded) => Ok(hex_to_bytes(encoded)),
+            None => Err(io::Error::other("eth_getCode returned no data")),
+        }
+    }
+
+    async fn receipt(&self, tx_hash: &str) -> Result<Option<EthReceipt>, io::Error> {
+        let params = serde_json::json!([tx_hash]);
+
+        let result = self.request("eth_getTransactionReceipt", params).await?;
+
+        if result.is_null() {
+            return Ok(None);
+        }
+
+        Ok(Some(parse_receipt(&result)))
     }
 }
 

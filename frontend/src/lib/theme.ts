@@ -21,10 +21,6 @@ export function useTheme(): [Theme, (next: Theme) => void] {
   return [theme, setTheme];
 }
 
-/**
- * Canvas can't read CSS variables, so the drawing colors are pulled out of the
- * cascade once per theme change and handed to the renderer as plain strings.
- */
 export interface VizPalette {
   surface: string;
   plane: string;
@@ -62,7 +58,6 @@ export function readPalette(): VizPalette {
   return out;
 }
 
-/** `#rrggbb` (or `#rgb`) -> `rgba(...)`. Non-hex input is returned untouched. */
 export function withAlpha(color: string, alpha: number): string {
   const hex = color.trim();
   if (!hex.startsWith('#')) return hex;
