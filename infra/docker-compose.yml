@@ -21,6 +21,9 @@ services:
       BIND_ADDR: 127.0.0.1:${API_PORT:-3000}
       API_PORT: ${API_PORT:-3000}
       RUST_LOG: ${RUST_LOG:-info}
+    depends_on:
+      clickhouse:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:$${API_PORT}/ >/dev/null"]
       interval: 15s
@@ -44,6 +47,12 @@ services:
     volumes:
       - clickhouse-data:/var/lib/clickhouse
       - clickhouse-logs:/var/log/clickhouse-server
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --user $${CLICKHOUSE_USER} --password $${CLICKHOUSE_PASSWORD} --query 'SELECT 1' >/dev/null"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
     restart: unless-stopped
 
   web:
