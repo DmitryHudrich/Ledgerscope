@@ -6,10 +6,6 @@ use std::{
 
 use reqwest::{StatusCode, header::RETRY_AFTER};
 use serde_json::Value;
-use tokio::{
-    sync::Mutex,
-    time::{Instant, sleep_until},
-};
 
 use alloy_primitives::{Bytes, TxHash};
 use application::{
@@ -19,6 +15,8 @@ use application::{
 use domain::eth::{BlockRef, EthAddress, EthReceipt, MinedTx};
 
 use crate::eth::rpc::parse::{hex_to_bytes, parse_block, parse_block_receipts, parse_receipt};
+
+mod rate_limit;
 
 pub const DEFAULT_RATE_LIMIT_RPS: u32 = 15;
 
@@ -36,50 +34,10 @@ enum RpcFailure {
     Fatal(io::Error),
 }
 
-struct RateLimiter {
-    interval: Duration,
-    burst: usize,
-    next_slot: Mutex<Instant>,
-}
-
-impl RateLimiter {
-    fn new(rps: u32) -> Self {
-        let rps = rps.max(1);
-        Self {
-            interval: Duration::from_secs(1) / rps,
-            burst: rps as usize,
-            next_slot: Mutex::new(Instant::now()),
-        }
-    }
-
-    fn burst(&self) -> usize {
-        self.burst
-    }
-
-    async fn acquire(&self, requests: usize) {
-        let requests = u32::try_from(requests.max(1)).unwrap_or(u32::MAX);
-
-        let slot = {
-            let mut next_slot = self.next_slot.lock().await;
-            let slot = (*next_slot).max(Instant::now());
-            *next_slot = slot + self.interval * requests;
-            slot
-        };
-
-        sleep_until(slot).await;
-    }
-
-    async fn throttle(&self, cooldown: Duration) {
-        let resume = Instant::now() + cooldown;
-        let mut next_slot = self.next_slot.lock().await;
-        *next_slot = (*next_slot).max(resume);
-    }
-}
-
 pub struct RpcTxSource {
     http_client: reqwest::Client,
     rpc_url: String,
-    rate_limiter: RateLimiter,
+    rate_limiter: rate_limit::RateLimiter,
 }
 
 impl RpcTxSource {
@@ -87,12 +45,12 @@ impl RpcTxSource {
         Self {
             http_client,
             rpc_url,
-            rate_limiter: RateLimiter::new(DEFAULT_RATE_LIMIT_RPS),
+            rate_limiter: rate_limit::RateLimiter::new(DEFAULT_RATE_LIMIT_RPS),
         }
     }
 
     pub fn with_rate_limit(mut self, rps: u32) -> Self {
-        self.rate_limiter = RateLimiter::new(rps);
+        self.rate_limiter = rate_limit::RateLimiter::new(rps);
         self
     }
 
@@ -289,10 +247,8 @@ impl RpcTxSource {
 
         let (blocks, receipts) = futures::future::try_join(blocks, receipts).await?;
 
-        let receipts: HashMap<TxHash, EthReceipt> = receipts
-            .iter()
-            .flat_map(|block_receipts| parse_block_receipts(block_receipts))
-            .collect();
+        let receipts: HashMap<TxHash, EthReceipt> =
+            receipts.iter().flat_map(parse_block_receipts).collect();
 
         let mut mined = Vec::new();
         for block in &blocks {
