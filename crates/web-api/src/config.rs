@@ -7,8 +7,6 @@ use serde::Deserialize;
 
 use adapters::eth::DEFAULT_RATE_LIMIT_RPS;
 
-pub const CONFIG_PATH_VAR: &str = "LEDGERSCOPE_CONFIG";
-
 const DEFAULT_CONFIG_PATH: &str = "config.yaml";
 const DEFAULT_BIND_ADDR: &str = "127.0.0.1:3000";
 const DEFAULT_LOG_FILTER: &str = "info";
@@ -75,8 +73,8 @@ impl Default for EthRpcConfig {
 }
 
 impl Config {
-    pub fn load() -> anyhow::Result<Self> {
-        let mut config = match config_path() {
+    pub fn load(path: Option<&Path>) -> anyhow::Result<Self> {
+        let mut config = match config_path(path) {
             Some(path) => Self::from_file(&path)?,
             None => Self::default(),
         };
@@ -142,9 +140,9 @@ impl Config {
     }
 }
 
-fn config_path() -> Option<PathBuf> {
-    match env_set(CONFIG_PATH_VAR) {
-        Some(path) => Some(PathBuf::from(path)),
+fn config_path(explicit: Option<&Path>) -> Option<PathBuf> {
+    match explicit {
+        Some(path) => Some(path.to_path_buf()),
         None => Some(PathBuf::from(DEFAULT_CONFIG_PATH)).filter(|path| path.is_file()),
     }
 }

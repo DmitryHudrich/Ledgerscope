@@ -77,8 +77,10 @@ Both builds run from the repo root as context; `.dockerignore` keeps `target/`
 ## Configuration
 
 For the compose stack everything comes from `infra/.env` (gitignored — it holds
-the RPC key). The API binary also takes a YAML file; see
-[Config file](#config-file) below.
+the RPC key). The containers never read a YAML file: the image ships the binary
+alone, `.dockerignore` keeps `config.yaml` out of the build context, and the
+entrypoint passes no `--config`. Outside Docker the binary also takes a YAML
+file; see [Config file](#config-file) below.
 
 | Variable | Default | Notes |
 |---|---|---|
@@ -89,11 +91,11 @@ the RPC key). The API binary also takes a YAML file; see
 | `WEB_PORT` / `API_PORT` | 8080 / 3000 | Host ports. `WEB_PORT` must stay above 1024 — nginx runs unprivileged. |
 | `RUST_LOG` | `info` | Filter for `tracing`, e.g. `info,adapters=debug`. |
 | `CLICKHOUSE_DB` / `CLICKHOUSE_USER` / `CLICKHOUSE_PASSWORD` | `ledgerscope` | The image drops the `default` user once `CLICKHOUSE_USER` is set. |
-| `LEDGERSCOPE_CONFIG` | `./config.yaml` | Path to the YAML config. Missing default path = env and built-in defaults only. |
 
 ### Config file
 
-`config.example.yaml` in the repo root is the template:
+This applies to running the binary directly — the compose stack is environment
+only. `config.example.yaml` in the repo root is the template:
 
 ```yaml
 server:
@@ -114,9 +116,15 @@ then the environment variables from the table above. So a key left out of the
 YAML is not an error, and `ETH_RPC_URL=… cargo run` keeps working with no file
 at all.
 
-The file is looked up at `LEDGERSCOPE_CONFIG`, or at `./config.yaml` when that
-variable is unset — an explicit path must exist, the default one need not.
-Unknown keys are rejected rather than ignored.
+The path comes from `--config` (`-c`):
+
+```bash
+web-api --config /etc/ledgerscope/config.yaml
+```
+
+Without the flag the binary falls back to `./config.yaml` — an explicit path
+must exist, the default one need not. Unknown keys are rejected rather than
+ignored.
 
 Placeholders are expanded inside the YAML before it is parsed:
 
@@ -132,15 +140,8 @@ Defaults nest (`${A:-${B:-last}}`). A scalar that is exactly one placeholder
 keeps its type, so `rps: ${ETH_RPC_RPS:-15}` stays a number; anything with text
 around the placeholder is a string.
 
-The compose stack passes configuration as environment variables, so it needs no
-file. To use one there, mount it and point the variable at it:
-
-```yaml
-    volumes:
-      - ../config.yaml:/etc/ledgerscope/config.yaml:ro
-    environment:
-      LEDGERSCOPE_CONFIG: /etc/ledgerscope/config.yaml
-```
+The compose stack passes configuration as environment variables only; the API
+container is deliberately file-free.
 
 `WEB_PORT` and `API_PORT` are substituted into `nginx.conf.template` by the nginx
 entrypoint at container start; `NGINX_ENVSUBST_FILTER` limits envsubst to those

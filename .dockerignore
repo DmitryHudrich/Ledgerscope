@@ -9,6 +9,8 @@ frontend/dist/
 .claude/
 
 infra/.env
+config.yaml
+config.example.yaml
 moralis_cache
 etherscan_cache
 trongrid_cache

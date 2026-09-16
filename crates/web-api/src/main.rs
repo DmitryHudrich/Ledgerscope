@@ -3,14 +3,30 @@ mod dto;
 mod routes;
 mod state;
 
+use std::path::PathBuf;
+
 use anyhow::Context;
+use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
 use crate::config::Config;
 
+#[derive(Debug, Parser)]
+#[command(about = "Ledgerscope web API")]
+struct Cli {
+    #[arg(
+        short,
+        long,
+        value_name = "PATH",
+        help = "Path to the YAML config. Defaults to ./config.yaml when it exists."
+    )]
+    config: Option<PathBuf>,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
-    let config = Config::load()?;
+    let cli = Cli::parse();
+    let config = Config::load(cli.config.as_deref())?;
 
     tracing_subscriber::fmt()
         .with_env_filter(
