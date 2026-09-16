@@ -4,7 +4,7 @@ use std::io;
 
 use application::eth::ports::EthTxRepository;
 use domain::eth::MinedTx;
-use reqwest::{Client, Url};
+use reqwest::{Client, Url, header::CONTENT_LENGTH};
 use serde::Deserialize;
 
 use crate::eth::clickhouse::row::TxRow;
@@ -98,6 +98,7 @@ impl ClickhouseTxRepository {
             .query(&params)
             .header("X-ClickHouse-User", &self.user)
             .header("X-ClickHouse-Key", &self.password)
+            .header(CONTENT_LENGTH, body.len())
             .body(body)
             .send()
             .await

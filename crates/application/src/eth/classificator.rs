@@ -82,10 +82,8 @@ impl FulliestEthTxClassificator {
     }
 
     async fn ask_token_meta(&self, token: &EthAddress) -> Result<TokenMeta, AskAgainLater> {
-        let (symbol, decimals) = tokio::join!(
-            self.ask_token_symbol(token),
-            self.ask_token_decimals(token)
-        );
+        let (symbol, decimals) =
+            tokio::join!(self.ask_token_symbol(token), self.ask_token_decimals(token));
 
         Ok(TokenMeta {
             symbol: symbol?,
@@ -123,7 +121,9 @@ impl FulliestEthTxClassificator {
         match returned {
             Ok(returned) => Ok(decode_decimals(&returned).unwrap_or(DEFAULT_DECIMALS)),
             Err(error) if answered_with_revert(&error) => {
-                tracing::warn!("{token} has no decimals(), assuming {DEFAULT_DECIMALS} from now on");
+                tracing::warn!(
+                    "{token} has no decimals(), assuming {DEFAULT_DECIMALS} from now on"
+                );
                 Ok(DEFAULT_DECIMALS)
             }
             Err(error) => {
@@ -192,21 +192,23 @@ fn decode_symbol(returned: &Bytes) -> Option<String> {
 
 fn decode_decimals(returned: &Bytes) -> Option<u8> {
     let word = returned.get(..32)?;
-    u8::try_from(U256::from_be_slice(word)).ok().filter(|d| *d <= 36)
+    u8::try_from(U256::from_be_slice(word))
+        .ok()
+        .filter(|d| *d <= 36)
 }
 
 #[async_trait::async_trait]
 pub trait EthTxClassificator: Send + Sync {
-    async fn classificate(&self, mined: MinedTx) -> Result<Interaction, ClassificateError>;
+    async fn classificate(&self, mined: MinedTx) -> Result<Vec<Interaction>, ClassificateError>;
 }
 
 #[async_trait::async_trait]
 impl EthTxClassificator for FulliestEthTxClassificator {
-    async fn classificate(&self, mined: MinedTx) -> Result<Interaction, ClassificateError> {
+    async fn classificate(&self, mined: MinedTx) -> Result<Vec<Interaction>, ClassificateError> {
         let (tx, receipt) = mined.into_parts();
 
         if tx.to() == Some(&EthAddress::ZERO) {
-            return Ok(Interaction::new(receipt, InteractionKind::Protocol));
+            return Ok(vec![Interaction::new(receipt, InteractionKind::Protocol)]);
         }
 
         let Some(contract_address) = tx.to().copied() else {
@@ -215,50 +217,221 @@ impl EthTxClassificator for FulliestEthTxClassificator {
                 .copied()
                 .ok_or(ClassificateError::InvariantNarushen)?;
 
-            return Ok(Interaction::new(
+            return Ok(vec![Interaction::new(
                 receipt,
                 InteractionKind::ContractDeployment {
                     contract_address: deployed,
                     deployer: *tx.from(),
                 },
-            ));
+            )]);
         };
 
         if tx.data().is_empty() {
             let transfer =
                 NativeTransfer::try_from(tx).map_err(|_| ClassificateError::InvariantNarushen)?;
 
-            return Ok(Interaction::new(
+            return Ok(vec![Interaction::new(
                 receipt,
                 InteractionKind::NativeTransfer(transfer),
-            ));
+            )]);
         }
 
         let interactor = *tx.from();
-        let erc20 = receipt.logs().iter().find_map(decode_erc20_transfer);
+        let transfers: Vec<Erc20Transfer> = receipt
+            .logs()
+            .iter()
+            .filter_map(decode_erc20_transfer)
+            .collect();
 
-        let contract_interaction_type = match erc20 {
-            Some(transfer) => {
-                let meta = self.token_meta(&transfer.token).await;
-                ContractAction::Erc20Transfer {
-                    token: transfer.token,
-                    from: transfer.from,
-                    to: transfer.to,
-                    amount: transfer.amount,
-                    token_name: meta.symbol,
-                    decimals: meta.decimals,
-                }
+        if transfers.is_empty() {
+            return Ok(vec![Interaction::new(
+                receipt,
+                InteractionKind::ContractInteraction {
+                    contract_address,
+                    interactor,
+                    contract_interaction_type: ContractAction::Other,
+                },
+            )]);
+        }
+
+        let mut interactions = Vec::with_capacity(transfers.len());
+        for transfer in transfers {
+            let meta = self.token_meta(&transfer.token).await;
+
+            interactions.push(Interaction::new(
+                receipt.clone(),
+                InteractionKind::ContractInteraction {
+                    contract_address,
+                    interactor,
+                    contract_interaction_type: ContractAction::Erc20Transfer {
+                        token: transfer.token,
+                        from: transfer.from,
+                        to: transfer.to,
+                        amount: transfer.amount,
+                        token_name: meta.symbol,
+                        decimals: meta.decimals,
+                    },
+                },
+            ));
+        }
+
+        Ok(interactions)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloy_primitives::TxHash;
+    use domain::eth::{BlockRef, EthLog, EthReceipt, EthTx};
+
+    use super::*;
+
+    const TRANSFER_SELECTOR: [u8; 4] = [0xa9, 0x05, 0x9c, 0xbb];
+
+    struct FakeRpc;
+
+    #[async_trait::async_trait]
+    impl EthRpcSource for FakeRpc {
+        async fn call(
+            &self,
+            _to: &EthAddress,
+            data: &[u8],
+            _block: BlockRef,
+        ) -> Result<Bytes, io::Error> {
+            let mut word = [0u8; 32];
+
+            if data == SYMBOL_SELECTOR.as_slice() {
+                word[..4].copy_from_slice(b"USDC");
+            } else if data == DECIMALS_SELECTOR.as_slice() {
+                word[31] = 6;
+            } else {
+                return Err(io::Error::other("execution reverted"));
             }
-            None => ContractAction::Other,
-        };
 
-        Ok(Interaction::new(
-            receipt,
+            Ok(Bytes::from(word.to_vec()))
+        }
+
+        async fn code(&self, _address: &EthAddress, _block: BlockRef) -> Result<Bytes, io::Error> {
+            Ok(Bytes::new())
+        }
+
+        async fn receipt(&self, _tx_hash: &TxHash) -> Result<Option<EthReceipt>, io::Error> {
+            Ok(None)
+        }
+    }
+
+    fn address(last_byte: u8) -> EthAddress {
+        EthAddress::from([last_byte; 20])
+    }
+
+    fn transfer_log(token: EthAddress, from: EthAddress, to: EthAddress, amount: u64) -> EthLog {
+        EthLog::new(
+            token,
+            vec![
+                TRANSFER_TOPIC_SIGNATURE,
+                from.address().into_word(),
+                to.address().into_word(),
+            ],
+            Bytes::from(U256::from(amount).to_be_bytes::<32>().to_vec()),
+        )
+    }
+
+    fn call_tx(to: EthAddress) -> EthTx {
+        EthTx::builder()
+            .tx_hash(TxHash::with_last_byte(1))
+            .block_number(21_000_000)
+            .timestamp(1_737_000_000)
+            .amount(U256::ZERO)
+            .from(address(1))
+            .to(to)
+            .data(Bytes::from_static(&TRANSFER_SELECTOR))
+            .build()
+    }
+
+    fn erc20_of(interaction: &Interaction) -> (EthAddress, EthAddress, U256, String, u8) {
+        match interaction.kind() {
             InteractionKind::ContractInteraction {
-                contract_address,
-                interactor,
-                contract_interaction_type,
-            },
-        ))
+                contract_interaction_type:
+                    ContractAction::Erc20Transfer {
+                        from,
+                        to,
+                        amount,
+                        token_name,
+                        decimals,
+                        ..
+                    },
+                ..
+            } => (*from, *to, *amount, token_name.clone(), *decimals),
+            other => panic!("expected an erc20 transfer, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn every_transfer_log_becomes_its_own_interaction() {
+        let (token, alice, bob) = (address(9), address(1), address(2));
+        let receipt = EthReceipt::new(
+            true,
+            None,
+            vec![
+                transfer_log(token, alice, bob, 10),
+                transfer_log(token, bob, alice, 20),
+            ],
+        );
+
+        let classificator = FulliestEthTxClassificator::new(Arc::new(FakeRpc));
+        let interactions = classificator
+            .classificate(MinedTx::new(call_tx(token), receipt))
+            .await
+            .unwrap();
+
+        assert_eq!(interactions.len(), 2);
+        assert_eq!(
+            erc20_of(&interactions[0]),
+            (alice, bob, U256::from(10), "USDC".to_owned(), 6)
+        );
+        assert_eq!(
+            erc20_of(&interactions[1]),
+            (bob, alice, U256::from(20), "USDC".to_owned(), 6)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_log_that_is_not_a_transfer_never_makes_an_edge() {
+        let (token, alice, bob) = (address(9), address(1), address(2));
+        let noise = EthLog::new(token, vec![B256::with_last_byte(7)], Bytes::new());
+        let receipt = EthReceipt::new(true, None, vec![noise, transfer_log(token, alice, bob, 10)]);
+
+        let classificator = FulliestEthTxClassificator::new(Arc::new(FakeRpc));
+        let interactions = classificator
+            .classificate(MinedTx::new(call_tx(token), receipt))
+            .await
+            .unwrap();
+
+        assert_eq!(interactions.len(), 1);
+        assert_eq!(
+            erc20_of(&interactions[0]),
+            (alice, bob, U256::from(10), "USDC".to_owned(), 6)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_logless_call_stays_a_single_other_interaction() {
+        let classificator = FulliestEthTxClassificator::new(Arc::new(FakeRpc));
+        let interactions = classificator
+            .classificate(MinedTx::new(
+                call_tx(address(9)),
+                EthReceipt::new(true, None, Vec::new()),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(interactions.len(), 1);
+        assert!(matches!(
+            interactions[0].kind(),
+            InteractionKind::ContractInteraction {
+                contract_interaction_type: ContractAction::Other,
+                ..
+            }
+        ));
     }
 }

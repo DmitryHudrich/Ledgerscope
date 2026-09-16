@@ -203,8 +203,8 @@ mod tests {
         let response = GraphResponse::new(
             vec!["0x1111111111111111111111111111111111111111".to_owned()],
             vec![
-                EdgeResponse::from(&InteractionEdge::new(meta.clone(), native)),
-                EdgeResponse::from(&InteractionEdge::new(meta, erc20)),
+                EdgeResponse::from(&InteractionEdge::new(meta.clone(), 0, native)),
+                EdgeResponse::from(&InteractionEdge::new(meta, 1, erc20)),
             ],
         );
         assert_eq!(
