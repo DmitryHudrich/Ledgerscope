@@ -195,7 +195,7 @@ impl InteractionGraph {
         let Self { graph, graph_index } = self;
         *graph_index
             .entry(address.hex())
-            .or_insert_with(|| graph.add_node(address.clone()))
+            .or_insert_with(|| graph.add_node(*address))
     }
 
     pub fn graph(&self) -> &StableGraph<EthAddress, InteractionEdge> {
