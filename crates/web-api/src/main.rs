@@ -36,7 +36,7 @@ async fn main() -> Result<(), anyhow::Error> {
         )
         .init();
 
-    let state = state::AppState::from_config(&config)?;
+    let state = state::AppState::from_config(&config).await?;
     let app = routes::router(state);
 
     let listener = tokio::net::TcpListener::bind(&config.server.bind_addr)

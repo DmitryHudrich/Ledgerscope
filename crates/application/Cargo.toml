@@ -10,6 +10,7 @@ name = "application"
 ledgerscope-domain.workspace = true
 
 async-trait.workspace = true
+async-stream.workspace = true
 futures.workspace = true
 tokio.workspace = true
 tracing.workspace = true

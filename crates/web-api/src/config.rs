@@ -11,6 +11,10 @@ const DEFAULT_CONFIG_PATH: &str = "config.yaml";
 const DEFAULT_BIND_ADDR: &str = "127.0.0.1:3000";
 const DEFAULT_LOG_FILTER: &str = "info";
 const DEFAULT_RPC_PROXY: &str = "socks5h://127.0.0.1:2080";
+const DEFAULT_CLICKHOUSE_URL: &str = "http://127.0.0.1:8123";
+const DEFAULT_CLICKHOUSE_DATABASE: &str = "ledgerscope";
+const DEFAULT_CLICKHOUSE_USER: &str = "ledgerscope";
+const DEFAULT_REDIS_URL: &str = "redis://127.0.0.1:6379";
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -18,6 +22,7 @@ pub struct Config {
     pub server: ServerConfig,
     pub log: LogConfig,
     pub eth: EthConfig,
+    pub storage: StorageConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -46,6 +51,29 @@ pub struct EthRpcConfig {
     pub rps: u32,
 }
 
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct StorageConfig {
+    pub persist_txs: bool,
+    pub clickhouse: ClickhouseConfig,
+    pub redis: RedisConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ClickhouseConfig {
+    pub url: String,
+    pub database: String,
+    pub user: String,
+    pub password: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RedisConfig {
+    pub url: String,
+}
+
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
@@ -68,6 +96,25 @@ impl Default for EthRpcConfig {
             url: String::new(),
             proxy: DEFAULT_RPC_PROXY.to_owned(),
             rps: DEFAULT_RATE_LIMIT_RPS,
+        }
+    }
+}
+
+impl Default for ClickhouseConfig {
+    fn default() -> Self {
+        Self {
+            url: DEFAULT_CLICKHOUSE_URL.to_owned(),
+            database: DEFAULT_CLICKHOUSE_DATABASE.to_owned(),
+            user: DEFAULT_CLICKHOUSE_USER.to_owned(),
+            password: String::new(),
+        }
+    }
+}
+
+impl Default for RedisConfig {
+    fn default() -> Self {
+        Self {
+            url: DEFAULT_REDIS_URL.to_owned(),
         }
     }
 }
@@ -121,6 +168,25 @@ impl Config {
         if let Some(rps) = env_set("ETH_RPC_RPS") {
             self.eth.rpc.rps = rps.parse().context("ETH_RPC_RPS must be a number")?;
         }
+        if let Some(persist) = env_set("STORAGE_PERSIST_TXS") {
+            self.storage.persist_txs = parse_bool(&persist)
+                .with_context(|| format!("STORAGE_PERSIST_TXS must be a boolean, got {persist}"))?;
+        }
+        if let Some(url) = env_set("CLICKHOUSE_URL") {
+            self.storage.clickhouse.url = url;
+        }
+        if let Some(database) = env_set("CLICKHOUSE_DB") {
+            self.storage.clickhouse.database = database;
+        }
+        if let Some(user) = env_set("CLICKHOUSE_USER") {
+            self.storage.clickhouse.user = user;
+        }
+        if let Ok(password) = std::env::var("CLICKHOUSE_PASSWORD") {
+            self.storage.clickhouse.password = password;
+        }
+        if let Ok(url) = std::env::var("REDIS_URL") {
+            self.storage.redis.url = url;
+        }
 
         Ok(())
     }
@@ -136,7 +202,26 @@ impl Config {
             "server.bind_addr must not be empty"
         );
 
+        if self.storage.persist_txs {
+            anyhow::ensure!(
+                !self.storage.clickhouse.url.is_empty(),
+                "storage.clickhouse.url is required when storage.persist_txs is on"
+            );
+            anyhow::ensure!(
+                !self.storage.clickhouse.database.is_empty(),
+                "storage.clickhouse.database must not be empty"
+            );
+        }
+
         Ok(())
+    }
+}
+
+fn parse_bool(value: &str) -> anyhow::Result<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Ok(true),
+        "0" | "false" | "no" | "off" => Ok(false),
+        other => anyhow::bail!("{other} is not a boolean"),
     }
 }
 
@@ -179,6 +264,54 @@ mod tests {
         let config = Config::from_yaml("eth:\n  rpc:\n    proxy: \"\"\n").unwrap();
 
         assert!(config.eth.rpc.proxy.is_empty());
+    }
+
+    #[test]
+    fn storage_is_off_until_it_is_asked_for() {
+        let config = Config::from_yaml("eth:\n  rpc:\n    url: https://rpc.example\n").unwrap();
+
+        assert!(!config.storage.persist_txs);
+        assert_eq!(config.storage.clickhouse.url, DEFAULT_CLICKHOUSE_URL);
+        assert_eq!(
+            config.storage.clickhouse.database,
+            DEFAULT_CLICKHOUSE_DATABASE
+        );
+        assert_eq!(config.storage.redis.url, DEFAULT_REDIS_URL);
+    }
+
+    #[test]
+    fn storage_keys_are_read() {
+        let config = Config::from_yaml(
+            "storage:\n  persist_txs: true\n  clickhouse:\n    url: http://clickhouse:8123\n    database: books\n    user: reader\n    password: secret\n  redis:\n    url: redis://cache:6379\n",
+        )
+        .unwrap();
+
+        assert!(config.storage.persist_txs);
+        assert_eq!(config.storage.clickhouse.url, "http://clickhouse:8123");
+        assert_eq!(config.storage.clickhouse.database, "books");
+        assert_eq!(config.storage.clickhouse.user, "reader");
+        assert_eq!(config.storage.clickhouse.password, "secret");
+        assert_eq!(config.storage.redis.url, "redis://cache:6379");
+    }
+
+    #[test]
+    fn persisting_without_a_clickhouse_url_is_refused() {
+        let mut config =
+            Config::from_yaml("eth:\n  rpc:\n    url: https://rpc.example\nstorage:\n  persist_txs: true\n  clickhouse:\n    url: \"\"\n")
+                .unwrap();
+
+        assert!(config.validate().is_err());
+
+        config.storage.persist_txs = false;
+
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn an_empty_redis_url_means_no_cache() {
+        let config = Config::from_yaml("storage:\n  redis:\n    url: \"\"\n").unwrap();
+
+        assert!(config.storage.redis.url.is_empty());
     }
 
     #[test]

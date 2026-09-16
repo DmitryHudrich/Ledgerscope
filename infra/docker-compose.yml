@@ -21,8 +21,17 @@ services:
       BIND_ADDR: 127.0.0.1:${API_PORT:-3000}
       API_PORT: ${API_PORT:-3000}
       RUST_LOG: ${RUST_LOG:-info}
+      STORAGE_PERSIST_TXS: ${STORAGE_PERSIST_TXS:-true}
+      CLICKHOUSE_URL: ${CLICKHOUSE_URL:-http://127.0.0.1:8123}
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-ledgerscope}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-ledgerscope}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-ledgerscope}
+      # Empty = no cache, ClickHouse alone answers what is already indexed.
+      REDIS_URL: ${REDIS_URL-redis://127.0.0.1:6379}
     depends_on:
       clickhouse:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:$${API_PORT}/ >/dev/null"]
@@ -55,6 +64,21 @@ services:
       start_period: 20s
     restart: unless-stopped
 
+  redis:
+    image: redis:7-alpine
+    network_mode: host
+    command:
+      ["redis-server", "--save", "60", "1", "--appendonly", "no", "--port", "${REDIS_PORT:-6379}"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -p ${REDIS_PORT:-6379} ping | grep -q PONG"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
   web:
     build:
       context: ..
@@ -80,3 +104,4 @@ services:
 volumes:
   clickhouse-data:
   clickhouse-logs:
+  redis-data:

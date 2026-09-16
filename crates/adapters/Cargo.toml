@@ -13,9 +13,15 @@ ledgerscope-application.workspace = true
 async-trait.workspace = true
 async-stream.workspace = true
 reqwest.workspace = true
-serde_json.workspace = true
-hex.workspace = true
+alloy.workspace = true
 alloy-primitives.workspace = true
+tower.workspace = true
 tokio = { workspace = true, features = ["time", "sync"] }
 tracing.workspace = true
 futures.workspace = true
+redis.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }

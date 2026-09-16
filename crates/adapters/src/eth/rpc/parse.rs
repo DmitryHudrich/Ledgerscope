@@ -1,100 +1,49 @@
-use alloy_primitives::{B256, Bytes, TxHash, U256};
-use serde_json::Value;
+use alloy::{
+    consensus::Transaction,
+    network::TransactionResponse,
+    rpc::types::{Block, Log, TransactionReceipt},
+};
+use alloy_primitives::TxHash;
 
 use domain::eth::{EthAddress, EthLog, EthReceipt, EthTx};
 
-pub fn hex_to_u64(s: &str) -> u64 {
-    u64::from_str_radix(s.trim_start_matches("0x"), 16).unwrap_or(0)
+pub fn block_txs(block: &Block) -> Vec<EthTx> {
+    block
+        .transactions
+        .txns()
+        .map(|tx| {
+            EthTx::builder()
+                .tx_hash(tx.tx_hash())
+                .block_number(tx.block_number.unwrap_or(block.header.number))
+                .timestamp(block.header.timestamp)
+                .amount(tx.value())
+                .from(EthAddress::from(tx.from()))
+                .maybe_to(tx.to().map(EthAddress::from))
+                .data(tx.input().clone())
+                .build()
+        })
+        .collect()
 }
 
-pub fn hex_to_u256(s: &str) -> U256 {
-    U256::from_str_radix(s.trim_start_matches("0x"), 16).unwrap_or(U256::ZERO)
-}
-
-pub fn hex_to_bytes(s: &str) -> Bytes {
-    let s = s.trim_start_matches("0x");
-    hex::decode(s).unwrap_or_default().into()
-}
-
-pub fn parse_block_receipts(receipts: &Value) -> Vec<(TxHash, EthReceipt)> {
-    let receipts = match receipts.as_array() {
-        Some(receipts) => receipts,
-        None => return Vec::new(),
-    };
-
+pub fn block_receipts(receipts: &[TransactionReceipt]) -> Vec<(TxHash, EthReceipt)> {
     receipts
         .iter()
-        .filter_map(|receipt| {
-            let tx_hash = receipt["transactionHash"]
-                .as_str()?
-                .parse::<TxHash>()
-                .ok()?;
-            Some((tx_hash, parse_receipt(receipt)))
-        })
+        .map(|found| (found.transaction_hash, receipt(found)))
         .collect()
 }
 
-pub fn parse_receipt(receipt: &Value) -> EthReceipt {
-    let succeeded = receipt["status"]
-        .as_str()
-        .map(|status| hex_to_u64(status) == 1)
-        .unwrap_or(true);
-
-    let contract_address = receipt["contractAddress"]
-        .as_str()
-        .and_then(|s| s.parse::<EthAddress>().ok());
-
-    let logs = receipt["logs"]
-        .as_array()
-        .map(|logs| logs.iter().filter_map(parse_log).collect())
-        .unwrap_or_default();
-
-    EthReceipt::new(succeeded, contract_address, logs)
+pub fn receipt(receipt: &TransactionReceipt) -> EthReceipt {
+    EthReceipt::new(
+        receipt.status(),
+        receipt.contract_address.map(EthAddress::from),
+        receipt.logs().iter().map(log).collect(),
+    )
 }
 
-fn parse_log(log: &Value) -> Option<EthLog> {
-    let address = log["address"].as_str()?.parse::<EthAddress>().ok()?;
-
-    let topics = log["topics"]
-        .as_array()?
-        .iter()
-        .filter_map(|topic| topic.as_str())
-        .filter_map(|topic| topic.parse::<B256>().ok())
-        .collect();
-
-    let data = hex_to_bytes(log["data"].as_str().unwrap_or("0x"));
-
-    Some(EthLog::new(address, topics, data))
-}
-
-pub fn parse_block(block: &Value) -> Vec<EthTx> {
-    let timestamp = hex_to_u64(block["timestamp"].as_str().unwrap_or("0x0"));
-
-    let txs = match block["transactions"].as_array() {
-        Some(txs) => txs,
-        None => return Vec::new(),
-    };
-
-    txs.iter()
-        .filter_map(|tx| {
-            let tx_hash = tx["hash"].as_str()?.parse::<TxHash>().ok()?;
-            let block_number = hex_to_u64(tx["blockNumber"].as_str()?);
-            let amount = hex_to_u256(tx["value"].as_str()?);
-            let from = tx["from"].as_str()?.parse::<EthAddress>().ok()?;
-            let to = tx["to"].as_str().and_then(|s| s.parse::<EthAddress>().ok());
-            let data = hex_to_bytes(tx["input"].as_str()?);
-
-            Some(
-                EthTx::builder()
-                    .tx_hash(tx_hash)
-                    .block_number(block_number)
-                    .timestamp(timestamp)
-                    .amount(amount)
-                    .from(from)
-                    .maybe_to(to)
-                    .data(data)
-                    .build(),
-            )
-        })
-        .collect()
+fn log(log: &Log) -> EthLog {
+    EthLog::new(
+        EthAddress::from(log.inner.address),
+        log.inner.topics().to_vec(),
+        log.inner.data.data.clone(),
+    )
 }
