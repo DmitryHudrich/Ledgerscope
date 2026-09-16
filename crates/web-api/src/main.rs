@@ -1,22 +1,31 @@
+mod config;
 mod dto;
 mod routes;
 mod state;
 
 use anyhow::Context;
+use tracing_subscriber::EnvFilter;
 
-const DEFAULT_BIND_ADDR: &str = "127.0.0.1:3000";
+use crate::config::Config;
 
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
-    tracing_subscriber::fmt::init();
+    let config = Config::load()?;
 
-    let state = state::AppState::from_env()?;
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_new(&config.log.filter).with_context(|| {
+                format!("log.filter is not a valid filter: {}", config.log.filter)
+            })?,
+        )
+        .init();
+
+    let state = state::AppState::from_config(&config)?;
     let app = routes::router(state);
 
-    let bind_addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| DEFAULT_BIND_ADDR.to_owned());
-    let listener = tokio::net::TcpListener::bind(&bind_addr)
+    let listener = tokio::net::TcpListener::bind(&config.server.bind_addr)
         .await
-        .with_context(|| format!("failed to bind {bind_addr}"))?;
+        .with_context(|| format!("failed to bind {}", config.server.bind_addr))?;
     tracing::info!("listening on {}", listener.local_addr().unwrap());
     axum::serve(listener, app).await?;
     Ok(())

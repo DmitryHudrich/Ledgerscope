@@ -2,11 +2,11 @@ use std::sync::Arc;
 
 use anyhow::Context;
 
-use adapters::eth::{DEFAULT_RATE_LIMIT_RPS, RpcTxSource};
+use adapters::eth::RpcTxSource;
 use application::eth::{EthFetcher, classificator::FulliestEthTxClassificator};
 use reqwest::Proxy;
 
-const DEFAULT_RPC_PROXY: &str = "socks5h://127.0.0.1:2080/";
+use crate::config::{Config, EthRpcConfig};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -18,23 +18,12 @@ impl AppState {
         Self { eth_fetcher }
     }
 
-    pub fn from_env() -> anyhow::Result<Self> {
-        let proxy_url =
-            std::env::var("ETH_RPC_PROXY").unwrap_or_else(|_| DEFAULT_RPC_PROXY.to_owned());
-        let mut client = reqwest::ClientBuilder::new();
-        if !proxy_url.is_empty() {
-            client = client
-                .proxy(Proxy::all(&proxy_url).context("ETH_RPC_PROXY is not a valid proxy URL")?);
-        }
-        let http_client = client.build().context("failed to build the HTTP client")?;
+    pub fn from_config(config: &Config) -> anyhow::Result<Self> {
+        let rpc = &config.eth.rpc;
+        let http_client = http_client(rpc)?;
 
-        let rpc_url = std::env::var("ETH_RPC_URL").context("ETH_RPC_URL must be set")?;
-        let rate_limit_rps = match std::env::var("ETH_RPC_RPS") {
-            Ok(rps) => rps.parse().context("ETH_RPC_RPS must be a number")?,
-            Err(_) => DEFAULT_RATE_LIMIT_RPS,
-        };
         let rpc_source =
-            Arc::new(RpcTxSource::new(http_client, rpc_url).with_rate_limit(rate_limit_rps));
+            Arc::new(RpcTxSource::new(http_client, rpc.url.clone()).with_rate_limit(rpc.rps));
         let eth_tx_source = rpc_source.clone();
         let tx_classificator = Arc::new(FulliestEthTxClassificator::new(rpc_source));
 
@@ -47,4 +36,17 @@ impl AppState {
     pub fn eth_fetcher(&self) -> &EthFetcher {
         &self.eth_fetcher
     }
+}
+
+fn http_client(rpc: &EthRpcConfig) -> anyhow::Result<reqwest::Client> {
+    let mut client = reqwest::ClientBuilder::new();
+
+    if !rpc.proxy.is_empty() {
+        client =
+            client.proxy(Proxy::all(&rpc.proxy).with_context(|| {
+                format!("eth.rpc.proxy is not a valid proxy URL: {}", rpc.proxy)
+            })?);
+    }
+
+    client.build().context("failed to build the HTTP client")
 }

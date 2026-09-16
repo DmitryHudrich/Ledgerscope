@@ -22,3 +22,6 @@ appsettings.*.local.json
 infrastructure/.env
 infra/.env
 
+# Local runtime config (may hold the RPC key); config.example.yaml is the template.
+/config.yaml
+
