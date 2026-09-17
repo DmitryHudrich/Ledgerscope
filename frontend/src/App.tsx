@@ -1,12 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 
-import { fetchGraph } from './api/client';
-import { demoGraph } from './api/demo';
-import type { GraphResponse } from './api/types';
+import { RpcConfirmationRequired, fetchCoverage, fetchGraph, fetchHistogram } from './api/client';
+import type {
+  BlockRangeSpan,
+  CoverageResponse,
+  GraphResponse,
+  GraphRoot,
+  HistogramResponse,
+  RpcConfirmation,
+} from './api/types';
 import { DetailsDrawer } from './components/DetailsDrawer';
+import { RootsBar } from './components/RootsBar';
+import { RpcConfirm } from './components/RpcConfirm';
 import { SidePanel } from './components/SidePanel';
+import { Timeline, type BlockBounds } from './components/Timeline';
 import { ToolRail } from './components/ToolRail';
-import { TopBar, parseDraft, type QueryDraft } from './components/TopBar';
+import { TopBar } from './components/TopBar';
 import { SHEET_HEIGHT, TxSheet } from './components/TxSheet';
 import { GraphCanvas, type GraphHandle } from './graph/GraphCanvas';
 import type { LabelMode } from './graph/draw';
@@ -20,21 +29,59 @@ import {
 } from './graph/model';
 import { readPalette, useTheme, type VizPalette } from './lib/theme';
 
-const INITIAL_DRAFT: QueryDraft = {
+const INITIAL_ROOTS: GraphRoot[] = [
+  { address: '0xd8da6bf26964af9d7eed9e03e53415d37aa96045', depth: 1 },
+];
 
-  wallet: '0xd8da6bf26964af9d7eed9e03e53415d37aa96045',
-  from: '21000000',
-  to: '21000010',
-};
+const INITIAL_BOUNDS: BlockBounds = { from: 21_000_000, to: 21_000_100 };
+const INITIAL_SELECTION: BlockBounds = { from: 21_000_000, to: 21_000_010 };
+
+const FALLBACK_LIMITS = { maxDepth: 5, maxRoots: 64, maxBlocks: 100_000 };
+
+const HEAD_WINDOW = 100;
+
+function storedDefaults(
+  coverage: CoverageResponse,
+  maxBlocks: number,
+): { bounds: BlockBounds; selection: BlockBounds } | null {
+  const widest = coverage.ranges.reduce<BlockRangeSpan | null>(
+    (best, range) => (range.block_count > (best?.block_count ?? 0) ? range : best),
+    null,
+  );
+
+  if (widest && coverage.lowest_block !== null && coverage.highest_block !== null) {
+    return {
+      bounds: { from: coverage.lowest_block, to: coverage.highest_block },
+      selection: {
+        from: widest.from_block,
+        to: Math.min(widest.to_block, widest.from_block + maxBlocks - 1),
+      },
+    };
+  }
+
+  if (coverage.chain_head === null) return null;
+
+  const head = coverage.chain_head;
+  return {
+    bounds: { from: Math.max(head - HEAD_WINDOW, 0), to: head },
+    selection: { from: Math.max(head - 10, 0), to: head },
+  };
+}
 
 export default function App() {
   const [theme, setTheme] = useTheme();
   const [palette, setPalette] = useState<VizPalette>(() => readPalette());
 
-  const [draft, setDraft] = useState<QueryDraft>(INITIAL_DRAFT);
-  const [demo, setDemo] = useState(true);
+  const [roots, setRoots] = useState<GraphRoot[]>(INITIAL_ROOTS);
+  const [bounds, setBounds] = useState<BlockBounds>(INITIAL_BOUNDS);
+  const [selection, setSelection] = useState<BlockBounds>(INITIAL_SELECTION);
+
   const [response, setResponse] = useState<GraphResponse | null>(null);
-  const [activeWallet, setActiveWallet] = useState('');
+  const [coverage, setCoverage] = useState<CoverageResponse | null>(null);
+  const [histogram, setHistogram] = useState<HistogramResponse | null>(null);
+  const [coverageLoaded, setCoverageLoaded] = useState(false);
+  const [primed, setPrimed] = useState(false);
+  const [pending, setPending] = useState<RpcConfirmation | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -50,15 +97,22 @@ export default function App() {
   const graph = useRef<GraphHandle | null>(null);
   const modelRef = useRef<GraphModel>(EMPTY_MODEL);
   const requestId = useRef(0);
+  const snapped = useRef(false);
+
+  const limits = useMemo(
+    () => ({
+      maxDepth: coverage?.limits.max_depth ?? FALLBACK_LIMITS.maxDepth,
+      maxRoots: coverage?.limits.max_roots ?? FALLBACK_LIMITS.maxRoots,
+      maxBlocks: coverage?.limits.max_blocks ?? FALLBACK_LIMITS.maxBlocks,
+    }),
+    [coverage],
+  );
 
   useEffect(() => {
     setPalette(readPalette());
   }, [theme]);
 
-  const filters = useMemo<GraphFilters>(
-    () => ({ ...filterState, focus: activeWallet }),
-    [filterState, activeWallet],
-  );
+  const filters = useMemo<GraphFilters>(() => ({ ...filterState, focus: '' }), [filterState]);
 
   const model = useMemo(() => {
     if (!response) return EMPTY_MODEL;
@@ -86,36 +140,99 @@ export default function App() {
     return matches;
   }, [search, model]);
 
-  const run = useCallback(async () => {
-    const query = parseDraft(draft);
-    if (!query) return;
-    const id = (requestId.current += 1);
+  const run = useCallback(
+    async (confirmRpc = false) => {
+      if (roots.length === 0) return;
+      const id = (requestId.current += 1);
 
-    setActiveWallet(query.wallet);
-    setError(null);
+      setError(null);
+      setPending(null);
 
-    if (demo) {
-      setResponse(demoGraph(query));
-      setLoading(false);
-      return;
-    }
+      setLoading(true);
+      try {
+        const payload = await fetchGraph({
+          roots,
+          from_block: selection.from,
+          to_block: selection.to,
+          confirm_rpc: confirmRpc,
+        });
+        if (requestId.current !== id) return;
+        setResponse(payload);
+      } catch (cause) {
+        if (requestId.current !== id) return;
+        if (cause instanceof RpcConfirmationRequired) {
+          setPending(cause.confirmation);
+        } else {
+          setError(cause instanceof Error ? cause.message : String(cause));
+          setResponse(null);
+        }
+      } finally {
+        if (requestId.current === id) setLoading(false);
+      }
+    },
+    [roots, selection],
+  );
 
-    setLoading(true);
+  const refreshCoverage = useCallback(async () => {
     try {
-      const payload = await fetchGraph(query);
-      if (requestId.current !== id) return;
-      setResponse(payload);
-    } catch (cause) {
-      if (requestId.current !== id) return;
-      setError(cause instanceof Error ? cause.message : String(cause));
-      setResponse(null);
+      setCoverage(await fetchCoverage());
+    } catch {
+      setCoverage(null);
     } finally {
-      if (requestId.current === id) setLoading(false);
+      setCoverageLoaded(true);
     }
-  }, [draft, demo]);
+  }, []);
 
   useEffect(() => {
-    void run();
+    void refreshCoverage();
+  }, [refreshCoverage]);
+
+  useEffect(() => {
+    if (!coverageLoaded || snapped.current) return;
+    snapped.current = true;
+
+    const defaults = coverage ? storedDefaults(coverage, coverage.limits.max_blocks) : null;
+    if (defaults) {
+      setBounds(defaults.bounds);
+      setSelection(defaults.selection);
+    }
+
+    setPrimed(true);
+  }, [coverageLoaded, coverage]);
+
+  useEffect(() => {
+    const aborter = new AbortController();
+    fetchHistogram({ from_block: bounds.from, to_block: bounds.to }, aborter.signal)
+      .then(setHistogram)
+      .catch(() => setHistogram(null));
+
+    return () => aborter.abort();
+  }, [bounds]);
+
+  useEffect(() => {
+    if (primed) void run();
+    // the first build waits for the block range the store suggests
+  }, [primed]);
+
+  const addRoot = useCallback(
+    (address: string) => {
+      setRoots((current) =>
+        current.some((root) => root.address === address)
+          ? current
+          : [...current, { address, depth: 1 }],
+      );
+    },
+    [],
+  );
+
+  const removeRoot = useCallback((address: string) => {
+    setRoots((current) => current.filter((root) => root.address !== address));
+  }, []);
+
+  const changeDepth = useCallback((address: string, depth: number) => {
+    setRoots((current) =>
+      current.map((root) => (root.address === address ? { ...root, depth } : root)),
+    );
   }, []);
 
   const select = useCallback((id: string | null) => {
@@ -132,7 +249,8 @@ export default function App() {
 
       if (event.key === 'Escape') {
         if (typing) return;
-        if (selectedId) setSelectedId(null);
+        if (pending) setPending(null);
+        else if (selectedId) setSelectedId(null);
         else if (sheetOpen) setSheetOpen(false);
         return;
       }
@@ -149,31 +267,25 @@ export default function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [selectedId, sheetOpen]);
+  }, [selectedId, sheetOpen, pending]);
 
   const selectedNode = selectedId ? (model.byId.get(selectedId) ?? null) : null;
   const hasGraph = model.nodes.length > 0;
 
   return (
     <div className="app">
-      <TopBar
-        draft={draft}
-        onDraftChange={setDraft}
-        onSubmit={() => void run()}
-        loading={loading}
-        demo={demo}
-        onDemoChange={setDemo}
-        theme={theme}
-        onThemeChange={setTheme}
-      />
+      <TopBar theme={theme} onThemeChange={setTheme} />
 
-      {demo && (
-        <div className="banner" role="status">
-          <span className="dot dot-focus" aria-hidden="true" />
-          Generated sample data — turn off <strong>Demo data</strong> and rebuild to query the
-          backend at <code>/api/graph</code>.
-        </div>
-      )}
+      <RootsBar
+        roots={roots}
+        maxDepth={limits.maxDepth}
+        maxRoots={limits.maxRoots}
+        loading={loading}
+        onAdd={addRoot}
+        onRemove={removeRoot}
+        onDepthChange={changeDepth}
+        onSubmit={() => void run()}
+      />
 
       <main
         className="stage"
@@ -209,6 +321,16 @@ export default function App() {
           />
         )}
 
+        <Timeline
+          bounds={bounds}
+          selection={selection}
+          coverage={coverage}
+          histogram={histogram}
+          maxBlocks={limits.maxBlocks}
+          onBoundsChange={setBounds}
+          onSelectionChange={setSelection}
+        />
+
         <ToolRail
           onZoomIn={() => graph.current?.zoomBy(1.35)}
           onZoomOut={() => graph.current?.zoomBy(1 / 1.35)}
@@ -220,7 +342,7 @@ export default function App() {
           labelMode={labelMode}
           onLabelModeChange={setLabelMode}
           onUnpin={() => graph.current?.unpinAll()}
-          onExport={() => graph.current?.exportPng(`ledgerscope-${activeWallet.slice(0, 10)}.png`)}
+          onExport={() => graph.current?.exportPng('ledgerscope.png')}
           disabled={!hasGraph}
         />
 
@@ -228,8 +350,13 @@ export default function App() {
           <DetailsDrawer
             node={selectedNode}
             model={model}
+            rooted={roots.some((root) => root.address === selectedNode.id)}
             onSelect={select}
             onCenter={(id) => graph.current?.centerOn(id)}
+            onExpand={() => {
+              addRoot(selectedNode.id);
+              setSelectedId(null);
+            }}
             onShowTransactions={() => {
               setSheetScope(selectedNode.id);
               setSheetOpen(true);
@@ -252,20 +379,30 @@ export default function App() {
           />
         )}
 
+        {pending && (
+          <RpcConfirm
+            confirmation={pending}
+            onConfirm={() => {
+              void run(true).then(refreshCoverage);
+            }}
+            onCancel={() => setPending(null)}
+          />
+        )}
+
         {loading && (
           <div className="state">
             <div className="panel state-card">
               <div className="spinner" aria-hidden="true" />
-              <h2>Seeding blocks</h2>
+              <h2>Walking the graph</h2>
               <p>
-                The backend walks every block in the range over JSON-RPC before it answers. A wide
-                range can take a while.
+                Blocks already in clickhouse answer right away. Blocks the node still has to hand
+                over take a while.
               </p>
             </div>
           </div>
         )}
 
-        {!loading && error && (
+        {!loading && !pending && error && (
           <div className="state state-error">
             <div className="panel state-card">
               <h2>Could not load the graph</h2>
@@ -278,26 +415,26 @@ export default function App() {
                   type="button"
                   className="btn"
                   onClick={() => {
-                    setDemo(true);
                     setError(null);
-                    setResponse(demoGraph(parseDraft(draft) ?? { wallet: '', from: 0, to: 1 }));
+                    void refreshCoverage();
                   }}
                 >
-                  Use demo data
+                  Dismiss
                 </button>
               </div>
             </div>
           </div>
         )}
 
-        {!loading && !error && !hasGraph && (
+        {!loading && !error && !pending && !hasGraph && (
           <div className="state">
             <div className="panel state-card">
               <h2>No graph yet</h2>
               <p>
-                Enter a wallet and a block range, then press <span className="kbd">Build graph</span>
-                . Press <span className="kbd">/</span> to search, <span className="kbd">f</span> to
-                fit, <span className="kbd">space</span> to freeze the layout.
+                Add an address, pick its depth and a block range, then press{' '}
+                <span className="kbd">Build graph</span>. Press <span className="kbd">/</span> to
+                search, <span className="kbd">f</span> to fit, <span className="kbd">space</span> to
+                freeze the layout.
               </p>
             </div>
           </div>

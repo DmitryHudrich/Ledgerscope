@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use alloy_primitives::{Bytes, TxHash, U256};
 use bon::Builder;
 
@@ -67,5 +69,30 @@ impl MinedTx {
 
     pub fn into_parts(self) -> (EthTx, EthReceipt) {
         (self.tx, self.receipt)
+    }
+
+    pub fn touches(&self, addresses: &HashSet<EthAddress>) -> bool {
+        if addresses.contains(&self.tx.from) {
+            return true;
+        }
+
+        if self.tx.to.is_some_and(|to| addresses.contains(&to)) {
+            return true;
+        }
+
+        if self
+            .receipt
+            .contract_address()
+            .is_some_and(|address| addresses.contains(address))
+        {
+            return true;
+        }
+
+        self.receipt.logs().iter().any(|log| {
+            log.topics()
+                .iter()
+                .skip(1)
+                .any(|topic| addresses.contains(&EthAddress::from_word(*topic)))
+        })
     }
 }

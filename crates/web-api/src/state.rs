@@ -4,22 +4,28 @@ use anyhow::Context;
 
 use adapters::eth::{ClickhouseTxRepository, RedisTxCache, RpcTxSource};
 use application::eth::{
-    EthFetcher, StoringEthTxSource,
+    EthExplorer, ExploreLimits, FetchingTxIndex, StoringEthTxSource,
     classificator::FulliestEthTxClassificator,
-    ports::{EthTxCache, EthTxSource},
+    ports::{EthRpcSource, EthTxCache, EthTxIndex, EthTxSource},
 };
 use reqwest::{Proxy, Url};
 
-use crate::config::{Config, EthRpcConfig, StorageConfig};
+use crate::config::{Config, EthRpcConfig, GraphConfig, StorageConfig};
+
+struct Storage {
+    source: Arc<dyn EthTxSource>,
+    index: Option<Arc<dyn EthTxIndex>>,
+}
 
 #[derive(Clone)]
 pub struct AppState {
-    eth_fetcher: Arc<EthFetcher>,
+    explorer: Arc<EthExplorer>,
+    rpc: Arc<dyn EthRpcSource>,
 }
 
 impl AppState {
-    pub fn new(eth_fetcher: Arc<EthFetcher>) -> Self {
-        Self { eth_fetcher }
+    pub fn new(explorer: Arc<EthExplorer>, rpc: Arc<dyn EthRpcSource>) -> Self {
+        Self { explorer, rpc }
     }
 
     pub async fn from_config(config: &Config) -> anyhow::Result<Self> {
@@ -29,27 +35,59 @@ impl AppState {
             .with_context(|| format!("eth.rpc.url is not a valid URL: {}", rpc.url))?;
 
         let rpc_source = Arc::new(RpcTxSource::new(http_client, rpc_url, rpc.rps));
-        let eth_tx_source = eth_tx_source(&config.storage, rpc_source.clone()).await?;
-        let tx_classificator = Arc::new(FulliestEthTxClassificator::new(rpc_source));
+        let storage = storage(&config.storage, rpc_source.clone()).await?;
+        let tx_classificator = Arc::new(FulliestEthTxClassificator::new(rpc_source.clone()));
 
-        Ok(Self::new(Arc::new(EthFetcher::new(
-            eth_tx_source,
-            tx_classificator,
-        ))))
+        let index = storage.index.unwrap_or_else(|| {
+            Arc::new(FetchingTxIndex::new(storage.source.clone())) as Arc<dyn EthTxIndex>
+        });
+
+        Ok(Self::new(
+            Arc::new(EthExplorer::new(
+                index,
+                storage.source,
+                tx_classificator,
+                limits(&config.graph),
+            )),
+            rpc_source,
+        ))
     }
 
-    pub fn eth_fetcher(&self) -> &EthFetcher {
-        &self.eth_fetcher
+    pub fn explorer(&self) -> &EthExplorer {
+        &self.explorer
+    }
+
+    pub async fn head_block(&self) -> Option<u64> {
+        match self.rpc.head_block().await {
+            Ok(head) => Some(head),
+            Err(error) => {
+                tracing::warn!("the node did not tell its head block: {error}");
+                None
+            }
+        }
     }
 }
 
-async fn eth_tx_source(
+fn limits(graph: &GraphConfig) -> ExploreLimits {
+    ExploreLimits {
+        max_roots: graph.max_roots,
+        max_depth: graph.max_depth,
+        max_nodes: graph.max_nodes,
+        max_edges: graph.max_edges,
+        max_blocks: graph.max_blocks,
+    }
+}
+
+async fn storage(
     storage: &StorageConfig,
     upstream: Arc<dyn EthTxSource>,
-) -> anyhow::Result<Arc<dyn EthTxSource>> {
+) -> anyhow::Result<Storage> {
     if !storage.persist_txs {
         tracing::info!("storage.persist_txs is off, every request goes to the rpc");
-        return Ok(upstream);
+        return Ok(Storage {
+            source: upstream,
+            index: None,
+        });
     }
 
     let clickhouse = &storage.clickhouse;
@@ -75,9 +113,10 @@ async fn eth_tx_source(
 
     let cache = tx_cache(&storage.redis.url).await;
 
-    Ok(Arc::new(StoringEthTxSource::new(
-        upstream, repository, cache,
-    )))
+    Ok(Storage {
+        source: Arc::new(StoringEthTxSource::new(upstream, repository.clone(), cache)),
+        index: Some(repository as Arc<dyn EthTxIndex>),
+    })
 }
 
 async fn tx_cache(url: &str) -> Option<Arc<dyn EthTxCache>> {

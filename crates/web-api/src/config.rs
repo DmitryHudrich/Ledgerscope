@@ -15,6 +15,11 @@ const DEFAULT_CLICKHOUSE_URL: &str = "http://127.0.0.1:8123";
 const DEFAULT_CLICKHOUSE_DATABASE: &str = "ledgerscope";
 const DEFAULT_CLICKHOUSE_USER: &str = "ledgerscope";
 const DEFAULT_REDIS_URL: &str = "redis://127.0.0.1:6379";
+const DEFAULT_MAX_ROOTS: usize = 64;
+const DEFAULT_MAX_DEPTH: u32 = 5;
+const DEFAULT_MAX_NODES: usize = 5_000;
+const DEFAULT_MAX_EDGES: usize = 20_000;
+const DEFAULT_MAX_BLOCKS: u64 = 100_000;
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -23,6 +28,29 @@ pub struct Config {
     pub log: LogConfig,
     pub eth: EthConfig,
     pub storage: StorageConfig,
+    pub graph: GraphConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct GraphConfig {
+    pub max_roots: usize,
+    pub max_depth: u32,
+    pub max_nodes: usize,
+    pub max_edges: usize,
+    pub max_blocks: u64,
+}
+
+impl Default for GraphConfig {
+    fn default() -> Self {
+        Self {
+            max_roots: DEFAULT_MAX_ROOTS,
+            max_depth: DEFAULT_MAX_DEPTH,
+            max_nodes: DEFAULT_MAX_NODES,
+            max_edges: DEFAULT_MAX_EDGES,
+            max_blocks: DEFAULT_MAX_BLOCKS,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -187,6 +215,23 @@ impl Config {
         if let Ok(url) = std::env::var("REDIS_URL") {
             self.storage.redis.url = url;
         }
+        if let Some(roots) = env_set("GRAPH_MAX_ROOTS") {
+            self.graph.max_roots = roots.parse().context("GRAPH_MAX_ROOTS must be a number")?;
+        }
+        if let Some(depth) = env_set("GRAPH_MAX_DEPTH") {
+            self.graph.max_depth = depth.parse().context("GRAPH_MAX_DEPTH must be a number")?;
+        }
+        if let Some(nodes) = env_set("GRAPH_MAX_NODES") {
+            self.graph.max_nodes = nodes.parse().context("GRAPH_MAX_NODES must be a number")?;
+        }
+        if let Some(edges) = env_set("GRAPH_MAX_EDGES") {
+            self.graph.max_edges = edges.parse().context("GRAPH_MAX_EDGES must be a number")?;
+        }
+        if let Some(blocks) = env_set("GRAPH_MAX_BLOCKS") {
+            self.graph.max_blocks = blocks
+                .parse()
+                .context("GRAPH_MAX_BLOCKS must be a number")?;
+        }
 
         Ok(())
     }
@@ -200,6 +245,27 @@ impl Config {
         anyhow::ensure!(
             !self.server.bind_addr.is_empty(),
             "server.bind_addr must not be empty"
+        );
+
+        anyhow::ensure!(
+            self.graph.max_roots > 0,
+            "graph.max_roots must be at least 1"
+        );
+        anyhow::ensure!(
+            self.graph.max_depth > 0,
+            "graph.max_depth must be at least 1"
+        );
+        anyhow::ensure!(
+            self.graph.max_nodes > 0,
+            "graph.max_nodes must be at least 1"
+        );
+        anyhow::ensure!(
+            self.graph.max_edges > 0,
+            "graph.max_edges must be at least 1"
+        );
+        anyhow::ensure!(
+            self.graph.max_blocks > 0,
+            "graph.max_blocks must be at least 1"
         );
 
         if self.storage.persist_txs {
@@ -312,6 +378,23 @@ mod tests {
         let config = Config::from_yaml("storage:\n  redis:\n    url: \"\"\n").unwrap();
 
         assert!(config.storage.redis.url.is_empty());
+    }
+
+    #[test]
+    fn graph_limits_fall_back_to_defaults() {
+        let config = Config::from_yaml("graph:\n  max_depth: 3\n").unwrap();
+
+        assert_eq!(config.graph.max_depth, 3);
+        assert_eq!(config.graph.max_nodes, DEFAULT_MAX_NODES);
+        assert_eq!(config.graph.max_blocks, DEFAULT_MAX_BLOCKS);
+    }
+
+    #[test]
+    fn a_zero_depth_is_refused() {
+        let mut config = Config::from_yaml("eth:\n  rpc:\n    url: https://rpc.example\n").unwrap();
+        config.graph.max_depth = 0;
+
+        assert!(config.validate().is_err());
     }
 
     #[test]

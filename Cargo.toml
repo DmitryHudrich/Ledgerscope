@@ -25,6 +25,7 @@ clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
+serde_urlencoded = "0.7"
 hex = "0"
 alloy-primitives = "1"
 alloy = { version = "2", features = ["providers", "provider-http", "rpc-types-eth", "json-rpc"] }
@@ -32,5 +33,4 @@ tower = "0.5"
 reqwest = { version = "0", features = ["json", "query", "socks"] }
 redis = { version = "1", features = ["tokio-comp", "connection-manager"] }
 axum = "0"
-petgraph = "0"
 rangemap = "1"

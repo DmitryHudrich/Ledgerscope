@@ -1,7 +1,4 @@
-use std::collections::{HashMap, HashSet};
-
 use alloy_primitives::{TxHash, U256};
-use petgraph::{graph::NodeIndex, prelude::StableGraph};
 
 use crate::eth::{EthAddress, EthReceipt, EthTx};
 
@@ -72,7 +69,7 @@ pub enum InteractionKind {
 }
 
 impl InteractionKind {
-    fn endpoints(&self) -> Option<(&EthAddress, &EthAddress)> {
+    pub fn endpoints(&self) -> Option<(&EthAddress, &EthAddress)> {
         match self {
             InteractionKind::Protocol => None,
             InteractionKind::NativeTransfer(NativeTransfer { from, to, .. }) => Some((from, to)),
@@ -111,7 +108,7 @@ impl Interaction {
         &self.kind
     }
 
-    fn endpoints(&self) -> Option<(&EthAddress, &EthAddress)> {
+    pub fn endpoints(&self) -> Option<(&EthAddress, &EthAddress)> {
         self.kind.endpoints()
     }
 }
@@ -167,13 +164,6 @@ impl InteractionId {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Placement {
-    Drawn,
-    AlreadyDrawn,
-    Endpointless,
-}
-
 #[derive(Clone, Debug)]
 pub struct InteractionEdge {
     meta: TxMeta,
@@ -205,61 +195,9 @@ impl InteractionEdge {
     pub fn interaction(&self) -> &Interaction {
         &self.interaction
     }
-}
 
-pub struct InteractionGraph {
-    graph: StableGraph<EthAddress, InteractionEdge>,
-    graph_index: HashMap<String, NodeIndex>,
-    drawn: HashSet<InteractionId>,
-}
-
-impl InteractionGraph {
-    pub fn new() -> Self {
-        Self {
-            graph: StableGraph::default(),
-            graph_index: HashMap::new(),
-            drawn: HashSet::new(),
-        }
-    }
-
-    pub fn insert(&mut self, edge: InteractionEdge) -> Placement {
-        let Some((from, to)) = edge.interaction().endpoints() else {
-            return Placement::Endpointless;
-        };
-        let (from, to) = (*from, *to);
-
-        if !self.drawn.insert(edge.id()) {
-            return Placement::AlreadyDrawn;
-        }
-
-        let node_from = self.get_or_create_node(&from);
-        let node_to = self.get_or_create_node(&to);
-        self.graph.add_edge(node_from, node_to, edge);
-
-        Placement::Drawn
-    }
-
-    fn get_or_create_node(&mut self, address: &EthAddress) -> NodeIndex {
-        let Self {
-            graph, graph_index, ..
-        } = self;
-        *graph_index
-            .entry(address.hex())
-            .or_insert_with(|| graph.add_node(*address))
-    }
-
-    pub fn graph(&self) -> &StableGraph<EthAddress, InteractionEdge> {
-        &self.graph
-    }
-
-    pub fn graph_index(&self) -> &HashMap<String, NodeIndex> {
-        &self.graph_index
-    }
-}
-
-impl Default for InteractionGraph {
-    fn default() -> Self {
-        Self::new()
+    pub fn endpoints(&self) -> Option<(&EthAddress, &EthAddress)> {
+        self.interaction.endpoints()
     }
 }
 
@@ -303,49 +241,60 @@ mod tests {
     }
 
     #[test]
-    fn every_slot_of_one_tx_gets_its_own_edge() {
+    fn every_slot_of_one_tx_keeps_its_own_id() {
         let tx = tx(1);
-        let mut graph = InteractionGraph::new();
 
-        assert_eq!(graph.insert(erc20_edge(&tx, 0, 10)), Placement::Drawn);
-        assert_eq!(graph.insert(erc20_edge(&tx, 1, 20)), Placement::Drawn);
-        assert_eq!(graph.graph().edge_count(), 2);
-        assert_eq!(graph.graph().node_count(), 2);
+        assert_ne!(erc20_edge(&tx, 0, 10).id(), erc20_edge(&tx, 1, 20).id());
     }
 
     #[test]
-    fn the_same_slot_never_lands_twice() {
+    fn the_same_slot_of_the_same_tx_is_the_same_edge() {
         let tx = tx(1);
-        let mut graph = InteractionGraph::new();
 
-        assert_eq!(graph.insert(erc20_edge(&tx, 0, 10)), Placement::Drawn);
-        assert_eq!(
-            graph.insert(erc20_edge(&tx, 0, 10)),
-            Placement::AlreadyDrawn
-        );
-        assert_eq!(graph.graph().edge_count(), 1);
+        assert_eq!(erc20_edge(&tx, 0, 10).id(), erc20_edge(&tx, 0, 10).id());
     }
 
     #[test]
     fn two_txs_between_the_same_pair_stay_apart() {
-        let mut graph = InteractionGraph::new();
-
-        assert_eq!(graph.insert(erc20_edge(&tx(1), 0, 10)), Placement::Drawn);
-        assert_eq!(graph.insert(erc20_edge(&tx(2), 0, 10)), Placement::Drawn);
-        assert_eq!(graph.graph().edge_count(), 2);
+        assert_ne!(
+            erc20_edge(&tx(1), 0, 10).id(),
+            erc20_edge(&tx(2), 0, 10).id()
+        );
     }
 
     #[test]
-    fn an_endpointless_interaction_is_turned_away() {
+    fn an_erc20_transfer_hangs_off_the_token_holders() {
+        let edge = erc20_edge(&tx(1), 0, 10);
+        let (from, to) = edge.endpoints().unwrap();
+
+        assert_eq!(from, &EthAddress::from([1u8; 20]));
+        assert_eq!(to, &EthAddress::from([2u8; 20]));
+    }
+
+    #[test]
+    fn a_protocol_interaction_has_no_endpoints() {
         let interaction = Interaction::new(
             EthReceipt::new(true, None, Vec::new()),
             InteractionKind::Protocol,
         );
         let edge = InteractionEdge::new(TxMeta::from(&tx(1)), 0, interaction);
 
-        let mut graph = InteractionGraph::new();
+        assert!(edge.endpoints().is_none());
+    }
 
-        assert_eq!(graph.insert(edge), Placement::Endpointless);
-        assert_eq!(graph.graph().edge_count(), 0);
+    #[test]
+    fn a_deployment_runs_from_the_deployer_to_the_contract() {
+        let interaction = Interaction::new(
+            EthReceipt::new(true, None, Vec::new()),
+            InteractionKind::ContractDeployment {
+                contract_address: EthAddress::from([7u8; 20]),
+                deployer: EthAddress::from([1u8; 20]),
+            },
+        );
+        let edge = InteractionEdge::new(TxMeta::from(&tx(1)), 0, interaction);
+        let (from, to) = edge.endpoints().unwrap();
+
+        assert_eq!(from, &EthAddress::from([1u8; 20]));
+        assert_eq!(to, &EthAddress::from([7u8; 20]));
     }
 }

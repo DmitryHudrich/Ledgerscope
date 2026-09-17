@@ -292,6 +292,10 @@ mod tests {
 
     #[async_trait::async_trait]
     impl EthRpcSource for FakeRpc {
+        async fn head_block(&self) -> Result<u64, io::Error> {
+            Ok(21_000_000)
+        }
+
         async fn call(
             &self,
             _to: &EthAddress,

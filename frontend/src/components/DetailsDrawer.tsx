@@ -15,8 +15,10 @@ import { IconClose, IconCopy, IconTable, IconTarget } from './Icons';
 interface Props {
   node: GraphNode;
   model: GraphModel;
+  rooted: boolean;
   onSelect: (id: string | null) => void;
   onCenter: (id: string) => void;
+  onExpand: () => void;
   onShowTransactions: () => void;
   onClose: () => void;
 }
@@ -42,8 +44,10 @@ const ASSET_PREVIEW = 8;
 export function DetailsDrawer({
   node,
   model,
+  rooted,
   onSelect,
   onCenter,
+  onExpand,
   onShowTransactions,
   onClose,
 }: Props) {
@@ -205,6 +209,19 @@ export function DetailsDrawer({
           </dl>
 
           <div className="button-row">
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={rooted}
+              title={
+                rooted
+                  ? 'Already an investigation root'
+                  : 'Add this address to the canvas and walk the graph from it'
+              }
+              onClick={onExpand}
+            >
+              <IconTarget /> {rooted ? 'Is a root' : 'Build from here'}
+            </button>
             <button type="button" className="btn" onClick={() => onCenter(node.id)}>
               <IconTarget /> Center
             </button>

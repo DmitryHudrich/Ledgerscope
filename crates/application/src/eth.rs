@@ -1,9 +1,13 @@
 pub mod classificator;
-pub mod fetcher;
+pub mod explorer;
+pub mod index;
 pub mod ports;
-pub mod rpc {}
 pub mod store;
 
-pub use fetcher::{EthFetcher, GraphSnapshot};
-pub use ports::{EthRpcSource, EthTxCache, EthTxRepository, EthTxSource};
+pub use explorer::{
+    AddressGraph, EthExplorer, Exploration, ExploreError, ExploreLimits, ExploreRequest, GraphNode,
+    GraphRoot, RpcPlan,
+};
+pub use index::FetchingTxIndex;
+pub use ports::{EthRpcSource, EthTxCache, EthTxIndex, EthTxRepository, EthTxSource};
 pub use store::StoringEthTxSource;

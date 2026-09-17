@@ -1,9 +1,9 @@
 mod row;
 
-use std::io;
+use std::{collections::HashMap, io};
 
-use application::eth::ports::EthTxRepository;
-use domain::eth::MinedTx;
+use application::eth::ports::{EthTxIndex, EthTxRepository};
+use domain::eth::{BlockBucket, BlockRange, EthAddress, IndexCoverage, MinedTx};
 use reqwest::{Client, Url, header::CONTENT_LENGTH};
 use serde::Deserialize;
 
@@ -139,6 +139,149 @@ impl ClickhouseTxRepository {
 #[derive(Deserialize)]
 struct BlockRow {
     block_number: u64,
+}
+
+#[derive(Deserialize)]
+struct RangeRow {
+    from_block: u64,
+    to_block: u64,
+}
+
+#[derive(Deserialize)]
+struct CountRow {
+    value: u64,
+}
+
+#[derive(Deserialize)]
+struct BucketRow {
+    bucket: u64,
+    value: u64,
+}
+
+#[async_trait::async_trait]
+impl EthTxIndex for ClickhouseTxRepository {
+    fn persistent(&self) -> bool {
+        true
+    }
+
+    async fn coverage(&self, span: BlockRange) -> Result<IndexCoverage, io::Error> {
+        let (lower, highest) = (span.from_block(), span.to_block());
+
+        let runs: Vec<RangeRow> = self
+            .rows(&format!(
+                "SELECT min(block_number) AS from_block, max(block_number) AS to_block FROM ( \
+                     SELECT block_number, \
+                            block_number - row_number() OVER (ORDER BY block_number) AS run \
+                     FROM ( \
+                         SELECT DISTINCT block_number FROM {BLOCKS_TABLE} \
+                         WHERE block_number BETWEEN {lower} AND {highest} \
+                     ) \
+                 ) GROUP BY run ORDER BY from_block"
+            ))
+            .await?;
+
+        let counted: Vec<CountRow> = self
+            .rows(&format!(
+                "SELECT uniqExact(tx_hash) AS value FROM {TXS_TABLE} \
+                 WHERE block_number BETWEEN {lower} AND {highest}"
+            ))
+            .await?;
+
+        Ok(IndexCoverage::new(
+            runs.into_iter()
+                .map(|row| BlockRange::new(row.from_block, row.to_block))
+                .collect(),
+            counted.first().map(|row| row.value).unwrap_or_default(),
+        ))
+    }
+
+    async fn histogram(
+        &self,
+        span: BlockRange,
+        buckets: u32,
+    ) -> Result<Vec<BlockBucket>, io::Error> {
+        let buckets = u64::from(buckets.max(1));
+        let (lower, highest) = (span.from_block(), span.to_block());
+        let size = span.block_count().div_ceil(buckets).max(1);
+
+        let blocks: Vec<BucketRow> = self
+            .rows(&format!(
+                "SELECT intDiv(block_number - {lower}, {size}) AS bucket, count() AS value FROM ( \
+                     SELECT DISTINCT block_number FROM {BLOCKS_TABLE} \
+                     WHERE block_number BETWEEN {lower} AND {highest} \
+                 ) GROUP BY bucket ORDER BY bucket"
+            ))
+            .await?;
+
+        let txs: Vec<BucketRow> = self
+            .rows(&format!(
+                "SELECT intDiv(block_number - {lower}, {size}) AS bucket, \
+                        uniqExact(tx_hash) AS value FROM {TXS_TABLE} \
+                 WHERE block_number BETWEEN {lower} AND {highest} \
+                 GROUP BY bucket ORDER BY bucket"
+            ))
+            .await?;
+
+        let indexed: HashMap<u64, u64> = blocks
+            .into_iter()
+            .map(|row| (row.bucket, row.value))
+            .collect();
+        let counted: HashMap<u64, u64> =
+            txs.into_iter().map(|row| (row.bucket, row.value)).collect();
+
+        Ok((0..span.block_count().div_ceil(size))
+            .map(|bucket| {
+                let from = lower + bucket * size;
+                let to = (from + size - 1).min(highest);
+
+                BlockBucket::new(
+                    BlockRange::new(from, to),
+                    indexed.get(&bucket).copied().unwrap_or_default(),
+                    counted.get(&bucket).copied().unwrap_or_default(),
+                )
+            })
+            .collect())
+    }
+
+    async fn txs_touching(
+        &self,
+        addresses: &[EthAddress],
+        span: BlockRange,
+    ) -> Result<Vec<MinedTx>, io::Error> {
+        if addresses.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let (lower, highest) = (span.from_block(), span.to_block());
+        let plain = quoted(addresses.iter().map(EthAddress::to_string));
+        let words = quoted(
+            addresses
+                .iter()
+                .map(|address| address.address().into_word().to_string()),
+        );
+
+        let rows: Vec<TxRow> = self
+            .rows(&format!(
+                "SELECT * FROM {TXS_TABLE} FINAL \
+                 WHERE block_number BETWEEN {lower} AND {highest} \
+                 AND ( \
+                     from_address IN ({plain}) \
+                     OR to_address IN ({plain}) \
+                     OR contract_address IN ({plain}) \
+                     OR arrayExists(topics -> hasAny(topics, [{words}]), log_topics) \
+                 ) ORDER BY block_number"
+            ))
+            .await?;
+
+        rows.into_iter().map(TxRow::into_mined).collect()
+    }
+}
+
+fn quoted(values: impl Iterator<Item = String>) -> String {
+    values
+        .map(|value| format!("'{}'", value.replace('\'', "\\'")))
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 #[async_trait::async_trait]

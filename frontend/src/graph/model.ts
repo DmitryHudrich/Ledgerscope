@@ -25,6 +25,8 @@ export interface AssetFlow {
 export interface GraphNode {
   id: string;
   kind: NodeKind;
+  depth: number;
+  expanded: boolean;
   inCount: number;
   outCount: number;
   valueIn: bigint;
@@ -159,6 +161,8 @@ function blank(id: string, kind: NodeKind): GraphNode {
   return {
     id,
     kind,
+    depth: 0,
+    expanded: false,
     inCount: 0,
     outCount: 0,
     valueIn: 0n,
@@ -228,6 +232,12 @@ export function buildGraph(
   previous?: Map<string, { x: number; y: number }>,
 ): GraphModel {
   const focus = filters.focus.trim().toLowerCase();
+  const walked = new Map(
+    response.nodes.map((node) => [node.address.toLowerCase(), node] as const),
+  );
+  const roots = new Set(
+    response.nodes.filter((node) => node.root).map((node) => node.address.toLowerCase()),
+  );
   const minWei =
     filters.minEth > 0
       ? BigInt(Math.round(filters.minEth * 1e6)) * 10n ** 12n
@@ -239,7 +249,7 @@ export function buildGraph(
   }
 
   const kindOf = (id: string): NodeKind =>
-    id === focus ? 'focus' : contracts.has(id) ? 'contract' : 'eoa';
+    id === focus || roots.has(id) ? 'focus' : contracts.has(id) ? 'contract' : 'eoa';
 
   const byId = new Map<string, GraphNode>();
   const touch = (id: string): GraphNode => {
@@ -404,10 +414,17 @@ export function buildGraph(
       if (!kept.has(id) && node.kind !== 'focus') byId.delete(id);
     }
   } else {
-    for (const raw of response.nodes) touch(raw.toLowerCase());
+    for (const raw of response.nodes) touch(raw.address.toLowerCase());
   }
 
+  for (const id of roots) touch(id);
+
   const nodes = [...byId.values()];
+  for (const node of nodes) {
+    const seen = walked.get(node.id);
+    node.depth = seen?.depth ?? 0;
+    node.expanded = seen?.expanded ?? false;
+  }
   let maxTurnover = 0;
   let maxDegree = 0;
   let maxNodeTxs = 0;
@@ -449,7 +466,7 @@ export function buildGraph(
 
   const hiddenNodes = Math.max(
     0,
-    new Set(response.nodes.map((n) => n.toLowerCase())).size - nodes.length,
+    new Set(response.nodes.map((n) => n.address.toLowerCase())).size - nodes.length,
   );
 
   const transfers = links.reduce((sum, link) => sum + link.transfers, 0);

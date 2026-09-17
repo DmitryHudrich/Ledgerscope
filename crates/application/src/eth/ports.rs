@@ -3,7 +3,9 @@ use std::io;
 use alloy_primitives::{Bytes, TxHash};
 use futures::stream::BoxStream;
 
-use domain::eth::{BlockRef, EthAddress, EthReceipt, MinedTx};
+use domain::eth::{
+    BlockBucket, BlockRange, BlockRef, EthAddress, EthReceipt, IndexCoverage, MinedTx,
+};
 
 #[async_trait::async_trait]
 pub trait EthTxSource: Send + Sync {
@@ -33,6 +35,25 @@ pub trait EthTxRepository: Send + Sync {
 }
 
 #[async_trait::async_trait]
+pub trait EthTxIndex: Send + Sync {
+    fn persistent(&self) -> bool;
+
+    async fn coverage(&self, span: BlockRange) -> Result<IndexCoverage, io::Error>;
+
+    async fn histogram(
+        &self,
+        span: BlockRange,
+        buckets: u32,
+    ) -> Result<Vec<BlockBucket>, io::Error>;
+
+    async fn txs_touching(
+        &self,
+        addresses: &[EthAddress],
+        span: BlockRange,
+    ) -> Result<Vec<MinedTx>, io::Error>;
+}
+
+#[async_trait::async_trait]
 pub trait EthTxCache: Send + Sync {
     async fn indexed_blocks(
         &self,
@@ -45,6 +66,8 @@ pub trait EthTxCache: Send + Sync {
 
 #[async_trait::async_trait]
 pub trait EthRpcSource: Send + Sync {
+    async fn head_block(&self) -> Result<u64, io::Error>;
+
     async fn call(&self, to: &EthAddress, data: &[u8], block: BlockRef)
     -> Result<Bytes, io::Error>;
 

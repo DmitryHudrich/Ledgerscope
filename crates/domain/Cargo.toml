@@ -9,5 +9,4 @@ name = "domain"
 [dependencies]
 bon.workspace = true
 hex.workspace = true
-petgraph.workspace = true
 alloy-primitives.workspace = true

@@ -74,8 +74,4 @@ impl EthAddress {
     pub fn hex(&self) -> String {
         hex::encode(self.0)
     }
-
-    pub fn checksummed(&self) -> String {
-        self.0.to_checksum(None)
-    }
 }

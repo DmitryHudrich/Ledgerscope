@@ -140,6 +140,13 @@ fn block_id(block: BlockRef) -> BlockId {
 
 #[async_trait::async_trait]
 impl EthRpcSource for RpcTxSource {
+    async fn head_block(&self) -> Result<u64, io::Error> {
+        self.provider
+            .get_block_number()
+            .await
+            .map_err(|error| io::Error::other(format!("eth_blockNumber failed: {error}")))
+    }
+
     async fn call(
         &self,
         to: &EthAddress,

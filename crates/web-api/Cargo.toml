@@ -25,4 +25,5 @@ tracing-subscriber.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
+serde_urlencoded.workspace = true
 alloy-primitives.workspace = true
