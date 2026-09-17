@@ -6,13 +6,16 @@ use std::{
 
 use futures::StreamExt;
 
+use alloy_primitives::TxHash;
+
 use domain::eth::{
     Actor, ActorHint, BlockBucket, BlockRange, EthAddress, IndexCoverage, Interaction,
-    InteractionEdge, InteractionId, MinedTx, TxMeta,
+    InteractionEdge, InteractionId, LowLevelActor, LowLevelInteraction, MinedTx, TxMeta,
 };
 
 use crate::eth::{
     classificator::EthTxClassificator,
+    lowlevel::{LowLevelGraph, LowLevelNode},
     ports::{ActorResolver, EthTxIndex, EthTxSource},
 };
 
@@ -180,9 +183,14 @@ impl RpcPlan {
 }
 
 #[derive(Debug)]
-pub enum Exploration {
-    Graph(Box<AddressGraph>),
+pub enum Exploration<G> {
+    Graph(Box<G>),
     RpcNeeded(RpcPlan),
+}
+
+enum Ready {
+    Walk(Vec<BlockRange>),
+    Confirm(RpcPlan),
 }
 
 #[derive(Debug)]
@@ -266,8 +274,8 @@ impl EthExplorer {
         self.index.histogram(span, buckets).await
     }
 
-    pub async fn explore(&self, request: ExploreRequest) -> Result<Exploration, ExploreError> {
-        self.weigh(&request)?;
+    async fn prepare(&self, request: &ExploreRequest) -> Result<Ready, ExploreError> {
+        self.weigh(request)?;
 
         let coverage = self
             .index
@@ -277,7 +285,7 @@ impl EthExplorer {
         let missing = coverage.gaps(request.span);
 
         if !missing.is_empty() && !request.confirm_rpc {
-            return Ok(Exploration::RpcNeeded(RpcPlan::new(
+            return Ok(Ready::Confirm(RpcPlan::new(
                 missing.clone(),
                 coverage.indexed_within(request.span),
                 missing.iter().map(BlockRange::block_count).sum(),
@@ -290,7 +298,37 @@ impl EthExplorer {
             }
         }
 
+        Ok(Ready::Walk(missing))
+    }
+
+    pub async fn explore(
+        &self,
+        request: ExploreRequest,
+    ) -> Result<Exploration<AddressGraph>, ExploreError> {
+        let missing = match self.prepare(&request).await? {
+            Ready::Confirm(plan) => return Ok(Exploration::RpcNeeded(plan)),
+            Ready::Walk(missing) => missing,
+        };
+
         let mut graph = self.walk(&request).await.map_err(ExploreError::Io)?;
+        graph.filled = missing;
+
+        Ok(Exploration::Graph(Box::new(graph)))
+    }
+
+    pub async fn explore_low_level(
+        &self,
+        request: ExploreRequest,
+    ) -> Result<Exploration<LowLevelGraph>, ExploreError> {
+        let missing = match self.prepare(&request).await? {
+            Ready::Confirm(plan) => return Ok(Exploration::RpcNeeded(plan)),
+            Ready::Walk(missing) => missing,
+        };
+
+        let mut graph = self
+            .walk_low_level(&request)
+            .await
+            .map_err(ExploreError::Io)?;
         graph.filled = missing;
 
         Ok(Exploration::Graph(Box::new(graph)))
@@ -347,7 +385,61 @@ impl EthExplorer {
         }
     }
 
-    async fn walk(&self, request: &ExploreRequest) -> Result<AddressGraph, io::Error> {
+    fn note(
+        &self,
+        seen: &mut HashMap<EthAddress, Walked>,
+        found: &mut HashSet<EthAddress>,
+        asked: &HashSet<EthAddress>,
+        edge: (EthAddress, EthAddress),
+        fresh: EthAddress,
+    ) -> bool {
+        let mut budget = 0;
+        let mut depth = u32::MAX;
+
+        for side in [&edge.0, &edge.1] {
+            if !asked.contains(side) {
+                continue;
+            }
+            if let Some(walked) = seen.get(side) {
+                budget = budget.max(walked.budget);
+                depth = depth.min(walked.depth);
+            }
+        }
+
+        let budget = budget.saturating_sub(1);
+        let depth = depth.saturating_add(1);
+        let room = seen.len() < self.limits.max_nodes;
+
+        match seen.entry(fresh) {
+            Entry::Occupied(mut slot) => {
+                let walked = slot.get_mut();
+                walked.depth = walked.depth.min(depth);
+
+                if budget > walked.budget {
+                    walked.budget = budget;
+                    if budget > 0 {
+                        found.insert(fresh);
+                    }
+                }
+
+                true
+            }
+            Entry::Vacant(slot) => {
+                if !room {
+                    return false;
+                }
+
+                slot.insert(Walked { depth, budget });
+                if budget > 0 {
+                    found.insert(fresh);
+                }
+
+                true
+            }
+        }
+    }
+
+    fn start(request: &ExploreRequest) -> (HashMap<EthAddress, Walked>, HashSet<EthAddress>) {
         let mut seen: HashMap<EthAddress, Walked> = HashMap::new();
         let mut roots: HashSet<EthAddress> = HashSet::new();
 
@@ -359,6 +451,106 @@ impl EthExplorer {
             });
             walked.budget = walked.budget.max(root.depth);
         }
+
+        (seen, roots)
+    }
+
+    async fn walk_low_level(&self, request: &ExploreRequest) -> Result<LowLevelGraph, io::Error> {
+        let (mut seen, roots) = Self::start(request);
+
+        let mut edges: HashMap<TxHash, LowLevelInteraction> = HashMap::new();
+        let mut expanded: HashSet<EthAddress> = HashSet::new();
+        let mut frontier: Vec<EthAddress> = roots.iter().copied().collect();
+        let mut truncated = false;
+
+        while !frontier.is_empty() {
+            let asking: Vec<EthAddress> = frontier
+                .drain(..)
+                .filter(|address| {
+                    !expanded.contains(address)
+                        && seen.get(address).is_some_and(|walked| walked.budget > 0)
+                })
+                .collect();
+
+            if asking.is_empty() {
+                break;
+            }
+
+            let asked: HashSet<EthAddress> = asking.iter().copied().collect();
+            expanded.extend(asked.iter().copied());
+
+            let mut found: HashSet<EthAddress> = HashSet::new();
+
+            for chunk in asking.chunks(ASKING_CHUNK) {
+                for mined in self.index.txs_touching(chunk, request.span).await? {
+                    let Ok(interaction) = LowLevelInteraction::try_from(&mined) else {
+                        continue;
+                    };
+
+                    let (from, to) = interaction.endpoints();
+                    let (from, to) = (*from, *to);
+
+                    let fresh = match (asked.contains(&from), asked.contains(&to)) {
+                        (false, false) => continue,
+                        (true, true) => None,
+                        (true, false) => Some(to),
+                        (false, true) => Some(from),
+                    };
+
+                    let id = *interaction.meta().tx_hash();
+                    if !edges.contains_key(&id) && edges.len() >= self.limits.max_edges {
+                        truncated = true;
+                        continue;
+                    }
+
+                    if let Some(address) = fresh
+                        && !self.note(&mut seen, &mut found, &asked, (from, to), address)
+                    {
+                        truncated = true;
+                    }
+
+                    edges.insert(id, interaction);
+                }
+            }
+
+            frontier.extend(found);
+        }
+
+        let mut actors: Vec<LowLevelNode> = seen
+            .into_iter()
+            .map(|(address, walked)| {
+                LowLevelNode::new(
+                    LowLevelActor::new(address),
+                    walked.depth,
+                    roots.contains(&address),
+                    expanded.contains(&address),
+                )
+            })
+            .collect();
+        actors.sort_by(|left, right| {
+            left.depth()
+                .cmp(&right.depth())
+                .then_with(|| left.address().hex().cmp(&right.address().hex()))
+        });
+
+        let mut interactions: Vec<LowLevelInteraction> = edges.into_values().collect();
+        interactions.sort_by(|left, right| {
+            left.meta()
+                .block_number()
+                .cmp(&right.meta().block_number())
+                .then_with(|| left.meta().tx_hash().cmp(right.meta().tx_hash()))
+        });
+
+        Ok(LowLevelGraph {
+            actors,
+            interactions,
+            filled: Vec::new(),
+            truncated,
+        })
+    }
+
+    async fn walk(&self, request: &ExploreRequest) -> Result<AddressGraph, io::Error> {
+        let (mut seen, roots) = Self::start(request);
 
         let mut edges: HashMap<InteractionId, InteractionEdge> = HashMap::new();
         let mut expanded: HashSet<EthAddress> = HashSet::new();
@@ -405,48 +597,10 @@ impl EthExplorer {
                         continue;
                     }
 
-                    if let Some(address) = fresh {
-                        let mut budget = 0;
-                        let mut depth = u32::MAX;
-
-                        for side in [&from, &to] {
-                            if !asked.contains(side) {
-                                continue;
-                            }
-                            if let Some(walked) = seen.get(side) {
-                                budget = budget.max(walked.budget);
-                                depth = depth.min(walked.depth);
-                            }
-                        }
-
-                        let budget = budget.saturating_sub(1);
-                        let depth = depth.saturating_add(1);
-                        let room = seen.len() < self.limits.max_nodes;
-
-                        match seen.entry(address) {
-                            Entry::Occupied(mut slot) => {
-                                let walked = slot.get_mut();
-                                walked.depth = walked.depth.min(depth);
-
-                                if budget > walked.budget {
-                                    walked.budget = budget;
-                                    if budget > 0 {
-                                        found.insert(address);
-                                    }
-                                }
-                            }
-                            Entry::Vacant(slot) => {
-                                if !room {
-                                    truncated = true;
-                                    continue;
-                                }
-
-                                slot.insert(Walked { depth, budget });
-                                if budget > 0 {
-                                    found.insert(address);
-                                }
-                            }
-                        }
+                    if let Some(address) = fresh
+                        && !self.note(&mut seen, &mut found, &asked, (from, to), address)
+                    {
+                        truncated = true;
                     }
 
                     edges.insert(id, InteractionEdge::new(meta, slot, interaction));
@@ -729,6 +883,132 @@ mod tests {
 
     fn ask(roots: Vec<GraphRoot>) -> ExploreRequest {
         ExploreRequest::new(roots, BlockRange::new(0, 100), false)
+    }
+
+    async fn raw_graph_of(explorer: &EthExplorer, request: ExploreRequest) -> LowLevelGraph {
+        match explorer.explore_low_level(request).await.unwrap() {
+            Exploration::Graph(graph) => *graph,
+            Exploration::RpcNeeded(_) => panic!("the span was covered"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_raw_walk_draws_an_edge_per_tx() {
+        let explorer = explorer(
+            Arc::new(FakeIndex::new(chain(), covered())),
+            Arc::new(SilentSource::default()),
+        );
+
+        let graph = raw_graph_of(&explorer, ask(vec![GraphRoot::new(address(1), 1)])).await;
+
+        assert_eq!(graph.interactions().len(), 1);
+        let edge = &graph.interactions()[0];
+
+        assert_eq!(edge.endpoints(), (&address(1), &address(2)));
+        assert!(!edge.is_deployment());
+        assert_eq!(edge.meta().block_number(), 10);
+    }
+
+    #[tokio::test]
+    async fn a_raw_walk_reaches_the_second_hop() {
+        let explorer = explorer(
+            Arc::new(FakeIndex::new(chain(), covered())),
+            Arc::new(SilentSource::default()),
+        );
+
+        let graph = raw_graph_of(&explorer, ask(vec![GraphRoot::new(address(1), 2)])).await;
+
+        let walked: Vec<String> = graph
+            .actors()
+            .iter()
+            .map(|node| node.address().hex())
+            .collect();
+
+        assert_eq!(
+            walked,
+            vec![address(1).hex(), address(2).hex(), address(3).hex()]
+        );
+        assert_eq!(graph.actors()[0].depth(), 0);
+        assert_eq!(graph.actors()[2].depth(), 2);
+        assert!(graph.actors()[0].root());
+    }
+
+    #[tokio::test]
+    async fn a_raw_actor_starts_without_labels() {
+        let explorer = explorer(
+            Arc::new(FakeIndex::new(chain(), covered())),
+            Arc::new(SilentSource::default()),
+        );
+
+        let graph = raw_graph_of(&explorer, ask(vec![GraphRoot::new(address(1), 1)])).await;
+
+        assert!(
+            graph
+                .actors()
+                .iter()
+                .all(|node| node.actor().labels().is_empty())
+        );
+    }
+
+    #[tokio::test]
+    async fn a_raw_walk_points_a_deployment_at_its_contract() {
+        let deployment = MinedTx::new(
+            EthTx::builder()
+                .tx_hash(TxHash::with_last_byte(9))
+                .block_number(10)
+                .timestamp(120)
+                .amount(U256::ZERO)
+                .from(address(1))
+                .data(Bytes::from_static(&[0x60, 0x80]))
+                .build(),
+            EthReceipt::new(true, Some(address(5)), Vec::new()),
+        );
+
+        let explorer = explorer(
+            Arc::new(FakeIndex::new(vec![deployment], covered())),
+            Arc::new(SilentSource::default()),
+        );
+
+        let graph = raw_graph_of(&explorer, ask(vec![GraphRoot::new(address(1), 1)])).await;
+
+        assert_eq!(graph.interactions().len(), 1);
+        let edge = &graph.interactions()[0];
+
+        assert!(edge.is_deployment());
+        assert_eq!(edge.endpoints(), (&address(1), &address(5)));
+    }
+
+    #[tokio::test]
+    async fn a_raw_walk_keeps_a_tx_the_classifier_would_drop() {
+        let call = MinedTx::new(
+            EthTx::builder()
+                .tx_hash(TxHash::with_last_byte(9))
+                .block_number(10)
+                .timestamp(120)
+                .amount(U256::ZERO)
+                .from(address(1))
+                .to(address(2))
+                .data(Bytes::from_static(&[0xde, 0xad, 0xbe, 0xef]))
+                .build(),
+            EthReceipt::new(false, None, Vec::new()),
+        );
+
+        let explorer = explorer(
+            Arc::new(FakeIndex::new(vec![call], covered())),
+            Arc::new(SilentSource::default()),
+        );
+        let request = ask(vec![GraphRoot::new(address(1), 1)]);
+
+        assert!(
+            graph_of(&explorer, request.clone())
+                .await
+                .edges()
+                .is_empty()
+        );
+
+        let raw = raw_graph_of(&explorer, request).await;
+        assert_eq!(raw.interactions().len(), 1);
+        assert!(!raw.interactions()[0].succeeded());
     }
 
     #[tokio::test]

@@ -3,6 +3,7 @@ pub mod address;
 pub mod block;
 pub mod coverage;
 pub mod graph;
+pub mod lowlevel;
 pub mod receipt;
 pub mod tx;
 
@@ -13,5 +14,6 @@ pub use coverage::{BlockBucket, BlockRange, IndexCoverage};
 pub use graph::{
     ContractAction, Interaction, InteractionEdge, InteractionId, InteractionKind, TxMeta,
 };
+pub use lowlevel::{LowLevelActor, LowLevelInteraction, LowLevelTarget};
 pub use receipt::{EthLog, EthReceipt};
 pub use tx::{EthTx, MinedTx};

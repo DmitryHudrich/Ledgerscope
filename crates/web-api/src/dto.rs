@@ -3,10 +3,12 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use application::eth::{AddressGraph, ExploreLimits, GraphNode, RpcPlan};
+use application::eth::{
+    AddressGraph, ExploreLimits, GraphNode, LowLevelGraph, LowLevelNode, RpcPlan,
+};
 use domain::eth::{
     Actor, ActorKind, BlockBucket, BlockRange, ContractAction, ContractKind, EthAddress,
-    IndexCoverage, Interaction, InteractionEdge, InteractionKind,
+    IndexCoverage, Interaction, InteractionEdge, InteractionKind, LowLevelInteraction,
 };
 
 const DEFAULT_DEPTH: u32 = 1;
@@ -89,6 +91,90 @@ impl GraphResponse {
                 .map(RangeResponse::from)
                 .collect(),
             truncated: graph.truncated(),
+        }
+    }
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct LowLevelGraphResponse {
+    actors: Vec<LowLevelActorResponse>,
+    interactions: Vec<LowLevelInteractionResponse>,
+    span: RangeResponse,
+    filled_from_rpc: Vec<RangeResponse>,
+    truncated: bool,
+}
+
+impl LowLevelGraphResponse {
+    pub fn new(graph: &LowLevelGraph, span: BlockRange) -> Self {
+        Self {
+            actors: graph
+                .actors()
+                .iter()
+                .map(LowLevelActorResponse::from)
+                .collect(),
+            interactions: graph
+                .interactions()
+                .iter()
+                .map(LowLevelInteractionResponse::from)
+                .collect(),
+            span: span.into(),
+            filled_from_rpc: graph
+                .filled()
+                .iter()
+                .copied()
+                .map(RangeResponse::from)
+                .collect(),
+            truncated: graph.truncated(),
+        }
+    }
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct LowLevelActorResponse {
+    address: String,
+    labels: Vec<String>,
+    depth: u32,
+    root: bool,
+    expanded: bool,
+}
+
+impl From<&LowLevelNode> for LowLevelActorResponse {
+    fn from(node: &LowLevelNode) -> Self {
+        Self {
+            address: node.address().to_string(),
+            labels: node.actor().labels().to_vec(),
+            depth: node.depth(),
+            root: node.root(),
+            expanded: node.expanded(),
+        }
+    }
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct LowLevelInteractionResponse {
+    tx_hash: String,
+    block_number: u64,
+    timestamp: u64,
+    succeeded: bool,
+    from: String,
+    to: String,
+    amount: String,
+    deployment: bool,
+}
+
+impl From<&LowLevelInteraction> for LowLevelInteractionResponse {
+    fn from(interaction: &LowLevelInteraction) -> Self {
+        let meta = interaction.meta();
+
+        Self {
+            tx_hash: meta.tx_hash().to_string(),
+            block_number: meta.block_number(),
+            timestamp: meta.timestamp(),
+            succeeded: interaction.succeeded(),
+            from: interaction.from().to_string(),
+            to: interaction.to().to_string(),
+            amount: interaction.amount().to_string(),
+            deployment: interaction.is_deployment(),
         }
     }
 }
@@ -508,6 +594,104 @@ mod tests {
                     }
                 })
             ]
+        );
+    }
+
+    fn raw_edge(to: Option<EthAddress>, created: Option<EthAddress>) -> LowLevelInteraction {
+        let mined = domain::eth::MinedTx::new(
+            {
+                let builder = EthTx::builder()
+                    .tx_hash(b256!(
+                        "0xabababababababababababababababababababababababababababababababab"
+                    ))
+                    .block_number(21_000_000)
+                    .timestamp(1_737_000_000)
+                    .amount(U256::from(1_500_000_000_000_000_000u128))
+                    .from(
+                        "0x1111111111111111111111111111111111111111"
+                            .parse()
+                            .unwrap(),
+                    )
+                    .data(Bytes::new());
+
+                match to {
+                    Some(to) => builder.to(to).build(),
+                    None => builder.build(),
+                }
+            },
+            EthReceipt::new(true, created, Vec::new()),
+        );
+
+        LowLevelInteraction::try_from(&mined).unwrap()
+    }
+
+    #[test]
+    fn a_low_level_edge_keeps_its_wire_shape() {
+        let edge = raw_edge(
+            Some(
+                "0x2222222222222222222222222222222222222222"
+                    .parse()
+                    .unwrap(),
+            ),
+            None,
+        );
+
+        assert_eq!(
+            serde_json::to_value(LowLevelInteractionResponse::from(&edge)).unwrap(),
+            json!({
+                "tx_hash": "0xabababababababababababababababababababababababababababababababab",
+                "block_number": 21_000_000,
+                "timestamp": 1_737_000_000,
+                "succeeded": true,
+                "from": "0x1111111111111111111111111111111111111111",
+                "to": "0x2222222222222222222222222222222222222222",
+                "amount": "1500000000000000000",
+                "deployment": false
+            })
+        );
+    }
+
+    #[test]
+    fn a_low_level_deployment_points_at_the_contract_and_says_so() {
+        let edge = raw_edge(
+            None,
+            Some(
+                "0x4444444444444444444444444444444444444444"
+                    .parse()
+                    .unwrap(),
+            ),
+        );
+        let encoded = serde_json::to_value(LowLevelInteractionResponse::from(&edge)).unwrap();
+
+        assert_eq!(encoded["deployment"], json!(true));
+        assert_eq!(
+            encoded["to"],
+            json!("0x4444444444444444444444444444444444444444")
+        );
+    }
+
+    #[test]
+    fn a_low_level_actor_carries_an_empty_label_list() {
+        let node = LowLevelNode::new(
+            domain::eth::LowLevelActor::new(
+                "0x1111111111111111111111111111111111111111"
+                    .parse()
+                    .unwrap(),
+            ),
+            2,
+            false,
+            true,
+        );
+
+        assert_eq!(
+            serde_json::to_value(LowLevelActorResponse::from(&node)).unwrap(),
+            json!({
+                "address": "0x1111111111111111111111111111111111111111",
+                "labels": [],
+                "depth": 2,
+                "root": false,
+                "expanded": true
+            })
         );
     }
 
