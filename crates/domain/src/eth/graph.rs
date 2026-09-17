@@ -1,6 +1,6 @@
 use alloy_primitives::{TxHash, U256};
 
-use crate::eth::{EthAddress, EthReceipt, EthTx};
+use crate::eth::{ActorHint, EthAddress, EthReceipt, EthTx};
 
 #[derive(Clone, Debug)]
 pub enum ContractAction {
@@ -10,8 +10,6 @@ pub enum ContractAction {
         to: EthAddress,
 
         amount: U256,
-        token_name: String,
-        decimals: u8,
     },
     Other,
 }
@@ -87,6 +85,38 @@ impl InteractionKind {
             },
         }
     }
+
+    pub fn actor_hints(&self) -> Vec<(EthAddress, ActorHint)> {
+        match self {
+            InteractionKind::Protocol => Vec::new(),
+            InteractionKind::NativeTransfer(NativeTransfer { from, .. }) => {
+                vec![(*from, ActorHint::Eoa)]
+            }
+            InteractionKind::ContractDeployment {
+                contract_address,
+                deployer,
+            } => vec![
+                (*deployer, ActorHint::Eoa),
+                (*contract_address, ActorHint::Contract),
+            ],
+            InteractionKind::ContractInteraction {
+                contract_address,
+                interactor,
+                contract_interaction_type,
+            } => {
+                let mut hints = vec![
+                    (*interactor, ActorHint::Eoa),
+                    (*contract_address, ActorHint::Contract),
+                ];
+
+                if let ContractAction::Erc20Transfer { token, .. } = contract_interaction_type {
+                    hints.push((*token, ActorHint::Erc20));
+                }
+
+                hints
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -110,6 +140,10 @@ impl Interaction {
 
     pub fn endpoints(&self) -> Option<(&EthAddress, &EthAddress)> {
         self.kind.endpoints()
+    }
+
+    pub fn actor_hints(&self) -> Vec<(EthAddress, ActorHint)> {
+        self.kind.actor_hints()
     }
 }
 
@@ -199,6 +233,10 @@ impl InteractionEdge {
     pub fn endpoints(&self) -> Option<(&EthAddress, &EthAddress)> {
         self.interaction.endpoints()
     }
+
+    pub fn actor_hints(&self) -> Vec<(EthAddress, ActorHint)> {
+        self.interaction.actor_hints()
+    }
 }
 
 #[cfg(test)]
@@ -227,12 +265,10 @@ mod tests {
                 contract_address: EthAddress::from([3u8; 20]),
                 interactor: EthAddress::from([1u8; 20]),
                 contract_interaction_type: ContractAction::Erc20Transfer {
-                    token: EthAddress::from([3u8; 20]),
+                    token: EthAddress::from([9u8; 20]),
                     from: EthAddress::from([1u8; 20]),
                     to: EthAddress::from([2u8; 20]),
                     amount: U256::from(amount),
-                    token_name: "USDC".to_owned(),
-                    decimals: 6,
                 },
             },
         );
@@ -280,6 +316,66 @@ mod tests {
         let edge = InteractionEdge::new(TxMeta::from(&tx(1)), 0, interaction);
 
         assert!(edge.endpoints().is_none());
+    }
+
+    #[test]
+    fn an_erc20_transfer_points_at_the_token_behind_it() {
+        let hints = erc20_edge(&tx(1), 0, 10).actor_hints();
+
+        assert_eq!(
+            hints,
+            vec![
+                (EthAddress::from([1u8; 20]), ActorHint::Eoa),
+                (EthAddress::from([3u8; 20]), ActorHint::Contract),
+                (EthAddress::from([9u8; 20]), ActorHint::Erc20),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_protocol_interaction_tells_nothing_about_anyone() {
+        let interaction = Interaction::new(
+            EthReceipt::new(true, None, Vec::new()),
+            InteractionKind::Protocol,
+        );
+
+        assert!(
+            InteractionEdge::new(TxMeta::from(&tx(1)), 0, interaction)
+                .actor_hints()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_deployment_names_a_wallet_and_a_contract() {
+        let interaction = Interaction::new(
+            EthReceipt::new(true, None, Vec::new()),
+            InteractionKind::ContractDeployment {
+                contract_address: EthAddress::from([7u8; 20]),
+                deployer: EthAddress::from([1u8; 20]),
+            },
+        );
+
+        assert_eq!(
+            interaction.kind().actor_hints(),
+            vec![
+                (EthAddress::from([1u8; 20]), ActorHint::Eoa),
+                (EthAddress::from([7u8; 20]), ActorHint::Contract),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_native_transfer_vouches_only_for_its_sender() {
+        let interaction = Interaction::new(
+            EthReceipt::new(true, None, Vec::new()),
+            InteractionKind::NativeTransfer(NativeTransfer::try_from(tx(1)).unwrap()),
+        );
+
+        assert_eq!(
+            interaction.kind().actor_hints(),
+            vec![(EthAddress::from([1u8; 20]), ActorHint::Eoa)]
+        );
     }
 
     #[test]

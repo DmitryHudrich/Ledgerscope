@@ -7,13 +7,13 @@ use std::{
 use futures::StreamExt;
 
 use domain::eth::{
-    BlockBucket, BlockRange, EthAddress, IndexCoverage, Interaction, InteractionEdge,
-    InteractionId, MinedTx, TxMeta,
+    Actor, ActorHint, BlockBucket, BlockRange, EthAddress, IndexCoverage, Interaction,
+    InteractionEdge, InteractionId, MinedTx, TxMeta,
 };
 
 use crate::eth::{
     classificator::EthTxClassificator,
-    ports::{EthTxIndex, EthTxSource},
+    ports::{ActorResolver, EthTxIndex, EthTxSource},
 };
 
 const ASKING_CHUNK: usize = 128;
@@ -89,17 +89,21 @@ impl Default for ExploreLimits {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct GraphNode {
-    address: EthAddress,
+    actor: Actor,
     depth: u32,
     root: bool,
     expanded: bool,
 }
 
 impl GraphNode {
+    pub fn actor(&self) -> &Actor {
+        &self.actor
+    }
+
     pub fn address(&self) -> &EthAddress {
-        &self.address
+        self.actor.address()
     }
 
     pub fn depth(&self) -> u32 {
@@ -119,6 +123,7 @@ impl GraphNode {
 pub struct AddressGraph {
     nodes: Vec<GraphNode>,
     edges: Vec<InteractionEdge>,
+    actors: Vec<Actor>,
     filled: Vec<BlockRange>,
     truncated: bool,
 }
@@ -130,6 +135,10 @@ impl AddressGraph {
 
     pub fn edges(&self) -> &[InteractionEdge] {
         &self.edges
+    }
+
+    pub fn actors(&self) -> &[Actor] {
+        &self.actors
     }
 
     pub fn filled(&self) -> &[BlockRange] {
@@ -216,6 +225,7 @@ pub struct EthExplorer {
     index: Arc<dyn EthTxIndex>,
     source: Arc<dyn EthTxSource>,
     classificator: Arc<dyn EthTxClassificator>,
+    actors: Arc<dyn ActorResolver>,
     limits: ExploreLimits,
 }
 
@@ -224,12 +234,14 @@ impl EthExplorer {
         index: Arc<dyn EthTxIndex>,
         source: Arc<dyn EthTxSource>,
         classificator: Arc<dyn EthTxClassificator>,
+        actors: Arc<dyn ActorResolver>,
         limits: ExploreLimits,
     ) -> Self {
         Self {
             index,
             source,
             classificator,
+            actors,
             limits,
         }
     }
@@ -444,10 +456,37 @@ impl EthExplorer {
             frontier.extend(found);
         }
 
+        let mut wanted: HashMap<EthAddress, Option<ActorHint>> = HashMap::new();
+
+        for edge in edges.values() {
+            for (address, hint) in edge.actor_hints() {
+                match wanted.entry(address) {
+                    Entry::Occupied(mut slot) => {
+                        let best = slot.get_mut();
+                        if best.is_none_or(|known| hint.outranks(known)) {
+                            *best = Some(hint);
+                        }
+                    }
+                    Entry::Vacant(slot) => {
+                        slot.insert(Some(hint));
+                    }
+                }
+            }
+        }
+
+        for address in seen.keys() {
+            wanted.entry(*address).or_insert(None);
+        }
+
+        let mut resolved = self.actors.resolve(wanted).await;
+
         let mut nodes: Vec<GraphNode> = seen
             .into_iter()
             .map(|(address, walked)| GraphNode {
-                address,
+                actor: resolved
+                    .get(&address)
+                    .cloned()
+                    .unwrap_or_else(|| Actor::unknown(address)),
                 depth: walked.depth,
                 root: roots.contains(&address),
                 expanded: expanded.contains(&address),
@@ -456,8 +495,11 @@ impl EthExplorer {
         nodes.sort_by(|left, right| {
             left.depth
                 .cmp(&right.depth)
-                .then_with(|| left.address.hex().cmp(&right.address.hex()))
+                .then_with(|| left.address().hex().cmp(&right.address().hex()))
         });
+
+        let mut actors: Vec<Actor> = resolved.drain().map(|(_, actor)| actor).collect();
+        actors.sort_by_key(|actor| actor.address().hex());
 
         let mut edges: Vec<InteractionEdge> = edges.into_values().collect();
         edges.sort_by(|left, right| {
@@ -471,6 +513,7 @@ impl EthExplorer {
         Ok(AddressGraph {
             nodes,
             edges,
+            actors,
             filled: Vec::new(),
             truncated,
         })
@@ -503,7 +546,9 @@ mod tests {
     use std::sync::Mutex;
 
     use alloy_primitives::{Bytes, TxHash, U256};
-    use domain::eth::{EthReceipt, EthTx, InteractionKind, graph::NativeTransfer};
+    use domain::eth::{
+        ActorKind, ContractKind, EthReceipt, EthTx, InteractionKind, graph::NativeTransfer,
+    };
 
     use crate::{BoxStream, eth::classificator::ClassificateError};
 
@@ -525,6 +570,33 @@ mod tests {
             .build();
 
         MinedTx::new(tx, EthReceipt::new(true, None, Vec::new()))
+    }
+
+    struct HintsOnly;
+
+    #[async_trait::async_trait]
+    impl ActorResolver for HintsOnly {
+        async fn resolve(
+            &self,
+            wanted: HashMap<EthAddress, Option<ActorHint>>,
+        ) -> HashMap<EthAddress, Actor> {
+            wanted
+                .into_iter()
+                .map(|(address, hint)| {
+                    let kind = match hint {
+                        Some(ActorHint::Eoa) => ActorKind::Eoa,
+                        Some(ActorHint::Contract) => ActorKind::Contract(ContractKind::Plain),
+                        Some(ActorHint::Erc20) => ActorKind::Contract(ContractKind::Erc20 {
+                            symbol: "USDC".to_owned(),
+                            decimals: 6,
+                        }),
+                        None => ActorKind::Unknown,
+                    };
+
+                    (address, Actor::new(address, kind))
+                })
+                .collect()
+        }
     }
 
     struct NativeOnly;
@@ -639,6 +711,7 @@ mod tests {
             index,
             source,
             Arc::new(NativeOnly),
+            Arc::new(HintsOnly),
             ExploreLimits::default(),
         )
     }
@@ -842,6 +915,7 @@ mod tests {
             index,
             Arc::new(SilentSource::default()),
             Arc::new(NativeOnly),
+            Arc::new(HintsOnly),
             ExploreLimits {
                 max_nodes: 2,
                 ..ExploreLimits::default()
@@ -852,5 +926,70 @@ mod tests {
 
         assert!(graph.truncated());
         assert_eq!(graph.nodes().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_walked_sender_is_named_a_wallet() {
+        let explorer = explorer(
+            Arc::new(FakeIndex::new(chain(), covered())),
+            Arc::new(SilentSource::default()),
+        );
+
+        let graph = graph_of(&explorer, ask(vec![GraphRoot::new(address(1), 1)])).await;
+
+        assert_eq!(graph.nodes()[0].actor().kind(), &ActorKind::Eoa);
+    }
+
+    #[tokio::test]
+    async fn a_token_joins_the_cast_without_becoming_a_node() {
+        struct Erc20Only;
+
+        #[async_trait::async_trait]
+        impl EthTxClassificator for Erc20Only {
+            async fn classificate(
+                &self,
+                mined: MinedTx,
+            ) -> Result<Vec<Interaction>, ClassificateError> {
+                let (tx, receipt) = mined.into_parts();
+
+                Ok(vec![Interaction::new(
+                    receipt,
+                    InteractionKind::ContractInteraction {
+                        contract_address: address(50),
+                        interactor: *tx.from(),
+                        contract_interaction_type: domain::eth::ContractAction::Erc20Transfer {
+                            token: address(99),
+                            from: *tx.from(),
+                            to: *tx.to().unwrap(),
+                            amount: tx.amount(),
+                        },
+                    },
+                )])
+            }
+        }
+
+        let explorer = EthExplorer::new(
+            Arc::new(FakeIndex::new(chain(), covered())),
+            Arc::new(SilentSource::default()),
+            Arc::new(Erc20Only),
+            Arc::new(HintsOnly),
+            ExploreLimits::default(),
+        );
+
+        let graph = graph_of(&explorer, ask(vec![GraphRoot::new(address(1), 1)])).await;
+
+        let token = graph
+            .actors()
+            .iter()
+            .find(|actor| actor.address() == &address(99))
+            .expect("the token must be among the actors");
+
+        assert_eq!(token.erc20(), Some(("USDC", 6)));
+        assert!(
+            !graph
+                .nodes()
+                .iter()
+                .any(|node| node.address() == &address(99))
+        );
     }
 }

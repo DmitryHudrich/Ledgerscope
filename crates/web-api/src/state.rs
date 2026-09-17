@@ -4,9 +4,9 @@ use anyhow::Context;
 
 use adapters::eth::{ClickhouseTxRepository, RedisTxCache, RpcTxSource};
 use application::eth::{
-    EthExplorer, ExploreLimits, FetchingTxIndex, StoringEthTxSource,
+    CachingActorResolver, EthExplorer, ExploreLimits, FetchingTxIndex, StoringEthTxSource,
     classificator::FulliestEthTxClassificator,
-    ports::{EthRpcSource, EthTxCache, EthTxIndex, EthTxSource},
+    ports::{ActorRepository, EthRpcSource, EthTxCache, EthTxIndex, EthTxSource},
 };
 use reqwest::{Proxy, Url};
 
@@ -15,6 +15,7 @@ use crate::config::{Config, EthRpcConfig, GraphConfig, StorageConfig};
 struct Storage {
     source: Arc<dyn EthTxSource>,
     index: Option<Arc<dyn EthTxIndex>>,
+    actors: Option<Arc<dyn ActorRepository>>,
 }
 
 #[derive(Clone)]
@@ -36,7 +37,11 @@ impl AppState {
 
         let rpc_source = Arc::new(RpcTxSource::new(http_client, rpc_url, rpc.rps));
         let storage = storage(&config.storage, rpc_source.clone()).await?;
-        let tx_classificator = Arc::new(FulliestEthTxClassificator::new(rpc_source.clone()));
+        let tx_classificator = Arc::new(FulliestEthTxClassificator::new());
+        let actor_resolver = Arc::new(CachingActorResolver::new(
+            rpc_source.clone(),
+            storage.actors,
+        ));
 
         let index = storage.index.unwrap_or_else(|| {
             Arc::new(FetchingTxIndex::new(storage.source.clone())) as Arc<dyn EthTxIndex>
@@ -47,6 +52,7 @@ impl AppState {
                 index,
                 storage.source,
                 tx_classificator,
+                actor_resolver,
                 limits(&config.graph),
             )),
             rpc_source,
@@ -87,6 +93,7 @@ async fn storage(
         return Ok(Storage {
             source: upstream,
             index: None,
+            actors: None,
         });
     }
 
@@ -115,7 +122,8 @@ async fn storage(
 
     Ok(Storage {
         source: Arc::new(StoringEthTxSource::new(upstream, repository.clone(), cache)),
-        index: Some(repository as Arc<dyn EthTxIndex>),
+        index: Some(repository.clone() as Arc<dyn EthTxIndex>),
+        actors: Some(repository as Arc<dyn ActorRepository>),
     })
 }
 

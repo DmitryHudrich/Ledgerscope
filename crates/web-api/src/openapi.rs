@@ -33,4 +33,12 @@ mod tests {
             serde_json::json!("buckets")
         );
     }
+
+    #[test]
+    fn a_node_carries_its_actor_into_the_spec() {
+        let spec = serde_json::to_value(ApiDoc::openapi()).unwrap();
+
+        assert!(spec["components"]["schemas"]["NodeResponse"].is_object());
+        assert!(spec["components"]["schemas"]["ActorResponse"].is_object());
+    }
 }

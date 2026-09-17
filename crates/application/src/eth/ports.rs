@@ -1,10 +1,11 @@
-use std::io;
+use std::{collections::HashMap, io};
 
 use alloy_primitives::{Bytes, TxHash};
 use futures::stream::BoxStream;
 
 use domain::eth::{
-    BlockBucket, BlockRange, BlockRef, EthAddress, EthReceipt, IndexCoverage, MinedTx,
+    Actor, ActorHint, BlockBucket, BlockRange, BlockRef, EthAddress, EthReceipt, IndexCoverage,
+    MinedTx,
 };
 
 #[async_trait::async_trait]
@@ -62,6 +63,21 @@ pub trait EthTxCache: Send + Sync {
     ) -> Result<Vec<u64>, io::Error>;
 
     async fn remember_indexed(&self, blocks: &[u64]) -> Result<(), io::Error>;
+}
+
+#[async_trait::async_trait]
+pub trait ActorRepository: Send + Sync {
+    async fn actors(&self, addresses: &[EthAddress]) -> Result<Vec<Actor>, io::Error>;
+
+    async fn remember(&self, actors: &[Actor]) -> Result<(), io::Error>;
+}
+
+#[async_trait::async_trait]
+pub trait ActorResolver: Send + Sync {
+    async fn resolve(
+        &self,
+        wanted: HashMap<EthAddress, Option<ActorHint>>,
+    ) -> HashMap<EthAddress, Actor>;
 }
 
 #[async_trait::async_trait]

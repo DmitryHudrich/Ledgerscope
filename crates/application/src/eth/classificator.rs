@@ -1,23 +1,14 @@
-use std::{collections::HashMap, fmt, io, sync::Arc};
+use std::{fmt, io};
 
-use alloy_primitives::{B256, Bytes, U256, b256};
-use tokio::sync::{Mutex, OnceCell};
+use alloy_primitives::{B256, U256, b256};
 
 use domain::eth::{
-    BlockRef, EthAddress, EthLog, MinedTx,
+    EthAddress, EthLog, MinedTx,
     graph::{ContractAction, Interaction, InteractionKind, NativeTransfer},
 };
 
-use crate::eth::EthRpcSource;
-
 const TRANSFER_TOPIC_SIGNATURE: B256 =
     b256!("0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef");
-
-const SYMBOL_SELECTOR: [u8; 4] = [0x95, 0xd8, 0x9b, 0x41];
-
-const DECIMALS_SELECTOR: [u8; 4] = [0x31, 0x3c, 0xe5, 0x67];
-
-const DEFAULT_DECIMALS: u8 = 18;
 
 #[derive(Debug)]
 pub enum ClassificateError {
@@ -45,99 +36,13 @@ impl std::error::Error for ClassificateError {
     }
 }
 
-struct AskAgainLater;
-
-#[derive(Clone)]
-struct TokenMeta {
-    symbol: String,
-    decimals: u8,
-}
-
-pub struct FulliestEthTxClassificator {
-    rpc_service: Arc<dyn EthRpcSource>,
-    token_meta: Mutex<HashMap<EthAddress, Arc<OnceCell<TokenMeta>>>>,
-}
+#[derive(Default)]
+pub struct FulliestEthTxClassificator;
 
 impl FulliestEthTxClassificator {
-    pub fn new(rpc_service: Arc<dyn EthRpcSource>) -> Self {
-        Self {
-            rpc_service,
-            token_meta: Mutex::new(HashMap::new()),
-        }
+    pub fn new() -> Self {
+        Self
     }
-
-    async fn token_meta(&self, token: &EthAddress) -> TokenMeta {
-        let meta = {
-            let mut token_meta = self.token_meta.lock().await;
-            token_meta.entry(*token).or_default().clone()
-        };
-
-        match meta.get_or_try_init(|| self.ask_token_meta(token)).await {
-            Ok(meta) => meta.clone(),
-            Err(AskAgainLater) => TokenMeta {
-                symbol: token.to_string(),
-                decimals: DEFAULT_DECIMALS,
-            },
-        }
-    }
-
-    async fn ask_token_meta(&self, token: &EthAddress) -> Result<TokenMeta, AskAgainLater> {
-        let (symbol, decimals) =
-            tokio::join!(self.ask_token_symbol(token), self.ask_token_decimals(token));
-
-        Ok(TokenMeta {
-            symbol: symbol?,
-            decimals: decimals?,
-        })
-    }
-
-    async fn ask_token_symbol(&self, token: &EthAddress) -> Result<String, AskAgainLater> {
-        let returned = self
-            .rpc_service
-            .call(token, &SYMBOL_SELECTOR, BlockRef::Latest)
-            .await;
-
-        match returned {
-            Ok(returned) => Ok(decode_symbol(&returned).unwrap_or_else(|| token.to_string())),
-            Err(error) if answered_with_revert(&error) => {
-                tracing::warn!("{token} has no symbol(), naming it by address from now on");
-                Ok(token.to_string())
-            }
-            Err(error) => {
-                tracing::warn!(
-                    "symbol() on {token} failed, naming it by address this time: {error}"
-                );
-                Err(AskAgainLater)
-            }
-        }
-    }
-
-    async fn ask_token_decimals(&self, token: &EthAddress) -> Result<u8, AskAgainLater> {
-        let returned = self
-            .rpc_service
-            .call(token, &DECIMALS_SELECTOR, BlockRef::Latest)
-            .await;
-
-        match returned {
-            Ok(returned) => Ok(decode_decimals(&returned).unwrap_or(DEFAULT_DECIMALS)),
-            Err(error) if answered_with_revert(&error) => {
-                tracing::warn!(
-                    "{token} has no decimals(), assuming {DEFAULT_DECIMALS} from now on"
-                );
-                Ok(DEFAULT_DECIMALS)
-            }
-            Err(error) => {
-                tracing::warn!(
-                    "decimals() on {token} failed, assuming {DEFAULT_DECIMALS} this time: {error}"
-                );
-                Err(AskAgainLater)
-            }
-        }
-    }
-}
-
-fn answered_with_revert(error: &io::Error) -> bool {
-    error.to_string().contains("execution reverted")
 }
 
 struct Erc20Transfer {
@@ -163,38 +68,6 @@ fn decode_erc20_transfer(log: &EthLog) -> Option<Erc20Transfer> {
         to: EthAddress::from_word(topics[2]),
         amount: U256::from_be_slice(log.data()),
     })
-}
-
-fn decode_symbol(returned: &Bytes) -> Option<String> {
-    if returned.len() == 32 {
-        let text: Vec<u8> = returned
-            .iter()
-            .take_while(|byte| **byte != 0)
-            .copied()
-            .collect();
-        return String::from_utf8(text).ok().filter(|name| !name.is_empty());
-    }
-
-    let word_at = |at: usize| -> Option<usize> {
-        let word = returned.get(at..at.checked_add(32)?)?;
-        usize::try_from(U256::from_be_slice(word)).ok()
-    };
-
-    let offset = word_at(0)?;
-    let length = word_at(offset)?;
-    let start = offset.checked_add(32)?;
-    let text = returned.get(start..start.checked_add(length)?)?;
-
-    String::from_utf8(text.to_vec())
-        .ok()
-        .filter(|name| !name.is_empty())
-}
-
-fn decode_decimals(returned: &Bytes) -> Option<u8> {
-    let word = returned.get(..32)?;
-    u8::try_from(U256::from_be_slice(word))
-        .ok()
-        .filter(|d| *d <= 36)
 }
 
 #[async_trait::async_trait]
@@ -254,26 +127,24 @@ impl EthTxClassificator for FulliestEthTxClassificator {
             )]);
         }
 
-        let mut interactions = Vec::with_capacity(transfers.len());
-        for transfer in transfers {
-            let meta = self.token_meta(&transfer.token).await;
-
-            interactions.push(Interaction::new(
-                receipt.clone(),
-                InteractionKind::ContractInteraction {
-                    contract_address,
-                    interactor,
-                    contract_interaction_type: ContractAction::Erc20Transfer {
-                        token: transfer.token,
-                        from: transfer.from,
-                        to: transfer.to,
-                        amount: transfer.amount,
-                        token_name: meta.symbol,
-                        decimals: meta.decimals,
+        let interactions = transfers
+            .into_iter()
+            .map(|transfer| {
+                Interaction::new(
+                    receipt.clone(),
+                    InteractionKind::ContractInteraction {
+                        contract_address,
+                        interactor,
+                        contract_interaction_type: ContractAction::Erc20Transfer {
+                            token: transfer.token,
+                            from: transfer.from,
+                            to: transfer.to,
+                            amount: transfer.amount,
+                        },
                     },
-                },
-            ));
-        }
+                )
+            })
+            .collect();
 
         Ok(interactions)
     }
@@ -281,48 +152,12 @@ impl EthTxClassificator for FulliestEthTxClassificator {
 
 #[cfg(test)]
 mod tests {
-    use alloy_primitives::TxHash;
-    use domain::eth::{BlockRef, EthLog, EthReceipt, EthTx};
+    use alloy_primitives::{Bytes, TxHash};
+    use domain::eth::{EthLog, EthReceipt, EthTx};
 
     use super::*;
 
     const TRANSFER_SELECTOR: [u8; 4] = [0xa9, 0x05, 0x9c, 0xbb];
-
-    struct FakeRpc;
-
-    #[async_trait::async_trait]
-    impl EthRpcSource for FakeRpc {
-        async fn head_block(&self) -> Result<u64, io::Error> {
-            Ok(21_000_000)
-        }
-
-        async fn call(
-            &self,
-            _to: &EthAddress,
-            data: &[u8],
-            _block: BlockRef,
-        ) -> Result<Bytes, io::Error> {
-            let mut word = [0u8; 32];
-
-            if data == SYMBOL_SELECTOR.as_slice() {
-                word[..4].copy_from_slice(b"USDC");
-            } else if data == DECIMALS_SELECTOR.as_slice() {
-                word[31] = 6;
-            } else {
-                return Err(io::Error::other("execution reverted"));
-            }
-
-            Ok(Bytes::from(word.to_vec()))
-        }
-
-        async fn code(&self, _address: &EthAddress, _block: BlockRef) -> Result<Bytes, io::Error> {
-            Ok(Bytes::new())
-        }
-
-        async fn receipt(&self, _tx_hash: &TxHash) -> Result<Option<EthReceipt>, io::Error> {
-            Ok(None)
-        }
-    }
 
     fn address(last_byte: u8) -> EthAddress {
         EthAddress::from([last_byte; 20])
@@ -352,20 +187,15 @@ mod tests {
             .build()
     }
 
-    fn erc20_of(interaction: &Interaction) -> (EthAddress, EthAddress, U256, String, u8) {
+    fn erc20_of(interaction: &Interaction) -> (EthAddress, EthAddress, U256) {
         match interaction.kind() {
             InteractionKind::ContractInteraction {
                 contract_interaction_type:
                     ContractAction::Erc20Transfer {
-                        from,
-                        to,
-                        amount,
-                        token_name,
-                        decimals,
-                        ..
+                        from, to, amount, ..
                     },
                 ..
-            } => (*from, *to, *amount, token_name.clone(), *decimals),
+            } => (*from, *to, *amount),
             other => panic!("expected an erc20 transfer, got {other:?}"),
         }
     }
@@ -382,21 +212,15 @@ mod tests {
             ],
         );
 
-        let classificator = FulliestEthTxClassificator::new(Arc::new(FakeRpc));
+        let classificator = FulliestEthTxClassificator::new();
         let interactions = classificator
             .classificate(MinedTx::new(call_tx(token), receipt))
             .await
             .unwrap();
 
         assert_eq!(interactions.len(), 2);
-        assert_eq!(
-            erc20_of(&interactions[0]),
-            (alice, bob, U256::from(10), "USDC".to_owned(), 6)
-        );
-        assert_eq!(
-            erc20_of(&interactions[1]),
-            (bob, alice, U256::from(20), "USDC".to_owned(), 6)
-        );
+        assert_eq!(erc20_of(&interactions[0]), (alice, bob, U256::from(10)));
+        assert_eq!(erc20_of(&interactions[1]), (bob, alice, U256::from(20)));
     }
 
     #[tokio::test]
@@ -405,22 +229,19 @@ mod tests {
         let noise = EthLog::new(token, vec![B256::with_last_byte(7)], Bytes::new());
         let receipt = EthReceipt::new(true, None, vec![noise, transfer_log(token, alice, bob, 10)]);
 
-        let classificator = FulliestEthTxClassificator::new(Arc::new(FakeRpc));
+        let classificator = FulliestEthTxClassificator::new();
         let interactions = classificator
             .classificate(MinedTx::new(call_tx(token), receipt))
             .await
             .unwrap();
 
         assert_eq!(interactions.len(), 1);
-        assert_eq!(
-            erc20_of(&interactions[0]),
-            (alice, bob, U256::from(10), "USDC".to_owned(), 6)
-        );
+        assert_eq!(erc20_of(&interactions[0]), (alice, bob, U256::from(10)));
     }
 
     #[tokio::test]
     async fn a_logless_call_stays_a_single_other_interaction() {
-        let classificator = FulliestEthTxClassificator::new(Arc::new(FakeRpc));
+        let classificator = FulliestEthTxClassificator::new();
         let interactions = classificator
             .classificate(MinedTx::new(
                 call_tx(address(9)),
