@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use application::eth::{AddressGraph, ExploreLimits, GraphNode, RpcPlan};
 use domain::eth::{
@@ -8,7 +9,7 @@ use domain::eth::{
 
 const DEFAULT_DEPTH: u32 = 1;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct GraphRequest {
     pub roots: Vec<RootRequest>,
     pub from_block: u64,
@@ -18,7 +19,7 @@ pub struct GraphRequest {
     pub confirm_rpc: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct RootRequest {
     pub address: String,
 
@@ -30,7 +31,7 @@ fn default_depth() -> u32 {
     DEFAULT_DEPTH
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct RangeResponse {
     from_block: u64,
     to_block: u64,
@@ -47,7 +48,7 @@ impl From<BlockRange> for RangeResponse {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct GraphResponse {
     nodes: Vec<NodeResponse>,
     edges: Vec<EdgeResponse>,
@@ -73,7 +74,7 @@ impl GraphResponse {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct NodeResponse {
     address: String,
     depth: u32,
@@ -92,7 +93,7 @@ impl From<&GraphNode> for NodeResponse {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct RpcConfirmationResponse {
     status: &'static str,
     message: String,
@@ -125,7 +126,7 @@ impl RpcConfirmationResponse {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct CoverageResponse {
     persisted: bool,
     chain_head: Option<u64>,
@@ -162,7 +163,7 @@ impl CoverageResponse {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct LimitsResponse {
     max_roots: usize,
     max_depth: u32,
@@ -183,7 +184,7 @@ impl From<ExploreLimits> for LimitsResponse {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct HistogramResponse {
     span: Option<RangeResponse>,
     bucket_size: u64,
@@ -203,7 +204,7 @@ impl HistogramResponse {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct BucketResponse {
     from_block: u64,
     to_block: u64,
@@ -222,7 +223,7 @@ impl From<&BlockBucket> for BucketResponse {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct EdgeResponse {
     tx_hash: String,
     block_number: u64,
@@ -233,7 +234,7 @@ pub struct EdgeResponse {
     interaction: InteractionResponse,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum InteractionResponse {
     Protocol,
@@ -253,7 +254,7 @@ pub enum InteractionResponse {
     },
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ContractActionResponse {
     Erc20Transfer {

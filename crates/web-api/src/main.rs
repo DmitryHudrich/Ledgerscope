@@ -1,5 +1,6 @@
 mod config;
 mod dto;
+mod openapi;
 mod routes;
 mod state;
 
