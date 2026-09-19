@@ -1,16 +1,17 @@
-use std::sync::Arc;
+use std::{path::Path, sync::Arc};
 
 use anyhow::Context;
 
 use adapters::eth::{ClickhouseTxRepository, RedisTxCache, RpcTxSource};
 use application::eth::{
-    CachingActorResolver, EthExplorer, ExploreLimits, FetchingTxIndex, StoringEthTxSource,
+    CachingActorResolver, EthExplorer, ExploreLimits, FetchingTxIndex, JsonLabelProvider,
+    StoringEthTxSource,
     classificator::FulliestEthTxClassificator,
-    ports::{ActorRepository, EthRpcSource, EthTxCache, EthTxIndex, EthTxSource},
+    ports::{ActorRepository, EthRpcSource, EthTxCache, EthTxIndex, EthTxSource, LabelProvider},
 };
 use reqwest::{Proxy, Url};
 
-use crate::config::{Config, EthRpcConfig, GraphConfig, StorageConfig};
+use crate::config::{Config, GraphConfig, StorageConfig};
 
 struct Storage {
     source: Arc<dyn EthTxSource>,
@@ -31,16 +32,33 @@ impl AppState {
 
     pub async fn from_config(config: &Config) -> anyhow::Result<Self> {
         let rpc = &config.eth.rpc;
-        let http_client = http_client(rpc)?;
+        let proxy_url = config
+            .proxy
+            .trim()
+            .is_empty()
+            .then_some(config.proxy.trim().to_string());
+        let http_client = get_http_client(proxy_url.clone())?;
         let rpc_url = Url::parse(&rpc.url)
             .with_context(|| format!("eth.rpc.url is not a valid URL: {}", rpc.url))?;
 
         let rpc_source = Arc::new(RpcTxSource::new(http_client, rpc_url, rpc.rps));
         let storage = storage(&config.storage, rpc_source.clone()).await?;
         let tx_classificator = Arc::new(FulliestEthTxClassificator::new());
+
+        let label_provider = Arc::new(
+            JsonLabelProvider::read_all(Path::new(&config.eth.etherscan_json_path), 1)
+                .with_context(|| {
+                    format!(
+                        "failed to read the labels from {}",
+                        config.eth.etherscan_json_path
+                    )
+                })?,
+        ) as Arc<dyn LabelProvider>;
+
         let actor_resolver = Arc::new(CachingActorResolver::new(
             rpc_source.clone(),
             storage.actors,
+            label_provider.clone(),
         ));
 
         let index = storage.index.unwrap_or_else(|| {
@@ -53,6 +71,7 @@ impl AppState {
                 storage.source,
                 tx_classificator,
                 actor_resolver,
+                label_provider,
                 limits(&config.graph),
             )),
             rpc_source,
@@ -142,13 +161,13 @@ async fn tx_cache(url: &str) -> Option<Arc<dyn EthTxCache>> {
     }
 }
 
-fn http_client(rpc: &EthRpcConfig) -> anyhow::Result<reqwest::Client> {
+fn get_http_client(proxy_url: Option<String>) -> anyhow::Result<reqwest::Client> {
     let mut client = reqwest::ClientBuilder::new();
 
-    if !rpc.proxy.is_empty() {
+    if let Some(proxy_url) = proxy_url {
         client =
-            client.proxy(Proxy::all(&rpc.proxy).with_context(|| {
-                format!("eth.rpc.proxy is not a valid proxy URL: {}", rpc.proxy)
+            client.proxy(Proxy::all(&proxy_url).with_context(|| {
+                format!("eth.rpc.proxy is not a valid proxy URL: {}", proxy_url)
             })?);
     }
 

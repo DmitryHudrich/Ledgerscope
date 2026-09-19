@@ -4,8 +4,8 @@ use alloy_primitives::{Bytes, TxHash};
 use futures::stream::BoxStream;
 
 use domain::eth::{
-    Actor, ActorHint, BlockBucket, BlockRange, BlockRef, EthAddress, EthReceipt, IndexCoverage,
-    MinedTx,
+    Actor, ActorHint, AddressLabel, BlockBucket, BlockRange, BlockRef, EthAddress, EthReceipt,
+    IndexCoverage, MinedTx,
 };
 
 #[async_trait::async_trait]
@@ -78,6 +78,16 @@ pub trait ActorResolver: Send + Sync {
         &self,
         wanted: HashMap<EthAddress, Option<ActorHint>>,
     ) -> HashMap<EthAddress, Actor>;
+}
+
+#[async_trait::async_trait]
+pub trait LabelProvider: Send + Sync {
+    fn source(&self) -> &str;
+
+    async fn fetch_labels_for(
+        &self,
+        addresses: &[EthAddress],
+    ) -> Result<HashMap<EthAddress, Vec<AddressLabel>>, io::Error>;
 }
 
 #[async_trait::async_trait]

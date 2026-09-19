@@ -7,8 +7,8 @@ use application::eth::{
     AddressGraph, ExploreLimits, GraphNode, LowLevelGraph, LowLevelNode, RpcPlan,
 };
 use domain::eth::{
-    Actor, ActorKind, BlockBucket, BlockRange, ContractAction, ContractKind, EthAddress,
-    IndexCoverage, Interaction, InteractionEdge, InteractionKind, LowLevelInteraction,
+    Actor, ActorKind, AddressLabel, BlockBucket, BlockRange, ContractAction, ContractKind,
+    EthAddress, IndexCoverage, Interaction, InteractionEdge, InteractionKind, LowLevelInteraction,
 };
 
 const DEFAULT_DEPTH: u32 = 1;
@@ -130,9 +130,24 @@ impl LowLevelGraphResponse {
 }
 
 #[derive(Serialize, ToSchema)]
+pub struct AddressLabelResponse {
+    value: String,
+    source: String,
+}
+
+impl From<&AddressLabel> for AddressLabelResponse {
+    fn from(label: &AddressLabel) -> Self {
+        Self {
+            value: label.value().to_owned(),
+            source: label.source().to_owned(),
+        }
+    }
+}
+
+#[derive(Serialize, ToSchema)]
 pub struct LowLevelActorResponse {
     address: String,
-    labels: Vec<String>,
+    labels: Vec<AddressLabelResponse>,
     depth: u32,
     root: bool,
     expanded: bool,
@@ -142,7 +157,12 @@ impl From<&LowLevelNode> for LowLevelActorResponse {
     fn from(node: &LowLevelNode) -> Self {
         Self {
             address: node.address().to_string(),
-            labels: node.actor().labels().to_vec(),
+            labels: node
+                .actor()
+                .labels()
+                .iter()
+                .map(AddressLabelResponse::from)
+                .collect(),
             depth: node.depth(),
             root: node.root(),
             expanded: node.expanded(),
@@ -182,6 +202,7 @@ impl From<&LowLevelInteraction> for LowLevelInteractionResponse {
 #[derive(Serialize, ToSchema)]
 pub struct NodeResponse {
     address: String,
+    labels: Vec<AddressLabelResponse>,
     depth: u32,
     root: bool,
     expanded: bool,
@@ -203,6 +224,12 @@ impl From<&GraphNode> for NodeResponse {
     fn from(node: &GraphNode) -> Self {
         Self {
             address: node.address().to_string(),
+            labels: node
+                .actor()
+                .labels()
+                .iter()
+                .map(AddressLabelResponse::from)
+                .collect(),
             depth: node.depth(),
             root: node.root(),
             expanded: node.expanded(),
@@ -549,6 +576,7 @@ mod tests {
                 symbol: "USDC".to_owned(),
                 decimals: 6,
             }),
+            Vec::new(),
         )]
     }
 
@@ -671,12 +699,16 @@ mod tests {
     }
 
     #[test]
-    fn a_low_level_actor_carries_an_empty_label_list() {
+    fn a_low_level_actor_carries_the_labels_it_was_given() {
         let node = LowLevelNode::new(
             domain::eth::LowLevelActor::new(
                 "0x1111111111111111111111111111111111111111"
                     .parse()
                     .unwrap(),
+                vec![AddressLabel::new(
+                    "Binance 7".to_owned(),
+                    "etherscan.io".to_owned(),
+                )],
             ),
             2,
             false,
@@ -687,11 +719,31 @@ mod tests {
             serde_json::to_value(LowLevelActorResponse::from(&node)).unwrap(),
             json!({
                 "address": "0x1111111111111111111111111111111111111111",
-                "labels": [],
+                "labels": [{"value": "Binance 7", "source": "etherscan.io"}],
                 "depth": 2,
                 "root": false,
                 "expanded": true
             })
+        );
+    }
+
+    #[test]
+    fn a_low_level_actor_nobody_labelled_carries_an_empty_list() {
+        let node = LowLevelNode::new(
+            domain::eth::LowLevelActor::new(
+                "0x1111111111111111111111111111111111111111"
+                    .parse()
+                    .unwrap(),
+                Vec::new(),
+            ),
+            2,
+            false,
+            true,
+        );
+
+        assert_eq!(
+            serde_json::to_value(LowLevelActorResponse::from(&node)).unwrap()["labels"],
+            json!([])
         );
     }
 

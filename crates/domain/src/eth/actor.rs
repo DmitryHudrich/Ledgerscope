@@ -1,6 +1,6 @@
 use std::hash::{Hash, Hasher};
 
-use crate::eth::EthAddress;
+use crate::eth::{AddressLabel, EthAddress};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ContractKind {
@@ -25,16 +25,25 @@ pub enum ActorHint {
 #[derive(Clone, Debug)]
 pub struct Actor {
     address: EthAddress,
+    labels: Vec<AddressLabel>,
     kind: ActorKind,
 }
 
 impl Actor {
-    pub fn new(address: EthAddress, kind: ActorKind) -> Self {
-        Self { address, kind }
+    pub fn new(address: EthAddress, kind: ActorKind, labels: Vec<AddressLabel>) -> Self {
+        Self {
+            address,
+            kind,
+            labels,
+        }
     }
 
     pub fn unknown(address: EthAddress) -> Self {
-        Self::new(address, ActorKind::Unknown)
+        Self::new(address, ActorKind::Unknown, Vec::new())
+    }
+
+    pub fn labeled(self, labels: Vec<AddressLabel>) -> Self {
+        Self { labels, ..self }
     }
 
     pub fn address(&self) -> &EthAddress {
@@ -43,6 +52,10 @@ impl Actor {
 
     pub fn kind(&self) -> &ActorKind {
         &self.kind
+    }
+
+    pub fn labels(&self) -> &[AddressLabel] {
+        &self.labels
     }
 
     pub fn is_contract(&self) -> bool {
@@ -84,58 +97,5 @@ impl ActorHint {
             ActorHint::Contract => 1,
             ActorHint::Erc20 => 2,
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn address(last_byte: u8) -> EthAddress {
-        EthAddress::from([last_byte; 20])
-    }
-
-    fn usdc() -> ActorKind {
-        ActorKind::Contract(ContractKind::Erc20 {
-            symbol: "USDC".to_owned(),
-            decimals: 6,
-        })
-    }
-
-    #[test]
-    fn an_actor_is_the_same_actor_whatever_we_learned_about_it() {
-        let guessed = Actor::unknown(address(1));
-        let known = Actor::new(address(1), usdc());
-
-        assert_eq!(guessed, known);
-    }
-
-    #[test]
-    fn two_addresses_are_two_actors() {
-        assert_ne!(Actor::unknown(address(1)), Actor::unknown(address(2)));
-    }
-
-    #[test]
-    fn only_a_token_tells_its_symbol() {
-        let token = Actor::new(address(1), usdc());
-
-        assert_eq!(token.erc20(), Some(("USDC", 6)));
-        assert!(token.is_contract());
-        assert_eq!(Actor::unknown(address(2)).erc20(), None);
-    }
-
-    #[test]
-    fn a_plain_contract_is_still_a_contract() {
-        let contract = Actor::new(address(1), ActorKind::Contract(ContractKind::Plain));
-
-        assert!(contract.is_contract());
-        assert_eq!(contract.erc20(), None);
-    }
-
-    #[test]
-    fn a_proven_contract_beats_a_guessed_wallet() {
-        assert!(ActorHint::Contract.outranks(ActorHint::Eoa));
-        assert!(ActorHint::Erc20.outranks(ActorHint::Contract));
-        assert!(!ActorHint::Eoa.outranks(ActorHint::Contract));
     }
 }

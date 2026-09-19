@@ -2,23 +2,16 @@ use std::hash::{Hash, Hasher};
 
 use alloy_primitives::U256;
 
-use crate::eth::{EthAddress, MinedTx, TxMeta};
+use crate::eth::{AddressLabel, EthAddress, MinedTx, TxMeta};
 
 #[derive(Clone, Debug)]
 pub struct LowLevelActor {
     address: EthAddress,
-    labels: Vec<String>,
+    labels: Vec<AddressLabel>,
 }
 
 impl LowLevelActor {
-    pub fn new(address: EthAddress) -> Self {
-        Self {
-            address,
-            labels: Vec::new(),
-        }
-    }
-
-    pub fn labelled(address: EthAddress, labels: Vec<String>) -> Self {
+    pub fn new(address: EthAddress, labels: Vec<AddressLabel>) -> Self {
         Self { address, labels }
     }
 
@@ -26,7 +19,7 @@ impl LowLevelActor {
         &self.address
     }
 
-    pub fn labels(&self) -> &[String] {
+    pub fn labels(&self) -> &[AddressLabel] {
         &self.labels
     }
 }
@@ -231,19 +224,26 @@ mod tests {
 
     #[test]
     fn an_actor_is_the_same_actor_whatever_we_label_it() {
-        let bare = LowLevelActor::new(address(1));
-        let tagged = LowLevelActor::labelled(address(1), vec!["binance".to_owned()]);
+        let bare = LowLevelActor::new(address(1), Vec::new());
+        let tagged = LowLevelActor::new(
+            address(1),
+            vec![AddressLabel::new(
+                "binance".to_owned(),
+                "etherscan.io".to_owned(),
+            )],
+        );
 
         assert_eq!(bare, tagged);
         assert!(bare.labels().is_empty());
-        assert_eq!(tagged.labels(), ["binance"]);
+        assert_eq!(tagged.labels()[0].value(), "binance");
+        assert_eq!(tagged.labels()[0].source(), "etherscan.io");
     }
 
     #[test]
     fn two_addresses_are_two_actors() {
         assert_ne!(
-            LowLevelActor::new(address(1)),
-            LowLevelActor::new(address(2))
+            LowLevelActor::new(address(1), Vec::new()),
+            LowLevelActor::new(address(2), Vec::new())
         );
     }
 }

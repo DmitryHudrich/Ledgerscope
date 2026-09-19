@@ -8,11 +8,9 @@ use alloy::{
     rpc::json_rpc::{ErrorPayload, RequestPacket, ResponsePacket},
     transports::{RpcError, TransportError, TransportErrorKind, TransportFut},
 };
-use tokio::{
-    sync::Mutex,
-    time::{Instant, sleep_until},
-};
 use tower::{Layer, Service};
+
+use crate::eth::rate_limiter::RateLimiter;
 
 const MAX_ATTEMPTS: u32 = 5;
 const BASE_BACKOFF: Duration = Duration::from_millis(250);
@@ -177,37 +175,4 @@ fn backoff(attempt: u32) -> Duration {
     ));
 
     exponential.min(MAX_BACKOFF) + jitter
-}
-
-struct RateLimiter {
-    interval: Duration,
-    next_slot: Mutex<Instant>,
-}
-
-impl RateLimiter {
-    fn new(rps: u32) -> Self {
-        Self {
-            interval: Duration::from_secs(1) / rps.max(1),
-            next_slot: Mutex::new(Instant::now()),
-        }
-    }
-
-    async fn acquire(&self, requests: usize) {
-        let requests = u32::try_from(requests.max(1)).unwrap_or(u32::MAX);
-
-        let slot = {
-            let mut next_slot = self.next_slot.lock().await;
-            let slot = (*next_slot).max(Instant::now());
-            *next_slot = slot + self.interval * requests;
-            slot
-        };
-
-        sleep_until(slot).await;
-    }
-
-    async fn throttle(&self, cooldown: Duration) {
-        let resume = Instant::now() + cooldown;
-        let mut next_slot = self.next_slot.lock().await;
-        *next_slot = (*next_slot).max(resume);
-    }
 }

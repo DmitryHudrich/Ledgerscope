@@ -7,9 +7,9 @@ use std::{
 use alloy_primitives::{Bytes, U256};
 use futures::StreamExt;
 
-use domain::eth::{Actor, ActorHint, ActorKind, BlockRef, ContractKind, EthAddress};
+use domain::eth::{Actor, ActorHint, ActorKind, AddressLabel, BlockRef, ContractKind, EthAddress};
 
-use crate::eth::ports::{ActorRepository, ActorResolver, EthRpcSource};
+use crate::eth::ports::{ActorRepository, ActorResolver, EthRpcSource, LabelProvider};
 
 const SYMBOL_SELECTOR: [u8; 4] = [0x95, 0xd8, 0x9b, 0x41];
 
@@ -22,15 +22,35 @@ const ASKING_CONCURRENCY: usize = 20;
 pub struct CachingActorResolver {
     rpc: Arc<dyn EthRpcSource>,
     repository: Option<Arc<dyn ActorRepository>>,
+    labels: Arc<dyn LabelProvider>,
     known: RwLock<HashMap<EthAddress, ActorKind>>,
 }
 
 impl CachingActorResolver {
-    pub fn new(rpc: Arc<dyn EthRpcSource>, repository: Option<Arc<dyn ActorRepository>>) -> Self {
+    pub fn new(
+        rpc: Arc<dyn EthRpcSource>,
+        repository: Option<Arc<dyn ActorRepository>>,
+        labels: Arc<dyn LabelProvider>,
+    ) -> Self {
         Self {
             rpc,
             repository,
+            labels,
             known: RwLock::new(HashMap::new()),
+        }
+    }
+
+    async fn labels_for(&self, addresses: &[EthAddress]) -> HashMap<EthAddress, Vec<AddressLabel>> {
+        match self.labels.fetch_labels_for(addresses).await {
+            Ok(labels) => labels,
+            Err(error) => {
+                tracing::warn!(
+                    "{} stayed unlabeled, {} could not tell: {error}",
+                    addresses.len(),
+                    self.labels.source()
+                );
+                HashMap::new()
+            }
         }
     }
 
@@ -95,7 +115,7 @@ impl CachingActorResolver {
             },
         };
 
-        Actor::new(address, kind)
+        Actor::new(address, kind, Vec::new())
     }
 
     async fn ask_token(&self, token: &EthAddress) -> ContractKind {
@@ -173,11 +193,11 @@ impl ActorResolver for CachingActorResolver {
         for (address, hint) in &wanted {
             match self.remembered(address) {
                 Some(kind) if worth_keeping(&kind, *hint) => {
-                    resolved.insert(*address, Actor::new(*address, kind));
+                    resolved.insert(*address, Actor::new(*address, kind, Vec::new()));
                 }
                 _ => match settled(*hint) {
                     Some(kind) => {
-                        resolved.insert(*address, Actor::new(*address, kind));
+                        resolved.insert(*address, Actor::new(*address, kind, Vec::new()));
                     }
                     None => asking.push(*address),
                 },
@@ -217,7 +237,18 @@ impl ActorResolver for CachingActorResolver {
             resolved.insert(*actor.address(), actor);
         }
 
+        let mut labels = self
+            .labels_for(resolved.keys().copied().collect::<Vec<_>>().as_slice())
+            .await;
+
         resolved
+            .into_iter()
+            .map(|(address, actor)| {
+                let labeled = actor.labeled(labels.remove(&address).unwrap_or_default());
+
+                (address, labeled)
+            })
+            .collect()
     }
 }
 
@@ -346,12 +377,28 @@ mod tests {
         }
     }
 
+    struct NoLabels;
+
+    #[async_trait::async_trait]
+    impl LabelProvider for NoLabels {
+        fn source(&self) -> &str {
+            "nothing"
+        }
+
+        async fn fetch_labels_for(
+            &self,
+            _addresses: &[EthAddress],
+        ) -> Result<HashMap<EthAddress, Vec<AddressLabel>>, io::Error> {
+            Ok(HashMap::new())
+        }
+    }
+
     fn address(last_byte: u8) -> EthAddress {
         EthAddress::from([last_byte; 20])
     }
 
     fn resolver(rpc: Arc<CountingRpc>) -> CachingActorResolver {
-        CachingActorResolver::new(rpc, None)
+        CachingActorResolver::new(rpc, None, Arc::new(NoLabels))
     }
 
     fn hinted(address: EthAddress, hint: ActorHint) -> HashMap<EthAddress, Option<ActorHint>> {
@@ -441,11 +488,12 @@ mod tests {
         let rpc = Arc::new(CountingRpc::new(Bytes::new()));
         let storage = Arc::new(MemoryActors::default());
 
-        let first = CachingActorResolver::new(rpc.clone(), Some(storage.clone()));
+        let first =
+            CachingActorResolver::new(rpc.clone(), Some(storage.clone()), Arc::new(NoLabels));
         first.resolve(hinted(address(9), ActorHint::Erc20)).await;
         let after_first = rpc.asked().len();
 
-        let restarted = CachingActorResolver::new(rpc.clone(), Some(storage));
+        let restarted = CachingActorResolver::new(rpc.clone(), Some(storage), Arc::new(NoLabels));
         let resolved = restarted
             .resolve(hinted(address(9), ActorHint::Erc20))
             .await;
@@ -487,7 +535,8 @@ mod tests {
         }
 
         let storage = Arc::new(MemoryActors::default());
-        let resolver = CachingActorResolver::new(Arc::new(MuteRpc), Some(storage.clone()));
+        let resolver =
+            CachingActorResolver::new(Arc::new(MuteRpc), Some(storage.clone()), Arc::new(NoLabels));
         let resolved = resolver.resolve(HashMap::from([(address(7), None)])).await;
 
         assert_eq!(resolved[&address(7)].kind(), &ActorKind::Unknown);

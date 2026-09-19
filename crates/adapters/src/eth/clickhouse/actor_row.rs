@@ -55,7 +55,7 @@ impl ActorRow {
             }
         };
 
-        Ok(Actor::new(address, kind))
+        Ok(Actor::new(address, kind, Vec::new()))
     }
 }
 
@@ -68,7 +68,7 @@ mod tests {
     }
 
     fn round_trip(kind: ActorKind) -> Actor {
-        ActorRow::from_actor(&Actor::new(address(), kind))
+        ActorRow::from_actor(&Actor::new(address(), kind, Vec::new()))
             .expect("this actor is worth writing down")
             .into_actor()
             .expect("what we wrote must read back")
