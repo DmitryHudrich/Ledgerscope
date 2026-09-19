@@ -31,6 +31,7 @@ export interface Scene {
   time: number;
   showGrid: boolean;
   showFlow: boolean;
+  transparentBackground?: boolean;
 }
 
 const DIM = 0.86;
@@ -85,10 +86,13 @@ export function drawScene(ctx: CanvasRenderingContext2D, scene: Scene): void {
   const { transform: t, palette, model, width, height, dpr } = scene;
 
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.fillStyle = palette.plane;
-  ctx.fillRect(0, 0, width, height);
-
-  if (scene.showGrid) drawGrid(ctx, scene);
+  if (scene.transparentBackground) {
+    ctx.clearRect(0, 0, width, height);
+  } else {
+    ctx.fillStyle = palette.plane;
+    ctx.fillRect(0, 0, width, height);
+    if (scene.showGrid) drawGrid(ctx, scene);
+  }
 
   ctx.save();
   ctx.setTransform(dpr * t.k, 0, 0, dpr * t.k, dpr * t.x, dpr * t.y);
@@ -160,23 +164,28 @@ function linkInView(
 
 function drawGrid(ctx: CanvasRenderingContext2D, scene: Scene): void {
   const { transform: t, palette, width, height } = scene;
-  let step = 64;
-  while (step * t.k < 26) step *= 2;
-  while (step * t.k > 130) step /= 2;
+  let step = 80;
+  while (step * t.k < 40) step *= 2;
+  while (step * t.k > 140) step /= 2;
 
   const startX = Math.floor((-t.x / t.k) / step) * step;
   const startY = Math.floor((-t.y / t.k) / step) * step;
   const endX = (width - t.x) / t.k;
   const endY = (height - t.y) / t.k;
 
+  ctx.save();
   ctx.fillStyle = palette.grid;
+  ctx.beginPath();
   for (let wx = startX; wx <= endX; wx += step) {
     for (let wy = startY; wy <= endY; wy += step) {
       const sx = wx * t.k + t.x;
       const sy = wy * t.k + t.y;
-      ctx.fillRect(sx - 0.5, sy - 0.5, 1, 1);
+      ctx.moveTo(sx + 1.6, sy);
+      ctx.arc(sx, sy, 1.6, 0, Math.PI * 2);
     }
   }
+  ctx.fill();
+  ctx.restore();
 }
 
 function drawLink(

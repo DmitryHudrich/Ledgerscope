@@ -10,15 +10,28 @@ import {
   weiToEth,
 } from '../lib/format';
 import { assetLabel, sortedAssets, type GraphModel, type GraphNode } from '../graph/model';
-import { IconClose, IconCopy, IconTable, IconTarget } from './Icons';
+import { IconChevron, IconClose, IconCopy, IconTable, IconTarget } from './Icons';
+import {
+  Button,
+  Dot,
+  MetaList,
+  Panel,
+  PanelSection,
+  PanelTitle,
+  cx,
+  focusRing,
+} from './ui';
 
 interface Props {
   node: GraphNode;
   model: GraphModel;
-  rooted: boolean;
   onSelect: (id: string | null) => void;
+  onBuildFromHere: () => void;
+  buildingFromHere: boolean;
+  buildFromHereDisabled: boolean;
+  buildFromHereHint: string | null;
+  buildFeedback: { kind: 'success' | 'info' | 'error'; message: string } | null;
   onCenter: (id: string) => void;
-  onExpand: () => void;
   onShowTransactions: () => void;
   onClose: () => void;
 }
@@ -44,15 +57,19 @@ const ASSET_PREVIEW = 8;
 export function DetailsDrawer({
   node,
   model,
-  rooted,
   onSelect,
+  onBuildFromHere,
+  buildingFromHere,
+  buildFromHereDisabled,
+  buildFromHereHint,
+  buildFeedback,
   onCenter,
-  onExpand,
   onShowTransactions,
   onClose,
 }: Props) {
   const [showAllPeers, setShowAllPeers] = useState(false);
   const [showAllAssets, setShowAllAssets] = useState(false);
+  const [peersOpen, setPeersOpen] = useState(false);
   const [copied, setCopied] = useState(false);
 
   const peers = useMemo<Peer[]>(() => {
@@ -104,11 +121,6 @@ export function DetailsDrawer({
     return rows.sort((a, b) => (order.get(a.key) ?? 0) - (order.get(b.key) ?? 0));
   }, [node]);
 
-  const inEth = weiToEth(node.valueIn);
-  const outEth = weiToEth(node.valueOut);
-  const total = inEth + outEth;
-  const inShare = total > 0 ? (inEth / total) * 100 : 50;
-
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(node.id);
@@ -123,63 +135,73 @@ export function DetailsDrawer({
   const visibleAssets = showAllAssets ? assets : assets.slice(0, ASSET_PREVIEW);
 
   return (
-    <aside className="panel overlay drawer" aria-label="Address details">
-      <header className="drawer-head">
-        <div className="drawer-title">
-          <span className="kind-chip">
-            <span className={`dot dot-${node.kind}`} aria-hidden="true" />
+    <Panel
+      as="aside"
+      className="absolute bottom-[var(--sheet-h)] right-0 top-0 z-10 flex w-[var(--inspector-w)] animate-drawer-in flex-col overflow-hidden bg-surface-1 shadow-none backdrop-blur-none transition-[bottom,width] duration-200 ease-[cubic-bezier(0.22,0.61,0.36,1)]"
+      style={{ borderRadius: 0, borderWidth: 0, borderLeftWidth: 1 }}
+      aria-label="Address details"
+    >
+      <header className="flex items-start gap-3 border-b border-hairline px-4 py-[14px]">
+        <div className="min-w-0 flex-1">
+          <span className="inline-flex items-center gap-[6px] text-[10px] uppercase tracking-[0.07em] text-text-secondary">
+            <Dot tone={node.kind} />
             {KIND_LABEL[node.kind]}
           </span>
-          <div className="address">{node.id}</div>
+          <div className="mt-1.5 break-all font-mono-ui text-[12.5px] leading-relaxed">{node.id}</div>
         </div>
-        <button
-          type="button"
-          className="btn btn-ghost btn-icon"
+        <Button
+          variant="ghost"
+          icon
           onClick={onClose}
           aria-label="Close details"
           title="Close"
         >
           <IconClose />
-        </button>
+        </Button>
       </header>
 
-      <div className="drawer-body">
-        <section className="panel-section">
-          <div className="stat-grid">
-            <div className="stat">
-              <div className="stat-label">Received (ETH)</div>
-              <div className="stat-value">
-                {formatEth(node.valueIn)}
-                <span className="stat-unit">ETH</span>
-              </div>
-            </div>
-            <div className="stat">
-              <div className="stat-label">Sent (ETH)</div>
-              <div className="stat-value">
-                {formatEth(node.valueOut)}
-                <span className="stat-unit">ETH</span>
-              </div>
-            </div>
-          </div>
+      <div className="overflow-y-auto overscroll-contain">
+        <PanelSection>
+          <PanelTitle>Assets · {formatCount(assets.length)}</PanelTitle>
+          {assets.length > 0 ? (
+            <>
+              <table className="w-full border-collapse text-xs [&_td]:border-t [&_td]:border-hairline [&_td]:py-[6px] [&_td:first-child]:whitespace-nowrap [&_th]:pb-1.5 [&_th]:text-left [&_th]:text-[10px] [&_th]:font-medium [&_th]:uppercase [&_th]:tracking-[0.06em] [&_th]:text-text-muted [&_.num]:text-right [&_.num]:tabular-nums">
+                <thead>
+                  <tr>
+                    <th>Asset</th>
+                    <th className="num">Received</th>
+                    <th className="num">Sent</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visibleAssets.map((flow) => (
+                    <tr key={flow.key}>
+                      <td title={flow.native ? 'ETH' : flow.key}>
+                        <Dot tone={flow.native ? 'focus' : 'token'} className="mr-[6px] align-middle" />
+                        <span className="inline-block max-w-[92px] overflow-hidden text-ellipsis whitespace-nowrap align-middle font-mono-ui">
+                          {assetLabel(flow)}
+                        </span>
+                      </td>
+                      <td className="num">{formatUnits(flow.received, flow.decimals)}</td>
+                      <td className="num">{formatUnits(flow.sent, flow.decimals)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {assets.length > ASSET_PREVIEW && (
+                <Button variant="ghost" className="mt-2" onClick={() => setShowAllAssets((value) => !value)}>
+                  {showAllAssets ? `Show top ${ASSET_PREVIEW}` : `Show all ${formatCount(assets.length)}`}
+                </Button>
+              )}
+            </>
+          ) : (
+            <p className="m-0 text-xs text-text-muted">No transferred assets for this address.</p>
+          )}
+        </PanelSection>
 
-          <div className="flow-bar" aria-hidden="true">
-            <span
-              style={{
-                width: `${inShare}%`,
-                background: `var(--series-${node.kind === 'focus' ? 'focus' : node.kind})`,
-              }}
-            />
-            <span
-              style={{
-                width: `${100 - inShare}%`,
-                background: `color-mix(in srgb, var(--series-${
-                  node.kind === 'focus' ? 'focus' : node.kind
-                }) 35%, transparent)`,
-              }}
-            />
-          </div>
-
-          <dl className="meta-list">
+        <PanelSection>
+          <PanelTitle>Activity</PanelTitle>
+          <MetaList>
             <div>
               <dt>Transactions</dt>
               <dd>
@@ -206,94 +228,86 @@ export function DetailsDrawer({
               <dt>Last seen</dt>
               <dd title={formatTimestamp(node.lastSeen)}>{formatRelative(node.lastSeen)}</dd>
             </div>
-          </dl>
+          </MetaList>
 
-          <div className="button-row">
-            <button
-              type="button"
-              className="btn btn-primary"
-              disabled={rooted}
-              title={
-                rooted
-                  ? 'Already an investigation root'
-                  : 'Add this address to the canvas and walk the graph from it'
-              }
-              onClick={onExpand}
+          <div className="mt-4">
+            <Button
+              variant="primary"
+              className="w-full"
+              disabled={buildingFromHere || buildFromHereDisabled}
+              title={buildFromHereHint ?? undefined}
+              onClick={onBuildFromHere}
             >
-              <IconTarget /> {rooted ? 'Is a root' : 'Build from here'}
-            </button>
-            <button type="button" className="btn" onClick={() => onCenter(node.id)}>
-              <IconTarget /> Center
-            </button>
-            <button type="button" className="btn" onClick={onShowTransactions}>
-              <IconTable /> Transactions
-            </button>
-            <button type="button" className="btn" onClick={copy}>
-              <IconCopy /> {copied ? 'Copied' : 'Copy'}
-            </button>
-          </div>
-        </section>
-
-        {assets.length > 0 && (
-          <section className="panel-section">
-            <h2 className="panel-title">Assets · {formatCount(assets.length)}</h2>
-            <table className="asset-table">
-              <thead>
-                <tr>
-                  <th>Asset</th>
-                  <th className="num">In</th>
-                  <th className="num">Out</th>
-                  <th className="num">Tx</th>
-                </tr>
-              </thead>
-              <tbody>
-                {visibleAssets.map((flow) => (
-                  <tr key={flow.key}>
-                    <td title={flow.native ? 'ETH' : flow.key}>
-                      <span
-                        className={`dot dot-${flow.native ? 'focus' : 'token'}`}
-                        aria-hidden="true"
-                      />
-                      <span className="asset-symbol">{assetLabel(flow)}</span>
-                    </td>
-                    <td className="num">{formatUnits(flow.received, flow.decimals)}</td>
-                    <td className="num">{formatUnits(flow.sent, flow.decimals)}</td>
-                    <td className="num">{formatCount(flow.count)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {assets.length > ASSET_PREVIEW && (
-              <button
-                type="button"
-                className="btn btn-ghost"
-                style={{ marginTop: 8 }}
-                onClick={() => setShowAllAssets((value) => !value)}
-              >
-                {showAllAssets ? `Show top ${ASSET_PREVIEW}` : `Show all ${formatCount(assets.length)}`}
-              </button>
+              {buildingFromHere ? 'Building…' : 'Build from here'}
+            </Button>
+            {buildFromHereHint && (
+              <p className="mb-0 mt-[6px] text-[11px] text-text-muted">
+                {buildFromHereHint}
+              </p>
             )}
-          </section>
-        )}
+            {buildFeedback && (
+              <p
+                className={cx(
+                  'mb-0 mt-[6px] text-[11px]',
+                  buildFeedback.kind === 'error'
+                    ? 'text-critical'
+                    : buildFeedback.kind === 'success'
+                      ? 'text-good'
+                      : 'text-text-muted',
+                )}
+                role={buildFeedback.kind === 'error' ? 'alert' : 'status'}
+              >
+                {buildFeedback.message}
+              </p>
+            )}
+            <div className="mt-2 grid grid-cols-3 gap-[6px]">
+              <Button variant="ghost" className="px-2" onClick={() => onCenter(node.id)}>
+                <IconTarget /> Center
+              </Button>
+              <Button variant="ghost" className="px-2" onClick={onShowTransactions}>
+                <IconTable /> Transactions
+              </Button>
+              <Button variant="ghost" className="px-2" onClick={copy}>
+                <IconCopy /> {copied ? 'Copied' : 'Copy'}
+              </Button>
+            </div>
+          </div>
+        </PanelSection>
 
-        <section className="panel-section">
-          <h2 className="panel-title">
-            Counterparties · {formatCount(peers.length)}
-          </h2>
-          <div className="peer-list">
+        <PanelSection className="p-0">
+          <button
+            type="button"
+            className={cx(
+              'flex w-full cursor-pointer items-center justify-between border-0 bg-transparent px-[14px] py-3 text-left hover:bg-[color-mix(in_srgb,var(--text-primary)_4%,transparent)]',
+              focusRing,
+            )}
+            onClick={() => setPeersOpen((value) => !value)}
+            aria-expanded={peersOpen}
+          >
+            <span className="text-[10px] font-semibold uppercase tracking-[0.09em] text-text-muted">
+              Counterparties · {formatCount(peers.length)}
+            </span>
+            <IconChevron className={cx('transition-transform duration-150', peersOpen && 'rotate-180')} />
+          </button>
+          {peersOpen && <div className="grid gap-px px-[6px] pb-3">
             {visiblePeers.map((peer) => {
               const net = peer.received - peer.sent;
               return (
                 <button
                   key={peer.id}
                   type="button"
-                  className="peer"
+                  className={cx(
+                    'grid w-full cursor-pointer grid-cols-[auto_1fr_auto] items-center gap-2 rounded-ui-sm border-0 bg-transparent px-2 py-[7px] text-left hover:bg-[color-mix(in_srgb,var(--text-primary)_6%,transparent)]',
+                    focusRing,
+                  )}
                   onClick={() => onSelect(peer.id)}
                   title={peer.id}
                 >
-                  <span className={`dot dot-${peer.kind}`} aria-hidden="true" />
-                  <span className="peer-address">{shortAddress(peer.id, 10, 6)}</span>
-                  <span className="peer-value">
+                  <Dot tone={peer.kind} />
+                  <span className="overflow-hidden text-ellipsis font-mono-ui text-xs">
+                    {shortAddress(peer.id, 10, 6)}
+                  </span>
+                  <span className="text-xs tabular-nums text-text-secondary">
                     {peer.hasEth ? (
                       <>
                         {net >= 0n ? '+' : '−'}
@@ -306,19 +320,18 @@ export function DetailsDrawer({
                 </button>
               );
             })}
-          </div>
-          {peers.length > PEER_PREVIEW && (
-            <button
-              type="button"
-              className="btn btn-ghost"
-              style={{ marginTop: 8 }}
+          </div>}
+          {peersOpen && peers.length > PEER_PREVIEW && (
+            <Button
+              variant="ghost"
+              className="mb-3 ml-3"
               onClick={() => setShowAllPeers((value) => !value)}
             >
               {showAllPeers ? 'Show top 10' : `Show all ${formatCount(peers.length)}`}
-            </button>
+            </Button>
           )}
-        </section>
+        </PanelSection>
       </div>
-    </aside>
+    </Panel>
   );
 }

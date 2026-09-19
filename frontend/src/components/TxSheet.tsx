@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 
 import { edgeEndpoints, edgeLabel, edgeTransfer, type EdgeTransfer } from '../api/edges';
 import type { GraphEdge } from '../api/types';
@@ -13,10 +13,14 @@ import {
   unitsToNumber,
 } from '../lib/format';
 import { IconChevron } from './Icons';
+import { Badge, Button, Dot, Tag, cx, focusRing } from './ui';
 
 const ROW_LIMIT = 500;
 
-export const SHEET_HEIGHT = { collapsed: 40, expanded: 320 } as const;
+export const SHEET_HEIGHT = {
+  collapsed: '40px',
+  expanded: 'min(220px, 30vh)',
+} as const;
 
 type SortKey = 'block' | 'value' | 'asset';
 
@@ -73,58 +77,61 @@ export function TxSheet({ model, scope, open, onOpenChange, onScopeClear, onSele
 
   return (
     <section
-      className="overlay sheet"
-      style={{ height: open ? SHEET_HEIGHT.expanded : SHEET_HEIGHT.collapsed }}
+      className="absolute bottom-0 left-0 right-0 z-12 flex h-[var(--sheet-height)] flex-col overflow-hidden border-t border-hairline bg-surface-1 shadow-panel transition-[height] duration-200 ease-[cubic-bezier(0.22,0.61,0.36,1)]"
+      style={
+        {
+          '--sheet-height': open ? SHEET_HEIGHT.expanded : SHEET_HEIGHT.collapsed,
+        } as CSSProperties
+      }
       aria-label="Transaction table"
     >
-      <div className="sheet-head">
-        <button
-          type="button"
-          className="btn btn-ghost sheet-toggle"
+      <div className="flex h-10 flex-none items-center gap-2 px-[10px]">
+        <Button
+          variant="ghost"
+          className="h-[30px] gap-[9px]"
           onClick={() => onOpenChange(!open)}
           aria-expanded={open}
         >
           <IconChevron
-            style={{
-              transform: open ? 'rotate(180deg)' : 'none',
-              transition: 'transform 180ms ease',
-            }}
+            className={cx('transition-transform duration-180', !open && 'rotate-180')}
           />
-          <span className="sheet-title">Transactions</span>
-          <span className="badge">{formatCount(rows.length)}</span>
-        </button>
+          <span className="text-xs font-semibold uppercase tracking-[0.04em] text-text-secondary">
+            Transactions
+          </span>
+          <Badge>{formatCount(rows.length)}</Badge>
+        </Button>
         {scope && (
           <>
-            <span className="tag">scoped to {shortAddress(scope, 8, 6)}</span>
-            <button type="button" className="btn btn-ghost" onClick={onScopeClear}>
+            <Tag>scoped to {shortAddress(scope, 8, 6)}</Tag>
+            <Button variant="ghost" onClick={onScopeClear}>
               Show all
-            </button>
+            </Button>
           </>
         )}
       </div>
 
       {open && (
-        <div className="sheet-body">
-          <table className="table">
+        <div className="overflow-auto overscroll-contain">
+          <table className="w-full border-collapse text-[12.5px] [&_td]:whitespace-nowrap [&_td]:border-b [&_td]:border-hairline [&_td]:px-3 [&_td]:py-[7px] [&_th]:sticky [&_th]:top-0 [&_th]:z-1 [&_th]:whitespace-nowrap [&_th]:border-b [&_th]:border-hairline [&_th]:bg-surface-1 [&_th]:px-3 [&_th]:py-2 [&_th]:text-left [&_th]:text-[10px] [&_th]:font-semibold [&_th]:uppercase [&_th]:tracking-[0.07em] [&_th]:text-text-muted [&_tbody_tr:hover_td]:bg-[color-mix(in_srgb,var(--text-primary)_4%,transparent)]">
             <thead>
               <tr>
                 <th className="num">
-                  <button type="button" onClick={() => toggleSort('block')}>
+                  <SortButton onClick={() => toggleSort('block')}>
                     Block{arrow('block')}
-                  </button>
+                  </SortButton>
                 </th>
                 <th>Age</th>
                 <th>From</th>
                 <th>To</th>
                 <th className="num">
-                  <button type="button" onClick={() => toggleSort('value')}>
+                  <SortButton onClick={() => toggleSort('value')}>
                     Amount{arrow('value')}
-                  </button>
+                  </SortButton>
                 </th>
                 <th>
-                  <button type="button" onClick={() => toggleSort('asset')}>
+                  <SortButton onClick={() => toggleSort('asset')}>
                     Asset{arrow('asset')}
-                  </button>
+                  </SortButton>
                 </th>
                 <th>Type</th>
                 <th>Tx hash</th>
@@ -134,76 +141,117 @@ export function TxSheet({ model, scope, open, onOpenChange, onScopeClear, onSele
               {rows.slice(0, ROW_LIMIT).map(({ tx, transfer }, index) => {
                 const endpoints = edgeEndpoints(tx);
                 return (
-                  <tr key={`${tx.tx_hash}:${index}`} className={tx.succeeded ? undefined : 'failed'}>
-                    <td className="num">{formatCount(tx.block_number)}</td>
+                  <tr
+                    key={`${tx.tx_hash}:${index}`}
+                    className={tx.succeeded ? undefined : 'text-text-muted'}
+                  >
+                    <td className="text-right tabular-nums">{formatCount(tx.block_number)}</td>
                     <td title={formatTimestamp(tx.timestamp)}>{formatRelative(tx.timestamp)}</td>
-                    <td className="mono">
+                    <td className="font-mono-ui text-[11.5px]">
                       {endpoints ? (
-                        <button
-                          type="button"
-                          className="cell-link"
+                        <CellLink
+                          failed={!tx.succeeded}
                           onClick={() => onSelect(endpoints.from.toLowerCase())}
                         >
                           {shortAddress(endpoints.from, 8, 6)}
-                        </button>
+                        </CellLink>
                       ) : (
                         '—'
                       )}
                     </td>
-                    <td className="mono">
+                    <td className="font-mono-ui text-[11.5px]">
                       {endpoints ? (
-                        <button
-                          type="button"
-                          className="cell-link"
+                        <CellLink
+                          failed={!tx.succeeded}
                           onClick={() => onSelect(endpoints.to.toLowerCase())}
                         >
                           {shortAddress(endpoints.to, 8, 6)}
-                        </button>
+                        </CellLink>
                       ) : (
                         '—'
                       )}
                     </td>
-                    <td className="num">
+                    <td className="text-right tabular-nums">
                       {transfer ? formatUnits(transfer.amount, transfer.decimals) : '—'}
                     </td>
                     <td>
                       {transfer ? (
-                        <span className="tag" title={transfer.native ? 'ETH' : transfer.key}>
-                          <span
-                            className={`dot dot-${transfer.native ? 'focus' : 'token'}`}
-                            aria-hidden="true"
-                          />
-                          <code className="mono">{transfer.symbol}</code>
-                        </span>
+                        <Tag title={transfer.native ? 'ETH' : transfer.key}>
+                          <Dot tone={transfer.native ? 'focus' : 'token'} />
+                          <code className="font-mono-ui">{transfer.symbol}</code>
+                        </Tag>
                       ) : (
                         '—'
                       )}
                     </td>
                     <td>
-                      <span className="tag">
+                      <Tag>
                         {edgeLabel(tx)}
-                        {!tx.succeeded && <span className="tag-failed">reverted</span>}
-                      </span>
+                        {!tx.succeeded && (
+                          <span className="text-[10px] uppercase tracking-[0.04em] text-critical">
+                            reverted
+                          </span>
+                        )}
+                      </Tag>
                     </td>
-                    <td className="mono">{shortHash(tx.tx_hash)}</td>
+                    <td className="font-mono-ui text-[11.5px]">{shortHash(tx.tx_hash)}</td>
                   </tr>
                 );
               })}
             </tbody>
           </table>
           {rows.length > ROW_LIMIT && (
-            <p className="legend-note" style={{ padding: '10px 12px' }}>
+            <p className="m-0 px-3 py-[10px] text-[11px] text-text-muted">
               Showing the first {formatCount(ROW_LIMIT)} of {formatCount(rows.length)} rows — narrow
               the range or raise the minimum-flow filter to see the rest.
             </p>
           )}
           {rows.length === 0 && (
-            <p className="legend-note" style={{ padding: '14px 12px' }}>
+            <p className="m-0 px-3 py-[14px] text-[11px] text-text-muted">
               No transactions match the current filters.
             </p>
           )}
         </div>
       )}
     </section>
+  );
+}
+
+function SortButton({ children, onClick }: { children: ReactNode; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      className={cx(
+        'cursor-pointer border-0 bg-transparent p-0 font-inherit uppercase tracking-inherit text-inherit',
+        focusRing,
+      )}
+      onClick={onClick}
+    >
+      {children}
+    </button>
+  );
+}
+
+function CellLink({
+  children,
+  onClick,
+  failed,
+}: {
+  children: ReactNode;
+  onClick: () => void;
+  failed: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      className={cx(
+        'cursor-pointer border-0 bg-transparent p-0 font-inherit text-accent hover:underline',
+        focusRing,
+        failed && 'line-through',
+      )}
+      onClick={onClick}
+    >
+      {children}
+    </button>
   );
 }

@@ -11,6 +11,7 @@ import {
   IconZoomIn,
   IconZoomOut,
 } from './Icons';
+import { Button, Panel, Tooltip } from './ui';
 
 interface Props {
   onZoomIn: () => void;
@@ -54,7 +55,11 @@ export function ToolRail({
   disabled,
 }: Props) {
   return (
-    <div className="panel overlay toolrail" role="toolbar" aria-label="Graph controls">
+    <Panel
+      className="absolute right-[calc(var(--inspector-w)+16px)] top-4 z-10 flex flex-col gap-0.5 p-[5px] transition-[right] duration-200 ease-[cubic-bezier(0.22,0.61,0.36,1)]"
+      role="toolbar"
+      aria-label="Graph controls"
+    >
       <Tool label="Zoom in" onClick={onZoomIn} disabled={disabled}>
         <IconZoomIn />
       </Tool>
@@ -64,7 +69,7 @@ export function ToolRail({
       <Tool label="Fit to view" onClick={onFit} disabled={disabled}>
         <IconFit />
       </Tool>
-      <hr />
+      <hr className="mx-0.5 my-1 w-[calc(100%-4px)] border-0 border-t border-hairline" />
       <Tool
         label={frozen ? 'Resume layout' : 'Freeze layout'}
         onClick={() => onFrozenChange(!frozen)}
@@ -76,7 +81,7 @@ export function ToolRail({
       <Tool label="Unpin dragged nodes" onClick={onUnpin} disabled={disabled}>
         <IconUnpin />
       </Tool>
-      <hr />
+      <hr className="mx-0.5 my-1 w-[calc(100%-4px)] border-0 border-t border-hairline" />
       <Tool
         label={showFlow ? 'Hide flow animation' : 'Show flow animation'}
         onClick={() => onShowFlowChange(!showFlow)}
@@ -93,11 +98,11 @@ export function ToolRail({
       >
         <IconLabels />
       </Tool>
-      <hr />
+      <hr className="mx-0.5 my-1 w-[calc(100%-4px)] border-0 border-t border-hairline" />
       <Tool label="Export PNG" onClick={onExport} disabled={disabled}>
         <IconDownload />
       </Tool>
-    </div>
+    </Panel>
   );
 }
 
@@ -115,16 +120,17 @@ function Tool({
   children: ReactNode;
 }) {
   return (
-    <button
-      type="button"
-      className="btn btn-ghost btn-icon"
-      onClick={onClick}
-      title={label}
-      aria-label={label}
-      aria-pressed={pressed}
-      disabled={disabled}
-    >
-      {children}
-    </button>
+    <Tooltip label={label} side="left">
+      <Button
+        variant="ghost"
+        icon
+        onClick={onClick}
+        aria-label={label}
+        aria-pressed={pressed}
+        disabled={disabled}
+      >
+        {children}
+      </Button>
+    </Tooltip>
   );
 }

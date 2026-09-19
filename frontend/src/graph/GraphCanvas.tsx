@@ -11,6 +11,7 @@ import {
 
 import { formatCount, formatEth, formatUnits, shortAddress } from '../lib/format';
 import type { VizPalette } from '../lib/theme';
+import { Dot } from '../components/ui';
 import {
   contentBounds,
   drawScene,
@@ -42,6 +43,7 @@ interface Props {
   showGrid: boolean;
   showFlow: boolean;
   frozen: boolean;
+  incrementalLayoutVersion: number;
   onSelect: (id: string | null) => void;
   handle: RefObject<GraphHandle | null>;
 }
@@ -59,6 +61,7 @@ export function GraphCanvas({
   showGrid,
   showFlow,
   frozen,
+  incrementalLayoutVersion,
   onSelect,
   handle,
 }: Props) {
@@ -69,6 +72,8 @@ export function GraphCanvas({
   const transform = useRef<Transform>({ x: 0, y: 0, k: 1 });
   const size = useRef({ width: 0, height: 0, dpr: 1 });
   const simulation = useRef<Simulation<GraphNode, GraphLink> | null>(null);
+  const renderedModel = useRef<GraphModel | null>(null);
+  const handledLayoutVersion = useRef(incrementalLayoutVersion);
 
   const hoveredNode = useRef<GraphNode | null>(null);
   const hoveredLink = useRef<GraphLink | null>(null);
@@ -88,6 +93,11 @@ export function GraphCanvas({
 
   useEffect(() => {
     const nodes = model.nodes;
+    const previous = renderedModel.current;
+    const preserveExisting =
+      incrementalLayoutVersion !== handledLayoutVersion.current && previous !== null;
+    handledLayoutVersion.current = incrementalLayoutVersion;
+    renderedModel.current = model;
     hoveredNode.current = null;
     hoveredLink.current = null;
     setHover(null);
@@ -97,6 +107,17 @@ export function GraphCanvas({
       simulation.current = null;
       dirty.current = true;
       return;
+    }
+
+    const restoredPins = new Map<string, { fx?: number | null; fy?: number | null }>();
+    if (preserveExisting && previous) {
+      for (const oldNode of previous.nodes) {
+        const node = model.byId.get(oldNode.id);
+        if (!node) continue;
+        restoredPins.set(node.id, { fx: node.fx, fy: node.fy });
+        node.fx = node.x;
+        node.fy = node.y;
+      }
     }
 
     const sim = forceSimulation<GraphNode, GraphLink>(nodes)
@@ -120,22 +141,39 @@ export function GraphCanvas({
       .alphaMin(0.01);
 
     sim.stop();
-    const budget = nodes.length > 1200 ? 90 : nodes.length > 400 ? 170 : 320;
+    const budget = preserveExisting
+      ? nodes.length > 1200
+        ? 45
+        : nodes.length > 400
+          ? 75
+          : 110
+      : nodes.length > 1200
+        ? 90
+        : nodes.length > 400
+          ? 170
+          : 320;
     for (let i = 0; i < budget && sim.alpha() > sim.alphaMin(); i += 1) sim.tick();
+
+    for (const [id, pin] of restoredPins) {
+      const node = model.byId.get(id);
+      if (!node) continue;
+      node.fx = pin.fx;
+      node.fy = pin.fy;
+    }
 
     simulation.current = sim;
     sim.on('tick', () => {
       dirty.current = true;
     });
 
-    fitMode.current = 'once';
+    fitMode.current = preserveExisting ? 'off' : 'once';
     dirty.current = true;
 
     return () => {
       sim.on('tick', null);
       sim.stop();
     };
-  }, [model]);
+  }, [incrementalLayoutVersion, model]);
 
   useEffect(() => {
     const sim = simulation.current;
@@ -235,6 +273,7 @@ export function GraphCanvas({
         time,
         showGrid: state.showGrid,
         showFlow: state.showFlow,
+        transparentBackground: true,
       });
     });
 
@@ -446,11 +485,24 @@ export function GraphCanvas({
   );
 
   return (
-    <div ref={containerRef} className="graph-stage">
-      <canvas ref={canvasRef} className="graph-canvas" />
+    <div
+      ref={containerRef}
+      className="absolute bottom-[var(--sheet-h)] left-[var(--investigation-w)] right-[var(--inspector-w)] top-0 block touch-none bg-plane transition-[bottom,left,right] duration-200 ease-[cubic-bezier(0.22,0.61,0.36,1)]"
+      style={
+        showGrid
+          ? {
+              backgroundImage:
+                'radial-gradient(circle, var(--gridline) 0 1.5px, transparent 1.7px)',
+              backgroundPosition: '28px 28px',
+              backgroundSize: '56px 56px',
+            }
+          : undefined
+      }
+    >
+      <canvas ref={canvasRef} className="absolute inset-0 block size-full touch-none" />
       <div
         ref={tooltipRef}
-        className="graph-tooltip"
+        className="pointer-events-none absolute left-0 top-0 z-15 min-w-[176px] max-w-[260px] rounded-ui border border-hairline-strong bg-surface-1 px-[11px] py-[9px] opacity-0 shadow-pop transition-opacity duration-90 data-[visible=true]:opacity-100"
         role="tooltip"
         aria-hidden={hover === null}
         data-visible={hover !== null}
@@ -482,12 +534,16 @@ function NodeTip({ node }: { node: GraphNode }) {
 
   return (
     <>
-      <div className="tip-head">
-        <span className={`dot dot-${node.kind}`} aria-hidden="true" />
-        <span className="tip-kind">{KIND_LABEL[node.kind]}</span>
+      <div className="flex items-center gap-[6px]">
+        <Dot tone={node.kind} />
+        <span className="text-[10px] uppercase tracking-[0.07em] text-text-muted">
+          {KIND_LABEL[node.kind]}
+        </span>
       </div>
-      <div className="tip-address">{shortAddress(node.id, 12, 8)}</div>
-      <dl className="tip-rows">
+      <div className="mb-[7px] mt-[3px] break-all font-mono-ui text-xs">
+        {shortAddress(node.id, 12, 8)}
+      </div>
+      <dl className="m-0 grid gap-[3px] text-xs [&>div]:flex [&>div]:justify-between [&>div]:gap-3 [&_dd]:m-0 [&_dd]:tabular-nums [&_dt]:text-text-muted">
         <div>
           <dt>In</dt>
           <dd>
@@ -506,7 +562,7 @@ function NodeTip({ node }: { node: GraphNode }) {
         </div>
       </dl>
       {tokens.length > 0 && (
-        <dl className="tip-rows tip-assets">
+        <dl className="m-0 mt-[7px] grid gap-[3px] border-t border-hairline pt-[7px] text-xs [&>div]:flex [&>div]:justify-between [&>div]:gap-3 [&_dd]:m-0 [&_dd]:tabular-nums [&_dt]:font-mono-ui [&_dt]:text-series-token">
           {tokens.slice(0, TIP_ASSETS).map((flow) => (
             <div key={flow.key}>
               <dt>{assetLabel(flow)}</dt>
@@ -531,14 +587,16 @@ function NodeTip({ node }: { node: GraphNode }) {
 function LinkTip({ link }: { link: GraphLink }) {
   return (
     <>
-      <div className="tip-head">
-        <span className={`dot dot-${link.tone === 'call' ? 'eoa' : 'token'}`} aria-hidden="true" />
-        <span className="tip-kind">{TONE_LABEL[link.tone]}</span>
+      <div className="flex items-center gap-[6px]">
+        <Dot tone={link.tone === 'call' ? 'eoa' : 'token'} />
+        <span className="text-[10px] uppercase tracking-[0.07em] text-text-muted">
+          {TONE_LABEL[link.tone]}
+        </span>
       </div>
-      <div className="tip-address">
+      <div className="mb-[7px] mt-[3px] break-all font-mono-ui text-xs">
         {shortAddress(link.source.id, 8, 4)} → {shortAddress(link.target.id, 8, 4)}
       </div>
-      <dl className="tip-rows">
+      <dl className="m-0 grid gap-[3px] text-xs [&>div]:flex [&>div]:justify-between [&>div]:gap-3 [&_dd]:m-0 [&_dd]:tabular-nums [&_dt]:text-text-muted">
         {link.assets.slice(0, TIP_ASSETS).map((flow) => (
           <div key={flow.key}>
             <dt>{assetLabel(flow)}</dt>
