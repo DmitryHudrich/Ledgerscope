@@ -118,6 +118,15 @@ export interface GraphModel {
   stats: GraphStats;
 }
 
+export interface NodePosition {
+  x: number;
+  y: number;
+  vx?: number;
+  vy?: number;
+  fx?: number | null;
+  fy?: number | null;
+}
+
 export const EMPTY_MODEL: GraphModel = {
   nodes: [],
   links: [],
@@ -176,8 +185,8 @@ function blank(id: string, kind: NodeKind): GraphNode {
     firstSeen: Number.POSITIVE_INFINITY,
     lastSeen: 0,
     r: NODE_MIN_R,
-    x: 0,
-    y: 0,
+    x: Number.NaN,
+    y: Number.NaN,
     vx: 0,
     vy: 0,
   };
@@ -229,7 +238,7 @@ function toneOf(ethCount: number, tokenCount: number, transfers: number): LinkTo
 export function buildGraph(
   response: GraphResponse,
   filters: GraphFilters,
-  previous?: Map<string, { x: number; y: number }>,
+  previous?: Map<string, NodePosition>,
 ): GraphModel {
   const focus = filters.focus.trim().toLowerCase();
   const walked = new Map(
@@ -260,6 +269,10 @@ export function buildGraph(
       if (seed) {
         node.x = seed.x;
         node.y = seed.y;
+        node.vx = seed.vx ?? 0;
+        node.vy = seed.vy ?? 0;
+        node.fx = seed.fx;
+        node.fy = seed.fy;
       }
       byId.set(id, node);
     }
@@ -547,7 +560,7 @@ function seedPositions(nodes: GraphNode[]): void {
   const golden = Math.PI * (3 - Math.sqrt(5));
   let placed = 0;
   for (const node of nodes) {
-    if (node.x !== 0 || node.y !== 0) continue;
+    if (Number.isFinite(node.x) && Number.isFinite(node.y)) continue;
     const t = (placed + 0.5) / nodes.length;
     const angle = placed * golden;
     node.x = Math.cos(angle) * radius * Math.sqrt(t);
@@ -556,8 +569,55 @@ function seedPositions(nodes: GraphNode[]): void {
   }
 }
 
-export function positionsOf(model: GraphModel): Map<string, { x: number; y: number }> {
-  const out = new Map<string, { x: number; y: number }>();
-  for (const node of model.nodes) out.set(node.id, { x: node.x, y: node.y });
+export function positionsOf(model: GraphModel): Map<string, NodePosition> {
+  const out = new Map<string, NodePosition>();
+  for (const node of model.nodes) {
+    out.set(node.id, {
+      x: node.x,
+      y: node.y,
+      vx: node.vx,
+      vy: node.vy,
+      fx: node.fx,
+      fy: node.fy,
+    });
+  }
   return out;
+}
+
+export function positionsWithNewNodesNear(
+  model: GraphModel,
+  sourceId: string,
+  addresses: Iterable<string>,
+): Map<string, NodePosition> {
+  const positions = positionsOf(model);
+  const source = model.byId.get(sourceId);
+  if (!source) return positions;
+
+  const ids = [...new Set([...addresses].map((address) => address.toLowerCase()))]
+    .filter((id) => !model.byId.has(id))
+    .sort();
+  const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+  const phase = stablePhase(sourceId);
+
+  ids.forEach((id, index) => {
+    const radius = 52 + 18 * Math.sqrt(index + 1);
+    const angle = phase + index * goldenAngle;
+    positions.set(id, {
+      x: source.x + Math.cos(angle) * radius,
+      y: source.y + Math.sin(angle) * radius,
+      vx: 0,
+      vy: 0,
+    });
+  });
+
+  return positions;
+}
+
+function stablePhase(value: string): number {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return ((hash >>> 0) / 4294967296) * Math.PI * 2;
 }

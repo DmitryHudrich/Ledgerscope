@@ -127,6 +127,43 @@ export const IconTarget = (p: IconProps) => (
   </Icon>
 );
 
+export const IconPointer = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="m3 2.5 9 5.2-4.1 1.1-2.1 3.7z" />
+  </Icon>
+);
+
+export const IconFilter = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M2.5 4h11M4.5 8h7M6.5 12h3" />
+  </Icon>
+);
+
+export const IconOverview = (p: IconProps) => (
+  <Icon {...p}>
+    <rect x="2.5" y="2.5" width="4.2" height="4.2" rx=".8" />
+    <rect x="9.3" y="2.5" width="4.2" height="4.2" rx=".8" />
+    <rect x="2.5" y="9.3" width="4.2" height="4.2" rx=".8" />
+    <rect x="9.3" y="9.3" width="4.2" height="4.2" rx=".8" />
+  </Icon>
+);
+
+export const IconAssets = (p: IconProps) => (
+  <Icon {...p}>
+    <circle cx="6.2" cy="7.2" r="3.7" />
+    <path d="M8.2 4.1a3.7 3.7 0 1 1-4.1 5.8M6.2 5.1v4.2M4.9 6.2h2a.9.9 0 0 1 0 1.8h-1.4a.9.9 0 0 0 0 1.8h2" />
+  </Icon>
+);
+
+export const IconLegend = (p: IconProps) => (
+  <Icon {...p}>
+    <circle cx="4" cy="4" r="1.2" />
+    <circle cx="4" cy="8" r="1.2" />
+    <rect x="2.8" y="10.8" width="2.4" height="2.4" rx=".5" />
+    <path d="M7.5 4h6M7.5 8h6M7.5 12h6" />
+  </Icon>
+);
+
 export const IconLogo = (p: IconProps) => (
   <Icon {...p} size={p.size ?? 20} strokeWidth={1.4}>
     <circle cx="4.2" cy="4.6" r="1.9" />
