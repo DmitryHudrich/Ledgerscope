@@ -51,7 +51,7 @@ export interface AddressLabel {
 
 export interface GraphNode {
   address: string;
-  labels?: AddressLabel[];
+  labels: AddressLabel[];
   depth: number;
   root: boolean;
   expanded: boolean;
@@ -59,7 +59,7 @@ export interface GraphNode {
 
 export interface LowLevelGraphActor {
   address: string;
-  labels?: AddressLabel[];
+  labels: AddressLabel[];
   depth: number;
   root: boolean;
   expanded: boolean;
