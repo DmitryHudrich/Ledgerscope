@@ -320,9 +320,12 @@ export function GraphCanvas({
     const apply = () => {
       const rect = container.getBoundingClientRect();
       const dpr = window.devicePixelRatio || 1;
+      const pixelWidth = Math.max(1, Math.round(rect.width * dpr));
+      const pixelHeight = Math.max(1, Math.round(rect.height * dpr));
       size.current = { width: rect.width, height: rect.height, dpr };
-      canvas.width = Math.max(1, Math.round(rect.width * dpr));
-      canvas.height = Math.max(1, Math.round(rect.height * dpr));
+      if (canvas.width === pixelWidth && canvas.height === pixelHeight) return;
+      canvas.width = pixelWidth;
+      canvas.height = pixelHeight;
       canvas.style.width = `${rect.width}px`;
       canvas.style.height = `${rect.height}px`;
       dirty.current = true;
@@ -901,7 +904,7 @@ export function GraphCanvas({
   return (
     <div
       ref={containerRef}
-      className="absolute bottom-[var(--sheet-h)] left-[var(--investigation-w)] right-[var(--inspector-w)] top-0 z-0 block isolate overflow-hidden touch-none bg-plane transition-[bottom,left,right] duration-200 ease-[cubic-bezier(0.22,0.61,0.36,1)]"
+      className="absolute bottom-[var(--sheet-h)] left-[var(--investigation-w)] right-[var(--inspector-w)] top-0 z-0 block isolate overflow-hidden touch-none bg-plane"
     >
       <canvas ref={canvasRef} className="absolute inset-0 block size-full touch-none" />
       {textEditor && (
