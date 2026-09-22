@@ -1,15 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 
-import { RpcConfirmationRequired, fetchCoverage, fetchGraph } from './api/client';
+import { RpcConfirmationRequired, fetchCoverage, fetchGraph, fetchHistogram } from './api/client';
 import { demoGraph } from './api/demo';
 import type {
   BlockRangeSpan,
   CoverageResponse,
   GraphResponse,
   GraphRoot,
+  HistogramResponse,
   RpcConfirmation,
 } from './api/types';
 import { DetailsDrawer } from './components/DetailsDrawer';
+import { EdgeInspector, MultiSelectionInspector } from './components/ContextInspector';
 import { IconFilter } from './components/Icons';
 import { InvestigationPanel, type WorkspacePanel } from './components/SidePanel';
 import type { BlockBounds } from './components/Timeline';
@@ -20,12 +22,15 @@ import { getFilterActivity } from './components/filterActivity';
 import { RpcConfirm } from './components/RpcConfirm';
 import { Button, Dot, Kbd, Panel } from './components/ui';
 import { GraphCanvas, type GraphHandle } from './graph/GraphCanvas';
+import { DEFAULT_ANNOTATION_STYLE, type Annotation, type AnnotationStyle, type AnnotationTool } from './graph/annotations';
 import type { LabelMode } from './graph/draw';
+import { getNodeDisplayName, truncateCanvasLabel } from './graph/labels';
 import {
   DEFAULT_FILTERS,
   EMPTY_MODEL,
   buildGraph,
   positionsOf,
+  withoutNodes,
   type GraphFilters,
   type GraphModel,
 } from './graph/model';
@@ -37,6 +42,10 @@ const INITIAL_ROOTS: GraphRoot[] = [
 const INITIAL_SELECTION: BlockBounds = { from: 21_000_000, to: 21_000_010 };
 const FALLBACK_LIMITS = { maxDepth: 5, maxRoots: 64, maxBlocks: 100_000 };
 const HEAD_WINDOW = 100;
+const ANNOTATIONS_KEY = 'ledgerscope:annotations:v1';
+function readAnnotations(): Annotation[] {
+  try { const stored = localStorage.getItem(ANNOTATIONS_KEY); return stored ? JSON.parse(stored) as Annotation[] : []; } catch { return []; }
+}
 
 type TemporaryPanel = WorkspacePanel | 'advanced';
 
@@ -67,6 +76,7 @@ export default function App() {
 
   const [response, setResponse] = useState<GraphResponse | null>(null);
   const [coverage, setCoverage] = useState<CoverageResponse | null>(null);
+  const [histogram, setHistogram] = useState<HistogramResponse | null>(null);
   const [coverageLoaded, setCoverageLoaded] = useState(false);
   const [primed, setPrimed] = useState(false);
   const [pending, setPending] = useState<RpcConfirmation | null>(null);
@@ -83,14 +93,24 @@ export default function App() {
   const [filterState, setFilterState] = useState<GraphFilters>(DEFAULT_FILTERS);
   const [search, setSearch] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const [selectedLinkId, setSelectedLinkId] = useState<string | null>(null);
+  const [removedNodeIds, setRemovedNodeIds] = useState<Set<string>>(() => new Set());
+  const [annotations, setAnnotations] = useState<Annotation[]>(readAnnotations);
+  const [annotationTool, setAnnotationTool] = useState<AnnotationTool>('select');
+  const [annotationStyle, setAnnotationStyle] = useState<AnnotationStyle>(DEFAULT_ANNOTATION_STYLE);
   const [labelMode, setLabelMode] = useState<LabelMode>('auto');
   const [showFlow, setShowFlow] = useState(true);
   const [frozen, setFrozen] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [sheetScope, setSheetScope] = useState<string | null>(null);
+  const [sheetLinkScope, setSheetLinkScope] = useState<string | null>(null);
   const [temporaryPanel, setTemporaryPanel] = useState<TemporaryPanel | null>(null);
 
   const graph = useRef<GraphHandle | null>(null);
+  const annotationUndo = useRef<Annotation[][]>([]);
+  const annotationRedo = useRef<Annotation[][]>([]);
+  const annotationsRef = useRef(annotations);
   const modelRef = useRef<GraphModel>(EMPTY_MODEL);
   const requestId = useRef(0);
   const snapped = useRef(false);
@@ -108,13 +128,27 @@ export default function App() {
   useEffect(() => {
     setPalette(readPalette());
   }, [theme]);
+  useEffect(() => { localStorage.setItem(ANNOTATIONS_KEY, JSON.stringify(annotations)); }, [annotations]);
+  useEffect(() => { annotationsRef.current = annotations; }, [annotations]);
+
+  const changeAnnotations = useCallback((next: Annotation[]) => {
+    annotationUndo.current.push(annotationsRef.current);
+    if (annotationUndo.current.length > 100) annotationUndo.current.shift();
+    annotationRedo.current = [];
+    annotationsRef.current = next;
+    setAnnotations(next);
+  }, []);
 
   const filters = useMemo<GraphFilters>(() => ({ ...filterState, focus: '' }), [filterState]);
-  const model = useMemo(() => {
+  const rawModel = useMemo(() => {
     if (!response) return EMPTY_MODEL;
     const previous = modelRef.current.nodes.length > 0 ? positionsOf(modelRef.current) : undefined;
     return buildGraph(response, filters, previous);
   }, [response, filters]);
+  const model = useMemo(() => withoutNodes(rawModel, removedNodeIds), [rawModel, removedNodeIds]);
+  const nodeLabels = useMemo(() => new Map(
+    model.nodes.map((node) => [node.id, truncateCanvasLabel(getNodeDisplayName(node))] as const),
+  ), [model]);
 
   useEffect(() => {
     modelRef.current = model;
@@ -122,15 +156,23 @@ export default function App() {
 
   useEffect(() => {
     if (selectedId && !model.byId.has(selectedId)) setSelectedId(null);
+    setSelectedIds((current) => {
+      const next = new Set([...current].filter((id) => model.byId.has(id)));
+      return next.size === current.size ? current : next;
+    });
+    if (selectedLinkId && !model.links.some((link) => link.id === selectedLinkId)) setSelectedLinkId(null);
     if (sheetScope && !model.byId.has(sheetScope)) setSheetScope(null);
-  }, [model, selectedId, sheetScope]);
+  }, [model, selectedId, selectedLinkId, sheetScope]);
 
   const searchMatches = useMemo(() => {
     const needle = search.trim().toLowerCase();
     if (needle.length < 2) return new Set<string>();
     const matches = new Set<string>();
     for (const node of model.nodes) {
-      if (node.id.includes(needle)) matches.add(node.id);
+      if (
+        node.id.toLowerCase().includes(needle)
+        || node.systemLabels.some((label) => label.value.toLowerCase().includes(needle))
+      ) matches.add(node.id);
     }
     return matches;
   }, [search, model]);
@@ -164,6 +206,7 @@ export default function App() {
         const payload = demo ? demoGraph(query) : await fetchGraph(query);
         if (requestId.current !== id) return null;
         setResponse(payload);
+        setRemovedNodeIds(new Set());
         return payload;
       } catch (cause) {
         if (requestId.current !== id) return null;
@@ -183,9 +226,18 @@ export default function App() {
 
   const refreshCoverage = useCallback(async () => {
     try {
-      setCoverage(await fetchCoverage());
+      const next = await fetchCoverage();
+      setCoverage(next);
+      const from = next.lowest_block ?? Math.max((next.chain_head ?? INITIAL_SELECTION.to) - HEAD_WINDOW, 0);
+      const to = next.highest_block ?? next.chain_head ?? INITIAL_SELECTION.to;
+      try {
+        setHistogram(await fetchHistogram({ from_block: from, to_block: to, buckets: 80 }));
+      } catch {
+        setHistogram(null);
+      }
     } catch {
       setCoverage(null);
+      setHistogram(null);
     } finally {
       setCoverageLoaded(true);
     }
@@ -262,10 +314,43 @@ export default function App() {
     [demo, limits.maxRoots, loading, roots, run],
   );
 
-  const select = useCallback((id: string | null) => {
+  const select = useCallback((id: string | null, additive = false) => {
     setTemporaryPanel(null);
-    if (id !== null) setSelectedId(id);
+    setSelectedLinkId(null);
+    if (id === null) {
+      setSelectedId(null);
+      setSelectedIds(new Set());
+      return;
+    }
+    setSelectedIds((current) => {
+      const next = additive ? new Set(current) : new Set<string>();
+      if (additive && next.has(id)) next.delete(id);
+      else next.add(id);
+      setSelectedId(next.size === 1 ? [...next][0] : null);
+      return next;
+    });
   }, []);
+
+  const selectMany = useCallback((ids: Set<string>) => {
+    setTemporaryPanel(null);
+    setSelectedLinkId(null);
+    setSelectedIds(ids);
+    setSelectedId(ids.size === 1 ? [...ids][0] : null);
+  }, []);
+
+  const selectLink = useCallback((id: string | null) => {
+    setTemporaryPanel(null);
+    setSelectedIds(new Set());
+    setSelectedId(null);
+    setSelectedLinkId(id);
+  }, []);
+
+  const removeSelected = useCallback(() => {
+    if (selectedIds.size === 0) return;
+    setRemovedNodeIds((current) => new Set([...current, ...selectedIds]));
+    setSelectedIds(new Set());
+    setSelectedId(null);
+  }, [selectedIds]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -275,11 +360,45 @@ export default function App() {
         target instanceof HTMLTextAreaElement ||
         target?.isContentEditable;
       if (event.key === 'Escape') {
-        if (temporaryPanel) setTemporaryPanel(null);
+        if (selectedIds.size > 0 || selectedLinkId) {
+          setSelectedIds(new Set());
+          setSelectedId(null);
+          setSelectedLinkId(null);
+        } else if (temporaryPanel) setTemporaryPanel(null);
         else if (pending) setPending(null);
         return;
       }
+      if ((event.key === 'Delete' || event.key === 'Backspace') && selectedIds.size > 0 && !typing) {
+        event.preventDefault();
+        removeSelected();
+        return;
+      }
       if (typing) return;
+      if ((event.ctrlKey || event.metaKey) && event.code === 'KeyZ') {
+        event.preventDefault();
+        if (event.shiftKey) {
+          const next = annotationRedo.current.pop();
+          if (next) {
+            annotationUndo.current.push(annotationsRef.current);
+            annotationsRef.current = next;
+            setAnnotations(next);
+          }
+        } else {
+          const previous = annotationUndo.current.pop();
+          if (previous) {
+            annotationRedo.current.push(annotationsRef.current);
+            annotationsRef.current = previous;
+            setAnnotations(previous);
+          }
+        }
+        return;
+      }
+      const annotationShortcut: Record<string, AnnotationTool> = { v: 'select', t: 'text', a: 'arrow', r: 'rectangle', o: 'ellipse', p: 'pencil' };
+      const tool = annotationShortcut[event.key.toLowerCase()];
+      if (tool) {
+        setAnnotationTool(tool);
+        return;
+      }
       if (event.key === '/') {
         event.preventDefault();
         setTemporaryPanel('filters');
@@ -293,9 +412,10 @@ export default function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [pending, temporaryPanel]);
+  }, [pending, removeSelected, selectedIds.size, selectedLinkId, temporaryPanel]);
 
   const selectedNode = selectedId ? (model.byId.get(selectedId) ?? null) : null;
+  const selectedLink = selectedLinkId ? (model.links.find((link) => link.id === selectedLinkId) ?? null) : null;
   const hasGraph = model.nodes.length > 0;
 
   return (
@@ -304,6 +424,8 @@ export default function App() {
         roots={roots}
         maxRoots={limits.maxRoots}
         selection={selection}
+        coverage={coverage}
+        histogram={histogram}
         onSelectionChange={setSelection}
         onSubmit={submitFromTopBar}
         loading={loading || buildingFromId !== null}
@@ -321,7 +443,7 @@ export default function App() {
           {
             '--sheet-h': hasGraph && sheetOpen ? SHEET_HEIGHT.expanded : SHEET_HEIGHT.collapsed,
             '--investigation-w': '48px',
-            '--inspector-w': selectedNode ? '320px' : '0px',
+            '--inspector-w': selectedNode || selectedIds.size > 1 || selectedLink ? '320px' : '0px',
             '--left-flyout-top': demo ? '68px' : '12px',
             '--filter-indicator-left':
               temporaryPanel !== null && temporaryPanel !== 'advanced' ? '332px' : '60px',
@@ -332,6 +454,13 @@ export default function App() {
           model={model}
           palette={palette}
           selectedId={selectedId}
+          selectedIds={selectedIds}
+          selectedLinkId={selectedLinkId}
+          nodeLabels={nodeLabels}
+          annotationTool={annotationTool}
+          annotations={annotations}
+          onAnnotationsChange={changeAnnotations}
+          annotationStyle={annotationStyle}
           searchMatches={searchMatches}
           labelMode={labelMode}
           showGrid
@@ -339,6 +468,8 @@ export default function App() {
           frozen={frozen}
           incrementalLayoutVersion={incrementalLayoutVersion}
           onSelect={select}
+          onSelectLink={selectLink}
+          onSelectMany={selectMany}
           handle={graph}
         />
 
@@ -367,6 +498,8 @@ export default function App() {
             setTemporaryPanel(null);
           }}
           onCenter={(id) => graph.current?.centerOn(id)}
+          labelMode={labelMode}
+          onLabelModeChange={setLabelMode}
         />
 
         {demo && (
@@ -409,6 +542,10 @@ export default function App() {
           onLabelModeChange={setLabelMode}
           onUnpin={() => graph.current?.unpinAll()}
           onExport={() => graph.current?.exportPng('ledgerscope.png')}
+          annotationTool={annotationTool}
+          onAnnotationToolChange={setAnnotationTool}
+          annotationStyle={annotationStyle}
+          onAnnotationStyleChange={setAnnotationStyle}
           disabled={!hasGraph}
         />
 
@@ -444,16 +581,33 @@ export default function App() {
           />
         )}
 
+        {selectedIds.size > 1 && (
+          <MultiSelectionInspector ids={selectedIds} model={model} onRemove={removeSelected} onClear={() => select(null)} />
+        )}
+
+        {selectedLink && (
+          <EdgeInspector
+            link={selectedLink}
+            onClose={() => selectLink(null)}
+            onShowTransactions={() => {
+              setSheetScope(null);
+              setSheetLinkScope(selectedLink.id);
+              setSheetOpen(true);
+            }}
+          />
+        )}
+
         {hasGraph && (
           <TxSheet
             model={model}
             scope={sheetScope}
+            linkScope={sheetLinkScope}
             open={sheetOpen}
             onOpenChange={(open) => {
               if (open) setTemporaryPanel(null);
               setSheetOpen(open);
             }}
-            onScopeClear={() => setSheetScope(null)}
+            onScopeClear={() => { setSheetScope(null); setSheetLinkScope(null); }}
             onSelect={(id) => {
               setTemporaryPanel(null);
               setSelectedId(id);

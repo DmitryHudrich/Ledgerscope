@@ -6,7 +6,7 @@ import {
   edgeTransfer,
   type EdgeTransfer,
 } from '../api/edges';
-import type { GraphEdge, GraphResponse } from '../api/types';
+import type { AddressLabel, GraphEdge, GraphResponse } from '../api/types';
 import { weiToEth } from '../lib/format';
 
 export type NodeKind = 'focus' | 'contract' | 'eoa';
@@ -24,6 +24,7 @@ export interface AssetFlow {
 
 export interface GraphNode {
   id: string;
+  systemLabels: AddressLabel[];
   kind: NodeKind;
   depth: number;
   expanded: boolean;
@@ -169,6 +170,7 @@ const FOCUS_BONUS = 3;
 function blank(id: string, kind: NodeKind): GraphNode {
   return {
     id,
+    systemLabels: [],
     kind,
     depth: 0,
     expanded: false,
@@ -435,6 +437,7 @@ export function buildGraph(
   const nodes = [...byId.values()];
   for (const node of nodes) {
     const seen = walked.get(node.id);
+    node.systemLabels = seen?.labels ?? [];
     node.depth = seen?.depth ?? 0;
     node.expanded = seen?.expanded ?? false;
   }
@@ -511,6 +514,31 @@ export function buildGraph(
       hiddenTxs,
       failedTxs: links.reduce((sum, link) => sum + link.failed, 0),
     },
+  };
+}
+
+/** Hides nodes only in the current canvas; API data and investigation roots stay untouched. */
+export function withoutNodes(model: GraphModel, removed: Set<string>): GraphModel {
+  if (removed.size === 0) return model;
+  const nodes = model.nodes.filter((node) => !removed.has(node.id));
+  const links = model.links.filter((link) => !removed.has(link.source.id) && !removed.has(link.target.id));
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const linksByNode = new Map(nodes.map((node) => [node.id, [] as GraphLink[]]));
+  const neighbors = new Map(nodes.map((node) => [node.id, new Set<string>()]));
+  for (const link of links) {
+    linksByNode.get(link.source.id)?.push(link);
+    linksByNode.get(link.target.id)?.push(link);
+    neighbors.get(link.source.id)?.add(link.target.id);
+    neighbors.get(link.target.id)?.add(link.source.id);
+  }
+  return {
+    ...model,
+    nodes,
+    links,
+    byId,
+    linksByNode,
+    neighbors,
+    stats: { ...model.stats, nodes: nodes.length, links: links.length, txs: links.reduce((sum, link) => sum + link.count, 0) },
   };
 }
 

@@ -28,18 +28,19 @@ interface Props {
   model: GraphModel;
 
   scope: string | null;
+  linkScope: string | null;
   open: boolean;
   onOpenChange: (next: boolean) => void;
   onScopeClear: () => void;
   onSelect: (id: string) => void;
 }
 
-export function TxSheet({ model, scope, open, onOpenChange, onScopeClear, onSelect }: Props) {
+export function TxSheet({ model, scope, linkScope, open, onOpenChange, onScopeClear, onSelect }: Props) {
   const [sort, setSort] = useState<SortKey>('block');
   const [descending, setDescending] = useState(true);
 
   const rows = useMemo(() => {
-    const links = scope ? (model.linksByNode.get(scope) ?? []) : model.links;
+    const links = linkScope ? model.links.filter((link) => link.id === linkScope) : scope ? (model.linksByNode.get(scope) ?? []) : model.links;
 
     const all: Array<{ tx: GraphEdge; transfer: EdgeTransfer | null; magnitude: number }> = [];
     for (const link of links) {
@@ -63,7 +64,7 @@ export function TxSheet({ model, scope, open, onOpenChange, onScopeClear, onSele
       return descending ? -delta : delta;
     });
     return all;
-  }, [model, scope, sort, descending]);
+  }, [linkScope, model, scope, sort, descending]);
 
   const toggleSort = (key: SortKey) => {
     if (key === sort) setDescending((value) => !value);
@@ -100,9 +101,9 @@ export function TxSheet({ model, scope, open, onOpenChange, onScopeClear, onSele
           </span>
           <Badge>{formatCount(rows.length)}</Badge>
         </Button>
-        {scope && (
+        {(scope || linkScope) && (
           <>
-            <Tag>scoped to {shortAddress(scope, 8, 6)}</Tag>
+            <Tag>{linkScope ? 'scoped to selected transfer' : `scoped to ${shortAddress(scope!, 8, 6)}`}</Tag>
             <Button variant="ghost" onClick={onScopeClear}>
               Show all
             </Button>

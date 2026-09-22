@@ -21,6 +21,9 @@ export interface Scene {
   dpr: number;
   activeId: string | null;
   selectedId: string | null;
+  selectedIds?: Set<string>;
+  selectedLinkId?: string | null;
+  nodeLabels?: Map<string, string>;
   highlightNodes: Set<string> | null;
   highlightLinks: Set<string> | null;
   searchMatches: Set<string>;
@@ -111,7 +114,7 @@ export function drawScene(ctx: CanvasRenderingContext2D, scene: Scene): void {
   const lit: GraphLink[] = [];
   for (const link of model.links) {
     if (!linkInView(link, view)) continue;
-    if (highlightLinks && highlightLinks.has(link.id)) lit.push(link);
+    if ((highlightLinks && highlightLinks.has(link.id)) || link.id === scene.selectedLinkId) lit.push(link);
     else dimmed.push(link);
   }
 
@@ -270,7 +273,7 @@ function drawNode(
   const { palette, transform: t } = scene;
   const color = nodeColor(node, palette);
   const isActive = node.id === scene.activeId;
-  const isSelected = node.id === scene.selectedId;
+  const isSelected = scene.selectedIds?.has(node.id) ?? node.id === scene.selectedId;
   const matched = scene.searchMatches.has(node.id);
 
   if (isActive || isSelected) {
@@ -353,7 +356,7 @@ function drawLabels(
   let drawn = 0;
   for (const node of candidates) {
     if (drawn >= MAX_LABELS) break;
-    const text = shortAddress(node.id, 6, 4);
+    const text = scene.nodeLabels?.get(node.id) ?? shortAddress(node.id, 6, 4);
     const w = ctx.measureText(text).width;
     const h = fontPx / t.k;
     const x = node.x;

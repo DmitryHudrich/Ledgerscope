@@ -9,6 +9,12 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
     port: 5173,
+    // This workspace is commonly opened from /mnt/c under WSL. Native file
+    // events there are unreliable, so polling keeps Vite's HMR cache current.
+    watch: {
+      usePolling: true,
+      interval: 300,
+    },
     proxy: {
       '/api': {
         target: BACKEND,

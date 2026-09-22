@@ -46,6 +46,10 @@ export function demoGraph(query: GraphQuery): GraphResponse {
   ]);
   const edges: GraphEdge[] = [];
   const baseTime = 1_729_345_547;
+  const demoLabels = new Map<string, { value: string; source: string }>();
+  if (roots[0]) demoLabels.set(roots[0].address.toLowerCase(), { value: 'Known wallet', source: 'demo' });
+  if (peers[0]) demoLabels.set(peers[0], { value: 'Example Exchange', source: 'demo' });
+  if (contracts[0]) demoLabels.set(contracts[0], { value: 'Example Bridge', source: 'demo' });
 
   const meta = (): TxMeta => {
     const offset = Math.floor(rand() * blockSpan);
@@ -108,6 +112,7 @@ export function demoGraph(query: GraphQuery): GraphResponse {
       const root = roots.find((candidate) => candidate.address.toLowerCase() === address);
       return {
         address,
+        labels: demoLabels.has(address) ? [demoLabels.get(address)!] : [],
         depth: root?.depth ?? 1,
         root: Boolean(root),
         expanded: Boolean(root),

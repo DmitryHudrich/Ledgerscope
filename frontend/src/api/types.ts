@@ -43,11 +43,45 @@ export interface BlockRangeSpan {
   block_count: number;
 }
 
+/** Read-only address identity attached by the backend label provider. */
+export interface AddressLabel {
+  value: string;
+  source: string;
+}
+
 export interface GraphNode {
   address: string;
+  labels?: AddressLabel[];
   depth: number;
   root: boolean;
   expanded: boolean;
+}
+
+export interface LowLevelGraphActor {
+  address: string;
+  labels?: AddressLabel[];
+  depth: number;
+  root: boolean;
+  expanded: boolean;
+}
+
+export interface LowLevelInteraction {
+  tx_hash: string;
+  block_number: number;
+  timestamp: number;
+  succeeded: boolean;
+  from: string;
+  to: string;
+  amount: string;
+  deployment: boolean;
+}
+
+export interface LowLevelGraphResponse {
+  actors: LowLevelGraphActor[];
+  interactions: LowLevelInteraction[];
+  span: BlockRangeSpan;
+  filled_from_rpc: BlockRangeSpan[];
+  truncated: boolean;
 }
 
 export interface GraphResponse {

@@ -42,7 +42,7 @@ export function Button({
     <button
       type={type}
       className={cx(
-        'inline-flex cursor-pointer items-center justify-center gap-[6px] whitespace-nowrap rounded-ui-sm border [transition:background_120ms_ease,border-color_120ms_ease,transform_80ms_ease] active:not-disabled:translate-y-px disabled:cursor-not-allowed disabled:opacity-50 aria-pressed:border-[color-mix(in_srgb,var(--accent)_45%,transparent)] aria-pressed:bg-[color-mix(in_srgb,var(--accent)_16%,transparent)] aria-pressed:text-accent',
+        'inline-flex cursor-pointer items-center justify-center gap-[6px] whitespace-nowrap rounded-ui-sm border [transition:background_120ms_ease,border-color_120ms_ease,transform_80ms_ease] active:not-disabled:translate-y-px disabled:cursor-not-allowed disabled:opacity-50 aria-pressed:border-[color-mix(in_srgb,var(--accent)_45%,transparent)] aria-pressed:bg-[color-mix(in_srgb,var(--accent)_16%,transparent)] aria-pressed:text-accent aria-pressed:hover:border-[color-mix(in_srgb,var(--accent)_58%,transparent)] aria-pressed:hover:bg-[color-mix(in_srgb,var(--accent)_22%,transparent)] aria-pressed:hover:text-accent',
         focusRing,
         buttonVariant[variant],
         icon ? 'size-8 p-0 [&_svg]:shrink-0' : 'h-[30px] px-3',
@@ -242,8 +242,8 @@ export function Kbd({ children }: { children: ReactNode }) {
 type TooltipSide = 'left' | 'right';
 
 const tooltipPosition: Record<TooltipSide, string> = {
-  left: 'right-full mr-3 -translate-x-1 group-hover/tooltip:translate-x-0 group-focus-within/tooltip:translate-x-0',
-  right: 'left-full ml-3 translate-x-1 group-hover/tooltip:translate-x-0 group-focus-within/tooltip:translate-x-0',
+  left: 'right-full mr-3 -translate-x-1 group-hover/tooltip:translate-x-0',
+  right: 'left-full ml-3 translate-x-1 group-hover/tooltip:translate-x-0',
 };
 
 const tooltipArrow: Record<TooltipSide, string> = {
@@ -272,7 +272,7 @@ export function Tooltip({
       <span
         role="tooltip"
         className={cx(
-          'pointer-events-none absolute top-1/2 z-50 -translate-y-1/2 whitespace-nowrap rounded-ui-sm border border-hairline bg-surface-2 px-3 py-2 text-xs font-medium leading-none text-text-primary opacity-0 shadow-pop [transition:opacity_120ms_ease,transform_120ms_ease] delay-0 group-hover/tooltip:visible group-hover/tooltip:opacity-100 group-hover/tooltip:delay-[400ms] group-focus-within/tooltip:visible group-focus-within/tooltip:opacity-100 group-focus-within/tooltip:delay-100 invisible',
+          'pointer-events-none absolute top-1/2 z-50 -translate-y-1/2 whitespace-nowrap rounded-ui-sm border border-hairline bg-surface-2 px-3 py-2 text-xs font-medium leading-none text-text-primary opacity-0 shadow-pop [transition:opacity_120ms_ease,transform_120ms_ease] delay-0 group-hover/tooltip:visible group-hover/tooltip:opacity-100 group-hover/tooltip:delay-[400ms] invisible',
           tooltipPosition[side],
         )}
       >

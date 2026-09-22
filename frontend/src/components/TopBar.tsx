@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react';
 
 import type { GraphRoot } from '../api/types';
+import type { CoverageResponse, HistogramResponse } from '../api/types';
 import type { Theme } from '../lib/theme';
 import type { BlockBounds } from './Timeline';
 import { IconChevron, IconLogo, IconMoon, IconSun } from './Icons';
@@ -13,6 +14,8 @@ interface Props {
   roots: GraphRoot[];
   maxRoots: number;
   selection: BlockBounds;
+  coverage: CoverageResponse | null;
+  histogram: HistogramResponse | null;
   onSelectionChange: (next: BlockBounds) => void;
   onSubmit: (address: string | null) => void;
   loading: boolean;
@@ -28,6 +31,8 @@ export function TopBar({
   roots,
   maxRoots,
   selection,
+  coverage,
+  histogram,
   onSelectionChange,
   onSubmit,
   loading,
@@ -96,13 +101,15 @@ export function TopBar({
           {loading ? 'Building…' : 'Build graph'}
         </Button>
         <BlockRangeControl
-          from={String(selection.from)}
-          to={String(selection.to)}
-          invalid={selection.to < selection.from}
+          from={selection.from}
+          to={selection.to}
+          coverage={coverage}
+          histogram={histogram}
           open={advancedOpen}
           onOpenChange={onAdvancedOpenChange}
           onFromChange={(value) => updateBlock('from', value)}
           onToChange={(value) => updateBlock('to', value)}
+          onRangeChange={onSelectionChange}
         />
       </form>
 

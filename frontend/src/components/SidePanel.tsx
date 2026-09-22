@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 
 import type { GraphRoot } from '../api/types';
+import type { LabelMode } from '../graph/draw';
 import { assetLabel, type GraphFilters, type GraphModel } from '../graph/model';
 import {
   formatCompact,
@@ -53,6 +54,8 @@ interface Props {
   onRootDepthChange: (address: string, depth: number) => void;
   onSelect: (id: string) => void;
   onCenter: (id: string) => void;
+  labelMode: LabelMode;
+  onLabelModeChange: (next: LabelMode) => void;
 }
 
 export function sliderToEth(position: number): number {
@@ -82,6 +85,8 @@ export function InvestigationPanel({
   onRootDepthChange,
   onSelect,
   onCenter,
+  labelMode,
+  onLabelModeChange,
 }: Props) {
   const counts = { eoa: 0, contract: 0, focus: 0 };
   for (const node of model.nodes) counts[node.kind] += 1;
@@ -158,7 +163,13 @@ export function InvestigationPanel({
                 onResetFilters={onResetFilters}
               />
             )}
-            {activePanel === 'legend' && <LegendPanel counts={counts} />}
+            {activePanel === 'legend' && (
+              <LegendPanel
+                counts={counts}
+                showLabels={labelMode !== 'none'}
+                onShowLabelsChange={(show) => onLabelModeChange(show ? 'auto' : 'none')}
+              />
+            )}
             {activePanel === 'stats' && <StatsPanel model={model} />}
           </div>
         </Panel>
@@ -259,14 +270,14 @@ function FiltersPanel({ filters, onFiltersChange, search, onSearchChange, matchC
     <PanelSection className="border-b-0 px-3 py-4">
       <PanelTitle>Graph filters</PanelTitle>
       <div className="mb-5 grid gap-[6px]">
-        <label className="text-[10px] uppercase tracking-[0.07em] text-text-muted" htmlFor="f-search">Highlight address</label>
+        <label className="text-[10px] uppercase tracking-[0.07em] text-text-muted" htmlFor="f-search">Highlight address or label</label>
         <div className="relative">
           <IconSearch className="pointer-events-none absolute left-[9px] top-1/2 -translate-y-1/2 text-text-muted" size={14} />
           <Input id="f-search" className="w-full pl-[30px] font-mono-ui text-xs" value={search} spellCheck={false} autoComplete="off" placeholder="0x…" onChange={(event) => onSearchChange(event.target.value)} />
         </div>
         {search.trim().length > 0 && (
           <p className="m-0 text-[11px] text-text-muted">
-            {matchCount > 0 ? `${formatCount(matchCount)} address${matchCount === 1 ? '' : 'es'} highlighted` : 'No match in the current graph'}
+            {matchCount > 0 ? `${formatCount(matchCount)} node${matchCount === 1 ? '' : 's'} highlighted` : 'No match in the current graph'}
           </p>
         )}
       </div>
@@ -331,7 +342,11 @@ function StatsPanel({ model }: { model: GraphModel }) {
   );
 }
 
-function LegendPanel({ counts }: { counts: Record<'eoa' | 'contract' | 'focus', number> }) {
+function LegendPanel({ counts, showLabels, onShowLabelsChange }: {
+  counts: Record<'eoa' | 'contract' | 'focus', number>;
+  showLabels: boolean;
+  onShowLabelsChange: (show: boolean) => void;
+}) {
   return (
     <PanelSection className="border-b-0 px-3 py-4">
       <PanelTitle>Graph legend</PanelTitle>
@@ -343,6 +358,11 @@ function LegendPanel({ counts }: { counts: Record<'eoa' | 'contract' | 'focus', 
       <div className="mt-4 grid gap-2.5 border-t border-hairline pt-4">
         <div className="flex items-center gap-[9px] text-xs text-text-secondary"><span className="h-[3px] w-[14px] flex-none rounded-[2px] bg-series-token" aria-hidden="true" />Token transfer edge</div>
         <div className="flex items-center gap-[9px] text-xs text-text-secondary"><span className="h-[3px] w-[14px] flex-none rounded-[2px] bg-[repeating-linear-gradient(90deg,var(--edge)_0_4px,transparent_4px_7px)]" aria-hidden="true" />Contract call edge</div>
+      </div>
+      <div className="mt-4 border-t border-hairline pt-3">
+        <Checkbox checked={showLabels} onChange={(event) => onShowLabelsChange(event.target.checked)}>
+          Show labels
+        </Checkbox>
       </div>
       <p className="mb-0 mt-4 text-[11px] leading-relaxed text-text-muted">Arrows point from sender to receiver. Node size represents turnover, counterparties and transaction count. Edge width represents flow and transaction count.</p>
     </PanelSection>

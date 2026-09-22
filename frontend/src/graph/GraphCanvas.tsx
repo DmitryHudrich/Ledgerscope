@@ -22,6 +22,8 @@ import {
   type Transform,
 } from './draw';
 import { assetLabel, netFlow, type GraphLink, type GraphModel, type GraphNode } from './model';
+import type { Annotation, AnnotationKind, AnnotationStyle, AnnotationTool } from './annotations';
+import { getPrimarySystemLabel } from './labels';
 
 export interface GraphHandle {
   fit(): void;
@@ -38,13 +40,22 @@ interface Props {
   model: GraphModel;
   palette: VizPalette;
   selectedId: string | null;
+  selectedIds: Set<string>;
+  selectedLinkId: string | null;
+  nodeLabels: Map<string, string>;
+  annotationTool: AnnotationTool;
+  annotations: Annotation[];
+  onAnnotationsChange: (next: Annotation[]) => void;
+  annotationStyle: AnnotationStyle;
   searchMatches: Set<string>;
   labelMode: LabelMode;
   showGrid: boolean;
   showFlow: boolean;
   frozen: boolean;
   incrementalLayoutVersion: number;
-  onSelect: (id: string | null) => void;
+  onSelect: (id: string | null, additive?: boolean) => void;
+  onSelectLink: (id: string | null) => void;
+  onSelectMany: (ids: Set<string>) => void;
   handle: RefObject<GraphHandle | null>;
 }
 
@@ -52,10 +63,121 @@ const MIN_ZOOM = 0.04;
 const MAX_ZOOM = 6;
 const CLICK_SLOP = 4;
 
+function drawAnnotations(ctx: CanvasRenderingContext2D, annotations: Annotation[], transform: Transform, dpr: number, color: string) {
+  ctx.save();
+  ctx.setTransform(dpr * transform.k, 0, 0, dpr * transform.k, dpr * transform.x, dpr * transform.y);
+  ctx.globalAlpha = 0.86;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  for (const item of annotations) {
+    ctx.strokeStyle = item.color ?? color;
+    ctx.fillStyle = item.color ?? color;
+    ctx.lineWidth = (item.strokeWidth ?? 2) / transform.k;
+    ctx.font = `500 ${(item.fontSize ?? 14) / transform.k}px Inter Variable, system-ui`;
+    const stroke = item.strokeWidth ?? 2;
+    const dx = item.x2 - item.x;
+    const dy = item.y2 - item.y;
+    const arrowLength = Math.hypot(dx, dy);
+    const direction = arrowLength > 0 ? { x: dx / arrowLength, y: dy / arrowLength } : null;
+    const headLength = direction
+      ? Math.min(Math.max(stroke * 3 / transform.k, 10 / transform.k), 26 / transform.k, arrowLength * 0.4)
+      : 0;
+    const headWidth = Math.min(Math.max(stroke * 2 / transform.k, 8 / transform.k), 18 / transform.k);
+    const base = direction
+      ? { x: item.x2 - direction.x * headLength, y: item.y2 - direction.y * headLength }
+      : null;
+    ctx.lineCap = item.kind === 'arrow' ? 'butt' : 'round';
+    const x = Math.min(item.x, item.x2); const y = Math.min(item.y, item.y2);
+    const w = Math.abs(item.x2 - item.x); const h = Math.abs(item.y2 - item.y);
+    ctx.beginPath();
+    if (item.kind === 'rectangle') ctx.roundRect(x, y, w, h, Math.min(6 / transform.k, w / 5, h / 5));
+    else if (item.kind === 'ellipse') ctx.ellipse(x + w / 2, y + h / 2, w / 2, h / 2, 0, 0, Math.PI * 2);
+    else if (item.kind === 'pencil' && item.points) {
+      const points = item.points;
+      if (points.length === 1) {
+        ctx.arc(points[0].x, points[0].y, Math.max((item.strokeWidth ?? 2) / transform.k / 2, 1 / transform.k), 0, Math.PI * 2);
+        ctx.fill();
+        continue;
+      }
+      ctx.moveTo(points[0].x, points[0].y);
+      for (let index = 1; index < points.length - 1; index += 1) {
+        const point = points[index];
+        const next = points[index + 1];
+        ctx.quadraticCurveTo(point.x, point.y, (point.x + next.x) / 2, (point.y + next.y) / 2);
+      }
+      const last = points[points.length - 1];
+      ctx.lineTo(last.x, last.y);
+    }
+    else if (item.kind === 'text') { ctx.fillText(item.text ?? '', item.x, item.y); continue; }
+    else if (item.kind === 'arrow') {
+      ctx.moveTo(item.x, item.y);
+      if (base) ctx.lineTo(base.x, base.y);
+    } else { ctx.moveTo(item.x, item.y); ctx.lineTo(item.x2, item.y2); }
+    ctx.stroke();
+    if (item.kind === 'arrow') {
+      if (!direction || !base) continue;
+      // Butt cap prevents the shaft protruding through the filled head; draw a
+      // round tail separately to retain the friendly line ending at the start.
+      ctx.beginPath();
+      ctx.arc(item.x, item.y, ctx.lineWidth / 2, 0, Math.PI * 2);
+      ctx.fill();
+      const perpendicular = { x: -direction.y, y: direction.x };
+      ctx.beginPath();
+      ctx.moveTo(item.x2, item.y2);
+      ctx.lineTo(base.x + perpendicular.x * headWidth / 2, base.y + perpendicular.y * headWidth / 2);
+      ctx.lineTo(base.x - perpendicular.x * headWidth / 2, base.y - perpendicular.y * headWidth / 2);
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+  ctx.restore();
+}
+
+function annotationGeometryBounds(item: Annotation, transform: Transform) {
+  const points = item.points ?? [];
+  const xs = [item.x, item.x2, ...points.map((point) => point.x)];
+  const ys = [item.y, item.y2, ...points.map((point) => point.y)];
+  let minX = Math.min(...xs); let maxX = Math.max(...xs);
+  const minY = Math.min(...ys); const maxY = Math.max(...ys);
+  if (item.kind === 'text') maxX = item.x + Math.max(80, (item.text?.length ?? 1) * (item.fontSize ?? 14) * .58) / transform.k;
+  return { minX, minY, maxX, maxY };
+}
+
+function annotationBounds(item: Annotation, transform: Transform) {
+  const geometry = annotationGeometryBounds(item, transform);
+  const pad = Math.max(8, item.fontSize ?? 14) / transform.k;
+  const minX = geometry.minX - pad; const maxX = geometry.maxX + pad;
+  const minY = geometry.minY - pad; const maxY = geometry.maxY + pad;
+  return { minX, minY, maxX, maxY };
+}
+
+function annotationsGeometryBounds(items: Annotation[], transform: Transform) {
+  const boxes = items.map((item) => annotationGeometryBounds(item, transform));
+  return { minX: Math.min(...boxes.map((box) => box.minX)), minY: Math.min(...boxes.map((box) => box.minY)), maxX: Math.max(...boxes.map((box) => box.maxX)), maxY: Math.max(...boxes.map((box) => box.maxY)) };
+}
+
+function drawAnnotationSelection(ctx: CanvasRenderingContext2D, item: Annotation, transform: Transform, dpr: number, color: string) {
+  const box = annotationBounds(item, transform);
+  const x = box.minX * transform.k + transform.x;
+  const y = box.minY * transform.k + transform.y;
+  const w = (box.maxX - box.minX) * transform.k;
+  const h = (box.maxY - box.minY) * transform.k;
+  ctx.save(); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.strokeStyle = color; ctx.lineWidth = 1;
+  ctx.setLineDash([4, 3]); ctx.strokeRect(x, y, w, h); ctx.setLineDash([]);
+  ctx.fillStyle = color; ctx.fillRect(x + w - 4, y + h - 4, 8, 8); ctx.restore();
+}
+
 export function GraphCanvas({
   model,
   palette,
   selectedId,
+  selectedIds,
+  selectedLinkId,
+  nodeLabels,
+  annotationTool,
+  annotations,
+  onAnnotationsChange,
+  annotationStyle,
   searchMatches,
   labelMode,
   showGrid,
@@ -63,6 +185,8 @@ export function GraphCanvas({
   frozen,
   incrementalLayoutVersion,
   onSelect,
+  onSelectLink,
+  onSelectMany,
   handle,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -79,17 +203,23 @@ export function GraphCanvas({
   const hoveredLink = useRef<GraphLink | null>(null);
   const focusMix = useRef(0);
   const retained = useRef<{ nodes: Set<string>; links: Set<string> } | null>(null);
+  const marquee = useRef<{ x: number; y: number; width: number; height: number } | null>(null);
+  const draftAnnotation = useRef<Annotation | null>(null);
+  const groupPreview = useRef<Annotation[] | null>(null);
+  const [textEditor, setTextEditor] = useState<{ x: number; y: number } | null>(null);
+  const [selectedAnnotationIds, setSelectedAnnotationIds] = useState<Set<string>>(() => new Set());
+  const textInputRef = useRef<HTMLInputElement>(null);
   const dirty = useRef(true);
 
   const fitMode = useRef<'off' | 'once'>('once');
 
   const [hover, setHover] = useState<Hover | null>(null);
 
-  const live = useRef({ model, palette, selectedId, searchMatches, labelMode, showGrid, showFlow });
-  live.current = { model, palette, selectedId, searchMatches, labelMode, showGrid, showFlow };
+  const live = useRef({ model, palette, selectedId, selectedIds, selectedLinkId, nodeLabels, annotationTool, annotations, annotationStyle, selectedAnnotationIds, searchMatches, labelMode, showGrid, showFlow });
+  live.current = { model, palette, selectedId, selectedIds, selectedLinkId, nodeLabels, annotationTool, annotations, annotationStyle, selectedAnnotationIds, searchMatches, labelMode, showGrid, showFlow };
   useEffect(() => {
     dirty.current = true;
-  }, [palette, selectedId, searchMatches, labelMode, showGrid, showFlow]);
+  }, [palette, selectedId, selectedIds, selectedLinkId, nodeLabels, annotationTool, annotations, annotationStyle, selectedAnnotationIds, searchMatches, labelMode, showGrid, showFlow]);
 
   useEffect(() => {
     const nodes = model.nodes;
@@ -205,6 +335,22 @@ export function GraphCanvas({
   }, []);
 
   useEffect(() => {
+    if (selectedAnnotationIds.size === 0) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target?.isContentEditable) return;
+      if (event.key === 'Escape') setSelectedAnnotationIds(new Set());
+      if (event.key === 'Delete' || event.key === 'Backspace') {
+        event.preventDefault();
+        onAnnotationsChange(live.current.annotations.filter((item) => !selectedAnnotationIds.has(item.id)));
+        setSelectedAnnotationIds(new Set());
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [onAnnotationsChange, selectedAnnotationIds]);
+
+  useEffect(() => {
     const canvas = canvasRef.current;
     const ctx = canvas?.getContext('2d');
     if (!canvas || !ctx) return;
@@ -265,6 +411,9 @@ export function GraphCanvas({
         dpr,
         activeId: active,
         selectedId: state.selectedId,
+        selectedIds: state.selectedIds,
+        selectedLinkId: state.selectedLinkId,
+        nodeLabels: state.nodeLabels,
         highlightNodes: sets ? sets.nodes : null,
         highlightLinks: sets ? sets.links : null,
         searchMatches: state.searchMatches,
@@ -273,8 +422,29 @@ export function GraphCanvas({
         time,
         showGrid: state.showGrid,
         showFlow: state.showFlow,
-        transparentBackground: true,
+        // The canvas owns the background so drawGrid uses the exact same
+        // world transform as nodes and links rather than a screen-fixed CSS pattern.
+        transparentBackground: false,
       });
+      const renderedAnnotations = groupPreview.current
+        ? state.annotations.map((item) => groupPreview.current?.find((preview) => preview.id === item.id) ?? item)
+        : state.annotations;
+      drawAnnotations(ctx, renderedAnnotations, transform.current, dpr, state.palette.focus);
+      if (draftAnnotation.current) drawAnnotations(ctx, [draftAnnotation.current], transform.current, dpr, state.palette.focus);
+      for (const selected of renderedAnnotations.filter((item) => state.selectedAnnotationIds.has(item.id))) drawAnnotationSelection(ctx, selected, transform.current, dpr, selected.color ?? state.palette.focus);
+      if (marquee.current) {
+        const box = marquee.current;
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.fillStyle = state.palette.focus;
+        ctx.globalAlpha = 0.12;
+        ctx.fillRect(box.x, box.y, box.width, box.height);
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = state.palette.focus;
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 3]);
+        ctx.strokeRect(box.x + 0.5, box.y + 0.5, box.width, box.height);
+        ctx.setLineDash([]);
+      }
     });
 
     return () => cancelAnimationFrame(frame);
@@ -285,8 +455,15 @@ export function GraphCanvas({
     if (!canvas) return;
 
     let downAt: { x: number; y: number } | null = null;
-    let dragNode: GraphNode | null = null;
+    let dragNodes: GraphNode[] | null = null;
+    let dragOrigin: { x: number; y: number } | null = null;
+    let dragPositions: Array<{ node: GraphNode; x: number; y: number }> = [];
     let panning = false;
+    let selecting = false;
+    let selectionStart: { x: number; y: number } | null = null;
+    let selectionRect: { x: number; y: number; width: number; height: number } | null = null;
+    let annotationEdit: { original: Annotation; mode: 'move' | 'resize'; origin: { x: number; y: number } } | null = null;
+    let groupEdit: { originals: Annotation[]; origin: { x: number; y: number }; bounds: ReturnType<typeof annotationsGeometryBounds>; handle?: 'nw' | 'ne' | 'sw' | 'se' } | null = null;
     let moved = 0;
 
     const localPoint = (event: PointerEvent | WheelEvent) => {
@@ -328,13 +505,80 @@ export function GraphCanvas({
       moved = 0;
 
       const world = toWorld(transform.current, point.x, point.y);
+      if (event.button === 0 && live.current.annotationTool === 'select') {
+        const selectedGroup = live.current.annotations.filter((item) => live.current.selectedAnnotationIds.has(item.id));
+        if (selectedGroup.length > 1) {
+          const bounds = annotationsGeometryBounds(selectedGroup, transform.current);
+          const corners = { nw: [bounds.minX, bounds.minY], ne: [bounds.maxX, bounds.minY], sw: [bounds.minX, bounds.maxY], se: [bounds.maxX, bounds.maxY] } as const;
+          const handle = (Object.entries(corners) as Array<['nw' | 'ne' | 'sw' | 'se', readonly [number, number]]>)
+            .find(([, corner]) => Math.abs(point.x - (corner[0] * transform.current.k + transform.current.x)) <= 18 && Math.abs(point.y - (corner[1] * transform.current.k + transform.current.y)) <= 18)?.[0];
+          if (handle) { groupEdit = { originals: selectedGroup, origin: world, bounds, handle }; canvas.style.cursor = 'nwse-resize'; return; }
+        }
+        const selected = live.current.selectedAnnotationIds.size === 1
+          ? live.current.annotations.find((item) => live.current.selectedAnnotationIds.has(item.id))
+          : null;
+        if (selected) {
+          const box = annotationBounds(selected, transform.current);
+          const handleX = box.maxX * transform.current.k + transform.current.x;
+          const handleY = box.maxY * transform.current.k + transform.current.y;
+          // This matches the actual rendered handle, independent of zoom.
+          if (Math.abs(point.x - handleX) <= 18 && Math.abs(point.y - handleY) <= 18) {
+            annotationEdit = { original: selected, mode: 'resize', origin: world };
+            canvas.style.cursor = 'nwse-resize';
+            return;
+          }
+        }
+        const hit = [...live.current.annotations].reverse().find((item) => {
+          const box = annotationBounds(item, transform.current);
+          return world.x >= box.minX && world.x <= box.maxX && world.y >= box.minY && world.y <= box.maxY;
+        });
+        if (hit) {
+          const group = live.current.annotations.filter((item) => live.current.selectedAnnotationIds.has(item.id));
+          if (group.length > 1 && live.current.selectedAnnotationIds.has(hit.id) && !event.shiftKey) {
+            groupEdit = { originals: group, origin: world, bounds: annotationsGeometryBounds(group, transform.current) };
+            canvas.style.cursor = 'move';
+            return;
+          }
+          setSelectedAnnotationIds((current) => {
+            if (!event.shiftKey) return new Set([hit.id]);
+            const next = new Set(current);
+            if (next.has(hit.id)) next.delete(hit.id); else next.add(hit.id);
+            return next;
+          });
+          const box = annotationBounds(hit, transform.current);
+          const handle = 20 / transform.current.k;
+          const mode = Math.abs(world.x - box.maxX) <= handle && Math.abs(world.y - box.maxY) <= handle ? 'resize' : 'move';
+          annotationEdit = { original: hit, mode, origin: world };
+          canvas.style.cursor = mode === 'resize' ? 'nwse-resize' : 'move';
+          return;
+        }
+        if (!event.shiftKey) setSelectedAnnotationIds(new Set());
+      }
+      if (event.button === 0 && live.current.annotationTool !== 'select') {
+        const kind = live.current.annotationTool as AnnotationKind;
+        draftAnnotation.current = { id: crypto.randomUUID(), kind, x: world.x, y: world.y, x2: world.x, y2: world.y, points: kind === 'pencil' ? [{ x: world.x, y: world.y }] : undefined, ...live.current.annotationStyle };
+        canvas.style.cursor = 'crosshair';
+        return;
+      }
       const node =
         event.button === 0 ? findNodeAt(live.current.model, world, transform.current.k) : null;
       if (node) {
-        dragNode = node;
-        node.fx = node.x;
-        node.fy = node.y;
+        const selected = live.current.selectedIds.has(node.id);
+        dragNodes = selected
+          ? live.current.model.nodes.filter((candidate) => live.current.selectedIds.has(candidate.id))
+          : [node];
+        dragOrigin = world;
+        dragPositions = dragNodes.map((candidate) => ({ node: candidate, x: candidate.x, y: candidate.y }));
+        for (const candidate of dragNodes) {
+          candidate.fx = candidate.x;
+          candidate.fy = candidate.y;
+        }
         if (!frozen) simulation.current?.alphaTarget(0.28).restart();
+      } else if (event.button === 0) {
+        selecting = true;
+        selectionStart = point;
+        selectionRect = { x: point.x, y: point.y, width: 0, height: 0 };
+        marquee.current = selectionRect;
       } else {
         panning = true;
       }
@@ -344,12 +588,94 @@ export function GraphCanvas({
     const onPointerMove = (event: PointerEvent) => {
       const point = localPoint(event);
 
-      if (dragNode) {
+      if (groupEdit) {
         const world = toWorld(transform.current, point.x, point.y);
-        dragNode.fx = world.x;
-        dragNode.fy = world.y;
+        const dx = world.x - groupEdit.origin.x; const dy = world.y - groupEdit.origin.y;
+        if (!groupEdit.handle) {
+          groupPreview.current = groupEdit.originals.map((item) => ({ ...item, x: item.x + dx, y: item.y + dy, x2: item.x2 + dx, y2: item.y2 + dy, points: item.points?.map((value) => ({ x: value.x + dx, y: value.y + dy })) }));
+        } else {
+          const { bounds, handle } = groupEdit;
+          const anchorX = handle.includes('w') ? bounds.maxX : bounds.minX;
+          const anchorY = handle.includes('n') ? bounds.maxY : bounds.minY;
+          const baseX = handle.includes('w') ? bounds.minX : bounds.maxX;
+          const baseY = handle.includes('n') ? bounds.minY : bounds.maxY;
+          const scaleX = Math.max(Math.abs((world.x - anchorX) / (baseX - anchorX)), .04);
+          const scaleY = Math.max(Math.abs((world.y - anchorY) / (baseY - anchorY)), .04);
+          const scale = (x: number, y: number) => ({ x: anchorX + (x - anchorX) * scaleX, y: anchorY + (y - anchorY) * scaleY });
+          groupPreview.current = groupEdit.originals.map((item) => { const a = scale(item.x, item.y); const b = scale(item.x2, item.y2); return { ...item, x: a.x, y: a.y, x2: b.x, y2: b.y, points: item.points?.map((value) => scale(value.x, value.y)) }; });
+        }
+        dirty.current = true;
+        return;
+      }
+
+      if (annotationEdit) {
+        const world = toWorld(transform.current, point.x, point.y);
+        const { original, origin, mode } = annotationEdit;
+        const dx = world.x - origin.x; const dy = world.y - origin.y;
+        const next: Annotation = mode === 'move'
+          ? { ...original, x: original.x + dx, y: original.y + dy, x2: original.x2 + dx, y2: original.y2 + dy, points: original.points?.map((item) => ({ x: item.x + dx, y: item.y + dy })) }
+          : (() => {
+              const geometry = annotationGeometryBounds(original, transform.current);
+              const frame = annotationBounds(original, transform.current);
+              const width = Math.max(geometry.maxX - geometry.minX, 1 / transform.current.k);
+              const height = Math.max(geometry.maxY - geometry.minY, 1 / transform.current.k);
+              const targetX = world.x - (frame.maxX - geometry.maxX);
+              const targetY = world.y - (frame.maxY - geometry.maxY);
+              const scaleX = Math.max((targetX - geometry.minX) / width, 0.04);
+              const scaleY = Math.max((targetY - geometry.minY) / height, 0.04);
+              const scalePoint = (x: number, y: number) => ({
+                x: geometry.minX + (x - geometry.minX) * scaleX,
+                y: geometry.minY + (y - geometry.minY) * scaleY,
+              });
+              const start = scalePoint(original.x, original.y);
+              const end = scalePoint(original.x2, original.y2);
+              return {
+                ...original,
+                x: start.x,
+                y: start.y,
+                x2: end.x,
+                y2: end.y,
+                points: original.points?.map((item) => scalePoint(item.x, item.y)),
+              };
+            })();
+        draftAnnotation.current = next;
+        dirty.current = true;
+        return;
+      }
+
+      if (draftAnnotation.current) {
+        const drawing = draftAnnotation.current;
+        const world = toWorld(transform.current, point.x, point.y);
+        drawing.x2 = world.x;
+        drawing.y2 = world.y;
+        if (drawing.kind === 'pencil') drawing.points?.push(world);
+        dirty.current = true;
+        return;
+      }
+
+      if (dragNodes && dragOrigin) {
+        const world = toWorld(transform.current, point.x, point.y);
+        const dx = world.x - dragOrigin.x;
+        const dy = world.y - dragOrigin.y;
+        for (const position of dragPositions) {
+          position.node.fx = position.x + dx;
+          position.node.fy = position.y + dy;
+        }
         moved += Math.abs(event.movementX) + Math.abs(event.movementY);
         placeTooltip(point);
+        dirty.current = true;
+        return;
+      }
+
+      if (selecting && selectionStart) {
+        selectionRect = {
+          x: Math.min(selectionStart.x, point.x),
+          y: Math.min(selectionStart.y, point.y),
+          width: Math.abs(point.x - selectionStart.x),
+          height: Math.abs(point.y - selectionStart.y),
+        };
+        marquee.current = selectionRect;
+        moved += Math.abs(event.movementX) + Math.abs(event.movementY);
         dirty.current = true;
         return;
       }
@@ -363,6 +689,21 @@ export function GraphCanvas({
       }
 
       const world = toWorld(transform.current, point.x, point.y);
+      const selectedAnnotation = live.current.selectedAnnotationIds.size === 1
+        ? live.current.annotations.find((item) => live.current.selectedAnnotationIds.has(item.id))
+        : null;
+      if (selectedAnnotation) {
+        const box = annotationBounds(selectedAnnotation, transform.current);
+        const handle = 20 / transform.current.k;
+        if (Math.abs(world.x - box.maxX) <= handle && Math.abs(world.y - box.maxY) <= handle) {
+          canvas.style.cursor = 'nwse-resize';
+          return;
+        }
+        if (world.x >= box.minX && world.x <= box.maxX && world.y >= box.minY && world.y <= box.maxY) {
+          canvas.style.cursor = 'move';
+          return;
+        }
+      }
       const node = findNodeAt(live.current.model, world, transform.current.k);
       const link = node ? null : findLinkAt(live.current.model, world, transform.current.k);
       placeTooltip(point);
@@ -379,19 +720,92 @@ export function GraphCanvas({
       canvas.releasePointerCapture?.(event.pointerId);
       const wasClick = moved < CLICK_SLOP;
 
-      if (dragNode) {
+      if (groupEdit) {
+        const preview = groupPreview.current;
+        if (preview) onAnnotationsChange(live.current.annotations.map((item) => preview.find((candidate) => candidate.id === item.id) ?? item));
+        groupPreview.current = null;
+        groupEdit = null;
+        dirty.current = true;
+        return;
+      }
+
+      if (annotationEdit) {
+        const edited = draftAnnotation.current;
+        if (edited) onAnnotationsChange(live.current.annotations.map((item) => item.id === edited.id ? edited : item));
+        draftAnnotation.current = null;
+        annotationEdit = null;
+        dirty.current = true;
+        return;
+      }
+
+      if (draftAnnotation.current) {
+        const finished = draftAnnotation.current;
+        draftAnnotation.current = null;
+        if (finished.kind === 'text') {
+          setTextEditor({ x: finished.x, y: finished.y });
+          window.requestAnimationFrame(() => textInputRef.current?.focus({ preventScroll: true }));
+          dirty.current = true;
+          return;
+        }
+        onAnnotationsChange([...live.current.annotations, finished]);
+        dirty.current = true;
+        return;
+      }
+
+      if (dragNodes) {
         if (!frozen) simulation.current?.alphaTarget(0);
 
         if (wasClick) {
-          dragNode.fx = null;
-          dragNode.fy = null;
-          onSelect(dragNode.id);
+          for (const node of dragNodes) {
+            node.fx = null;
+            node.fy = null;
+          }
+          onSelect(dragNodes[0].id, event.shiftKey);
         }
-        dragNode = null;
+        dragNodes = null;
+        dragOrigin = null;
+        dragPositions = [];
+      } else if (selecting) {
+        if (wasClick) {
+          onSelect(null);
+        } else if (selectionRect) {
+          const start = toWorld(transform.current, selectionRect.x, selectionRect.y);
+          const end = toWorld(transform.current, selectionRect.x + selectionRect.width, selectionRect.y + selectionRect.height);
+          const annotationIds = new Set(
+            live.current.annotations
+              .filter((item) => {
+                const box = annotationBounds(item, transform.current);
+                return box.minX >= start.x && box.maxX <= end.x && box.minY >= start.y && box.maxY <= end.y;
+              })
+              .map((item) => item.id),
+          );
+          if (annotationIds.size > 0) {
+            setSelectedAnnotationIds(annotationIds);
+            selecting = false;
+            selectionStart = null;
+            selectionRect = null;
+            marquee.current = null;
+            panning = false;
+            downAt = null;
+            canvas.style.cursor = 'default';
+            dirty.current = true;
+            return;
+          }
+          const ids = new Set(
+            live.current.model.nodes
+              .filter((node) => node.x >= start.x && node.x <= end.x && node.y >= start.y && node.y <= end.y)
+              .map((node) => node.id),
+          );
+          onSelectMany(ids);
+        }
+        selecting = false;
+        selectionStart = null;
+        selectionRect = null;
+        marquee.current = null;
       } else if (wasClick && downAt) {
         const world = toWorld(transform.current, downAt.x, downAt.y);
         const link = findLinkAt(live.current.model, world, transform.current.k);
-        onSelect(link ? link.source.id : null);
+        onSelectLink(link?.id ?? null);
       }
 
       panning = false;
@@ -435,7 +849,7 @@ export function GraphCanvas({
       canvas.removeEventListener('pointerleave', onPointerLeave);
       canvas.removeEventListener('dblclick', onDoubleClick);
     };
-  }, [frozen, onSelect]);
+  }, [frozen, onAnnotationsChange, onSelect, onSelectLink, onSelectMany]);
 
   useImperativeHandle(
     handle,
@@ -487,19 +901,29 @@ export function GraphCanvas({
   return (
     <div
       ref={containerRef}
-      className="absolute bottom-[var(--sheet-h)] left-[var(--investigation-w)] right-[var(--inspector-w)] top-0 block touch-none bg-plane transition-[bottom,left,right] duration-200 ease-[cubic-bezier(0.22,0.61,0.36,1)]"
-      style={
-        showGrid
-          ? {
-              backgroundImage:
-                'radial-gradient(circle, var(--gridline) 0 1.5px, transparent 1.7px)',
-              backgroundPosition: '28px 28px',
-              backgroundSize: '56px 56px',
-            }
-          : undefined
-      }
+      className="absolute bottom-[var(--sheet-h)] left-[var(--investigation-w)] right-[var(--inspector-w)] top-0 z-0 block isolate overflow-hidden touch-none bg-plane transition-[bottom,left,right] duration-200 ease-[cubic-bezier(0.22,0.61,0.36,1)]"
     >
       <canvas ref={canvasRef} className="absolute inset-0 block size-full touch-none" />
+      {textEditor && (
+        <input
+          ref={textInputRef}
+          className="absolute z-20 min-w-[150px] border-b border-accent bg-surface-1 px-1 py-0.5 text-xs text-text-primary outline-none"
+          style={{ left: textEditor.x * transform.current.k + transform.current.x, top: textEditor.y * transform.current.k + transform.current.y }}
+          placeholder="Annotation text"
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') setTextEditor(null);
+            if (event.key === 'Enter' && event.currentTarget.value.trim()) {
+              event.currentTarget.dataset.committed = 'true';
+              onAnnotationsChange([...live.current.annotations, { id: crypto.randomUUID(), kind: 'text', x: textEditor.x, y: textEditor.y, x2: textEditor.x, y2: textEditor.y, text: event.currentTarget.value.trim(), ...live.current.annotationStyle }]);
+              setTextEditor(null);
+            }
+          }}
+          onBlur={(event) => {
+            if (event.currentTarget.value.trim() && event.currentTarget.dataset.committed !== 'true') onAnnotationsChange([...live.current.annotations, { id: crypto.randomUUID(), kind: 'text', x: textEditor.x, y: textEditor.y, x2: textEditor.x, y2: textEditor.y, text: event.currentTarget.value.trim(), ...live.current.annotationStyle }]);
+            setTextEditor(null);
+          }}
+        />
+      )}
       <div
         ref={tooltipRef}
         className="pointer-events-none absolute left-0 top-0 z-15 min-w-[176px] max-w-[260px] rounded-ui border border-hairline-strong bg-surface-1 px-[11px] py-[9px] opacity-0 shadow-pop transition-opacity duration-90 data-[visible=true]:opacity-100"
@@ -531,6 +955,7 @@ const TIP_ASSETS = 4;
 
 function NodeTip({ node }: { node: GraphNode }) {
   const tokens = netFlow(node).filter((flow) => !flow.native && flow.amount !== 0n);
+  const systemLabel = getPrimarySystemLabel(node.systemLabels);
 
   return (
     <>
@@ -540,7 +965,12 @@ function NodeTip({ node }: { node: GraphNode }) {
           {KIND_LABEL[node.kind]}
         </span>
       </div>
-      <div className="mb-[7px] mt-[3px] break-all font-mono-ui text-xs">
+      {systemLabel && (
+        <div className="mt-[3px] max-w-[260px] break-words text-[13px] font-semibold text-text-primary">
+          {systemLabel.value}
+        </div>
+      )}
+      <div className="mb-[7px] mt-[3px] break-all font-mono-ui text-xs text-text-secondary">
         {shortAddress(node.id, 12, 8)}
       </div>
       <dl className="m-0 grid gap-[3px] text-xs [&>div]:flex [&>div]:justify-between [&>div]:gap-3 [&_dd]:m-0 [&_dd]:tabular-nums [&_dt]:text-text-muted">

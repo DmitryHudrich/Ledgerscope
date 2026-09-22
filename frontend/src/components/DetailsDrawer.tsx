@@ -10,6 +10,7 @@ import {
   weiToEth,
 } from '../lib/format';
 import { assetLabel, sortedAssets, type GraphModel, type GraphNode } from '../graph/model';
+import { getPrimarySystemLabel } from '../graph/labels';
 import { IconChevron, IconClose, IconCopy, IconTable, IconTarget } from './Icons';
 import {
   Button,
@@ -71,6 +72,7 @@ export function DetailsDrawer({
   const [showAllAssets, setShowAllAssets] = useState(false);
   const [peersOpen, setPeersOpen] = useState(false);
   const [copied, setCopied] = useState(false);
+  const primaryLabel = getPrimarySystemLabel(node.systemLabels);
 
   const peers = useMemo<Peer[]>(() => {
     const byId = new Map<string, Peer>();
@@ -147,7 +149,12 @@ export function DetailsDrawer({
             <Dot tone={node.kind} />
             {KIND_LABEL[node.kind]}
           </span>
-          <div className="mt-1.5 break-all font-mono-ui text-[12.5px] leading-relaxed">{node.id}</div>
+          {primaryLabel && (
+            <div className="mt-1.5 truncate text-sm font-semibold text-text-primary" title={primaryLabel.value}>
+              {primaryLabel.value}
+            </div>
+          )}
+          <div className={primaryLabel ? 'mt-1 break-all font-mono-ui text-[11px] leading-relaxed text-text-secondary' : 'mt-1.5 break-all font-mono-ui text-[12.5px] leading-relaxed'}>{node.id}</div>
         </div>
         <Button
           variant="ghost"
@@ -161,6 +168,25 @@ export function DetailsDrawer({
       </header>
 
       <div className="overflow-y-auto overscroll-contain">
+        {node.systemLabels.length > 0 && (
+          <PanelSection>
+            <PanelTitle>System labels</PanelTitle>
+            <div className="flex flex-wrap gap-1.5">
+              {node.systemLabels.map((label, index) => (
+                <span
+                  key={`${label.source}:${label.value}:${index}`}
+                  className="inline-flex max-w-full items-center rounded-ui-sm border border-hairline bg-[color-mix(in_srgb,var(--accent)_8%,transparent)] px-2 py-1 text-[11px] text-text-primary"
+                  title={label.source ? `Source: ${label.source}` : undefined}
+                >
+                  <span className="truncate">{label.value}</span>
+                </span>
+              ))}
+            </div>
+            {primaryLabel?.source && (
+              <p className="mb-0 mt-2 text-[10px] text-text-muted">Source: {primaryLabel.source}</p>
+            )}
+          </PanelSection>
+        )}
         <PanelSection>
           <PanelTitle>Assets · {formatCount(assets.length)}</PanelTitle>
           {assets.length > 0 ? (

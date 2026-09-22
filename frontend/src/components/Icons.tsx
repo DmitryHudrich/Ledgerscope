@@ -133,6 +133,13 @@ export const IconPointer = (p: IconProps) => (
   </Icon>
 );
 
+export const IconText = (p: IconProps) => <Icon {...p}><path d="M3 3h10M8 3v10M5.5 13h5" /></Icon>;
+export const IconArrow = (p: IconProps) => <Icon {...p}><path d="M2.5 13.5 13 3M8.8 3H13v4.2" /></Icon>;
+export const IconLine = (p: IconProps) => <Icon {...p}><path d="m3 13 10-10" /></Icon>;
+export const IconRectangle = (p: IconProps) => <Icon {...p}><rect x="2.5" y="3.5" width="11" height="9" rx=".8" /></Icon>;
+export const IconEllipse = (p: IconProps) => <Icon {...p}><ellipse cx="8" cy="8" rx="5.5" ry="4.2" /></Icon>;
+export const IconPencil = (p: IconProps) => <Icon {...p}><path d="m3 13 1.1-3.3L11.7 2l2.3 2.3-7.7 7.6zM10.5 3.2l2.3 2.3" /></Icon>;
+
 export const IconFilter = (p: IconProps) => (
   <Icon {...p}>
     <path d="M2.5 4h11M4.5 8h7M6.5 12h3" />
