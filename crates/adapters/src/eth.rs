@@ -1,4 +1,5 @@
 pub mod clickhouse;
+mod rate_limiter;
 pub mod redis;
 pub mod rpc;
 

@@ -1,16 +1,18 @@
+mod actor_row;
 mod row;
 
 use std::{collections::HashMap, io};
 
-use application::eth::ports::{EthTxIndex, EthTxRepository};
-use domain::eth::{BlockBucket, BlockRange, EthAddress, IndexCoverage, MinedTx};
+use application::eth::ports::{ActorRepository, EthTxIndex, EthTxRepository};
+use domain::eth::{Actor, BlockBucket, BlockRange, EthAddress, IndexCoverage, MinedTx};
 use reqwest::{Client, Url, header::CONTENT_LENGTH};
 use serde::Deserialize;
 
-use crate::eth::clickhouse::row::TxRow;
+use crate::eth::clickhouse::{actor_row::ActorRow, row::TxRow};
 
 const TXS_TABLE: &str = "eth_txs";
 const BLOCKS_TABLE: &str = "eth_indexed_blocks";
+const ACTORS_TABLE: &str = "eth_actors";
 
 const TXS_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS eth_txs (
     tx_hash String,
@@ -30,6 +32,13 @@ const TXS_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS eth_txs (
 const BLOCKS_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS eth_indexed_blocks (
     block_number UInt64
 ) ENGINE = ReplacingMergeTree ORDER BY block_number";
+
+const ACTORS_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS eth_actors (
+    address String,
+    kind LowCardinality(String),
+    symbol String,
+    decimals UInt8
+) ENGINE = ReplacingMergeTree ORDER BY address";
 
 pub struct ClickhouseTxRepository {
     http_client: Client,
@@ -69,6 +78,7 @@ impl ClickhouseTxRepository {
 
         self.execute(TXS_SCHEMA, String::new()).await?;
         self.execute(BLOCKS_SCHEMA, String::new()).await?;
+        self.execute(ACTORS_SCHEMA, String::new()).await?;
 
         Ok(())
     }
@@ -274,6 +284,54 @@ impl EthTxIndex for ClickhouseTxRepository {
             .await?;
 
         rows.into_iter().map(TxRow::into_mined).collect()
+    }
+}
+
+#[async_trait::async_trait]
+impl ActorRepository for ClickhouseTxRepository {
+    async fn actors(&self, addresses: &[EthAddress]) -> Result<Vec<Actor>, io::Error> {
+        if addresses.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let wanted = quoted(addresses.iter().map(EthAddress::to_string));
+
+        let rows: Vec<ActorRow> = self
+            .rows(&format!(
+                "SELECT * FROM {ACTORS_TABLE} FINAL WHERE address IN ({wanted})"
+            ))
+            .await?;
+
+        rows.into_iter().map(ActorRow::into_actor).collect()
+    }
+
+    async fn remember(&self, actors: &[Actor]) -> Result<(), io::Error> {
+        let mut body = String::new();
+
+        for actor in actors {
+            let Some(row) = ActorRow::from_actor(actor) else {
+                continue;
+            };
+
+            let line = serde_json::to_string(&row).map_err(|error| {
+                io::Error::other(format!("failed to encode {}: {error}", row.address))
+            })?;
+
+            body.push_str(&line);
+            body.push('\n');
+        }
+
+        if body.is_empty() {
+            return Ok(());
+        }
+
+        self.execute(
+            &format!("INSERT INTO {ACTORS_TABLE} FORMAT JSONEachRow"),
+            body,
+        )
+        .await?;
+
+        Ok(())
     }
 }
 

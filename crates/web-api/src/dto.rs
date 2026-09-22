@@ -1,13 +1,28 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use application::eth::{AddressGraph, ExploreLimits, GraphNode, RpcPlan};
+use application::eth::{
+    AddressGraph, ExploreLimits, GraphNode, LowLevelGraph, LowLevelNode, RpcPlan,
+};
 use domain::eth::{
-    BlockBucket, BlockRange, ContractAction, EthAddress, IndexCoverage, Interaction,
-    InteractionEdge, InteractionKind,
+    Actor, ActorKind, AddressLabel, BlockBucket, BlockRange, ContractAction, ContractKind,
+    EthAddress, IndexCoverage, Interaction, InteractionEdge, InteractionKind, LowLevelInteraction,
 };
 
 const DEFAULT_DEPTH: u32 = 1;
+
+const DEFAULT_DECIMALS: u8 = 18;
+
+type Tokens<'a> = HashMap<&'a EthAddress, (&'a str, u8)>;
+
+fn tokens_of(actors: &[Actor]) -> Tokens<'_> {
+    actors
+        .iter()
+        .filter_map(|actor| Some((actor.address(), actor.erc20()?)))
+        .collect()
+}
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct GraphRequest {
@@ -59,9 +74,15 @@ pub struct GraphResponse {
 
 impl GraphResponse {
     pub fn new(graph: &AddressGraph, span: BlockRange) -> Self {
+        let tokens = tokens_of(graph.actors());
+
         Self {
             nodes: graph.nodes().iter().map(NodeResponse::from).collect(),
-            edges: graph.edges().iter().map(EdgeResponse::from).collect(),
+            edges: graph
+                .edges()
+                .iter()
+                .map(|edge| EdgeResponse::new(edge, &tokens))
+                .collect(),
             span: span.into(),
             filled_from_rpc: graph
                 .filled()
@@ -75,20 +96,158 @@ impl GraphResponse {
 }
 
 #[derive(Serialize, ToSchema)]
-pub struct NodeResponse {
+pub struct LowLevelGraphResponse {
+    actors: Vec<LowLevelActorResponse>,
+    interactions: Vec<LowLevelInteractionResponse>,
+    span: RangeResponse,
+    filled_from_rpc: Vec<RangeResponse>,
+    truncated: bool,
+}
+
+impl LowLevelGraphResponse {
+    pub fn new(graph: &LowLevelGraph, span: BlockRange) -> Self {
+        Self {
+            actors: graph
+                .actors()
+                .iter()
+                .map(LowLevelActorResponse::from)
+                .collect(),
+            interactions: graph
+                .interactions()
+                .iter()
+                .map(LowLevelInteractionResponse::from)
+                .collect(),
+            span: span.into(),
+            filled_from_rpc: graph
+                .filled()
+                .iter()
+                .copied()
+                .map(RangeResponse::from)
+                .collect(),
+            truncated: graph.truncated(),
+        }
+    }
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct AddressLabelResponse {
+    value: String,
+    source: String,
+}
+
+impl From<&AddressLabel> for AddressLabelResponse {
+    fn from(label: &AddressLabel) -> Self {
+        Self {
+            value: label.value().to_owned(),
+            source: label.source().to_owned(),
+        }
+    }
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct LowLevelActorResponse {
     address: String,
+    labels: Vec<AddressLabelResponse>,
     depth: u32,
     root: bool,
     expanded: bool,
+}
+
+impl From<&LowLevelNode> for LowLevelActorResponse {
+    fn from(node: &LowLevelNode) -> Self {
+        Self {
+            address: node.address().to_string(),
+            labels: node
+                .actor()
+                .labels()
+                .iter()
+                .map(AddressLabelResponse::from)
+                .collect(),
+            depth: node.depth(),
+            root: node.root(),
+            expanded: node.expanded(),
+        }
+    }
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct LowLevelInteractionResponse {
+    tx_hash: String,
+    block_number: u64,
+    timestamp: u64,
+    succeeded: bool,
+    from: String,
+    to: String,
+    amount: String,
+    deployment: bool,
+}
+
+impl From<&LowLevelInteraction> for LowLevelInteractionResponse {
+    fn from(interaction: &LowLevelInteraction) -> Self {
+        let meta = interaction.meta();
+
+        Self {
+            tx_hash: meta.tx_hash().to_string(),
+            block_number: meta.block_number(),
+            timestamp: meta.timestamp(),
+            succeeded: interaction.succeeded(),
+            from: interaction.from().to_string(),
+            to: interaction.to().to_string(),
+            amount: interaction.amount().to_string(),
+            deployment: interaction.is_deployment(),
+        }
+    }
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct NodeResponse {
+    address: String,
+    labels: Vec<AddressLabelResponse>,
+    depth: u32,
+    root: bool,
+    expanded: bool,
+
+    #[serde(flatten)]
+    actor: ActorResponse,
+}
+
+#[derive(Serialize, ToSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ActorResponse {
+    Eoa,
+    Contract,
+    Erc20 { symbol: String, decimals: u8 },
+    Unknown,
 }
 
 impl From<&GraphNode> for NodeResponse {
     fn from(node: &GraphNode) -> Self {
         Self {
             address: node.address().to_string(),
+            labels: node
+                .actor()
+                .labels()
+                .iter()
+                .map(AddressLabelResponse::from)
+                .collect(),
             depth: node.depth(),
             root: node.root(),
             expanded: node.expanded(),
+            actor: node.actor().kind().into(),
+        }
+    }
+}
+
+impl From<&ActorKind> for ActorResponse {
+    fn from(kind: &ActorKind) -> Self {
+        match kind {
+            ActorKind::Eoa => Self::Eoa,
+            ActorKind::Contract(ContractKind::Plain) => Self::Contract,
+            ActorKind::Contract(ContractKind::Erc20 { symbol, decimals }) => Self::Erc20 {
+                symbol: symbol.clone(),
+                decimals: *decimals,
+            },
+            ActorKind::Unknown => Self::Unknown,
         }
     }
 }
@@ -268,28 +427,22 @@ pub enum ContractActionResponse {
     Other,
 }
 
-impl From<&InteractionEdge> for EdgeResponse {
-    fn from(edge: &InteractionEdge) -> Self {
+impl EdgeResponse {
+    pub fn new(edge: &InteractionEdge, tokens: &Tokens<'_>) -> Self {
         let meta = edge.meta();
         Self {
             tx_hash: meta.tx_hash().to_string(),
             block_number: meta.block_number(),
             timestamp: meta.timestamp(),
             succeeded: edge.interaction().receipt().succeeded(),
-            interaction: edge.interaction().into(),
+            interaction: InteractionResponse::new(edge.interaction(), tokens),
         }
     }
 }
 
-impl From<&Interaction> for InteractionResponse {
-    fn from(interaction: &Interaction) -> Self {
-        interaction.kind().into()
-    }
-}
-
-impl From<&InteractionKind> for InteractionResponse {
-    fn from(kind: &InteractionKind) -> Self {
-        match kind {
+impl InteractionResponse {
+    fn new(interaction: &Interaction, tokens: &Tokens<'_>) -> Self {
+        match interaction.kind() {
             InteractionKind::Protocol => Self::Protocol,
             InteractionKind::NativeTransfer(transfer) => Self::NativeTransfer {
                 from: transfer.from().to_string(),
@@ -310,30 +463,35 @@ impl From<&InteractionKind> for InteractionResponse {
             } => Self::ContractInteraction {
                 interactor: interactor.to_string(),
                 contract_address: contract_address.to_string(),
-                action: contract_interaction_type.into(),
+                action: ContractActionResponse::new(contract_interaction_type, tokens),
             },
         }
     }
 }
 
-impl From<&ContractAction> for ContractActionResponse {
-    fn from(action: &ContractAction) -> Self {
+impl ContractActionResponse {
+    fn new(action: &ContractAction, tokens: &Tokens<'_>) -> Self {
         match action {
             ContractAction::Erc20Transfer {
                 token,
                 from,
                 to,
                 amount,
-                token_name,
-                decimals,
-            } => Self::Erc20Transfer {
-                token: token.to_string(),
-                from: from.to_string(),
-                to: to.to_string(),
-                amount: amount.to_string(),
-                token_name: token_name.clone(),
-                decimals: *decimals,
-            },
+            } => {
+                let (token_name, decimals) = tokens
+                    .get(token)
+                    .map(|(symbol, decimals)| ((*symbol).to_owned(), *decimals))
+                    .unwrap_or_else(|| (token.to_string(), DEFAULT_DECIMALS));
+
+                Self::Erc20Transfer {
+                    token: token.to_string(),
+                    from: from.to_string(),
+                    to: to.to_string(),
+                    amount: amount.to_string(),
+                    token_name,
+                    decimals,
+                }
+            }
             ContractAction::Other => Self::Other,
         }
     }
@@ -399,8 +557,6 @@ mod tests {
                         .parse()
                         .unwrap(),
                     amount: U256::from(1_000_000),
-                    token_name: "USDC".to_owned(),
-                    decimals: 6,
                 },
             },
         );
@@ -411,11 +567,26 @@ mod tests {
         ]
     }
 
+    fn usdc() -> Vec<Actor> {
+        vec![Actor::new(
+            "0x3333333333333333333333333333333333333333"
+                .parse()
+                .unwrap(),
+            ActorKind::Contract(ContractKind::Erc20 {
+                symbol: "USDC".to_owned(),
+                decimals: 6,
+            }),
+            Vec::new(),
+        )]
+    }
+
     #[test]
     fn an_edge_keeps_its_wire_shape() {
+        let cast = usdc();
+        let tokens = tokens_of(&cast);
         let encoded: Vec<serde_json::Value> = edges()
             .iter()
-            .map(EdgeResponse::from)
+            .map(|edge| EdgeResponse::new(edge, &tokens))
             .map(|edge| serde_json::to_value(&edge).unwrap())
             .collect();
 
@@ -451,6 +622,156 @@ mod tests {
                     }
                 })
             ]
+        );
+    }
+
+    fn raw_edge(to: Option<EthAddress>, created: Option<EthAddress>) -> LowLevelInteraction {
+        let mined = domain::eth::MinedTx::new(
+            {
+                let builder = EthTx::builder()
+                    .tx_hash(b256!(
+                        "0xabababababababababababababababababababababababababababababababab"
+                    ))
+                    .block_number(21_000_000)
+                    .timestamp(1_737_000_000)
+                    .amount(U256::from(1_500_000_000_000_000_000u128))
+                    .from(
+                        "0x1111111111111111111111111111111111111111"
+                            .parse()
+                            .unwrap(),
+                    )
+                    .data(Bytes::new());
+
+                match to {
+                    Some(to) => builder.to(to).build(),
+                    None => builder.build(),
+                }
+            },
+            EthReceipt::new(true, created, Vec::new()),
+        );
+
+        LowLevelInteraction::try_from(&mined).unwrap()
+    }
+
+    #[test]
+    fn a_low_level_edge_keeps_its_wire_shape() {
+        let edge = raw_edge(
+            Some(
+                "0x2222222222222222222222222222222222222222"
+                    .parse()
+                    .unwrap(),
+            ),
+            None,
+        );
+
+        assert_eq!(
+            serde_json::to_value(LowLevelInteractionResponse::from(&edge)).unwrap(),
+            json!({
+                "tx_hash": "0xabababababababababababababababababababababababababababababababab",
+                "block_number": 21_000_000,
+                "timestamp": 1_737_000_000,
+                "succeeded": true,
+                "from": "0x1111111111111111111111111111111111111111",
+                "to": "0x2222222222222222222222222222222222222222",
+                "amount": "1500000000000000000",
+                "deployment": false
+            })
+        );
+    }
+
+    #[test]
+    fn a_low_level_deployment_points_at_the_contract_and_says_so() {
+        let edge = raw_edge(
+            None,
+            Some(
+                "0x4444444444444444444444444444444444444444"
+                    .parse()
+                    .unwrap(),
+            ),
+        );
+        let encoded = serde_json::to_value(LowLevelInteractionResponse::from(&edge)).unwrap();
+
+        assert_eq!(encoded["deployment"], json!(true));
+        assert_eq!(
+            encoded["to"],
+            json!("0x4444444444444444444444444444444444444444")
+        );
+    }
+
+    #[test]
+    fn a_low_level_actor_carries_the_labels_it_was_given() {
+        let node = LowLevelNode::new(
+            domain::eth::LowLevelActor::new(
+                "0x1111111111111111111111111111111111111111"
+                    .parse()
+                    .unwrap(),
+                vec![AddressLabel::new(
+                    "Binance 7".to_owned(),
+                    "etherscan.io".to_owned(),
+                )],
+            ),
+            2,
+            false,
+            true,
+        );
+
+        assert_eq!(
+            serde_json::to_value(LowLevelActorResponse::from(&node)).unwrap(),
+            json!({
+                "address": "0x1111111111111111111111111111111111111111",
+                "labels": [{"value": "Binance 7", "source": "etherscan.io"}],
+                "depth": 2,
+                "root": false,
+                "expanded": true
+            })
+        );
+    }
+
+    #[test]
+    fn a_low_level_actor_nobody_labelled_carries_an_empty_list() {
+        let node = LowLevelNode::new(
+            domain::eth::LowLevelActor::new(
+                "0x1111111111111111111111111111111111111111"
+                    .parse()
+                    .unwrap(),
+                Vec::new(),
+            ),
+            2,
+            false,
+            true,
+        );
+
+        assert_eq!(
+            serde_json::to_value(LowLevelActorResponse::from(&node)).unwrap()["labels"],
+            json!([])
+        );
+    }
+
+    #[test]
+    fn a_token_nobody_named_falls_back_to_its_address() {
+        let tokens = tokens_of(&[]);
+        let encoded = serde_json::to_value(EdgeResponse::new(&edges()[1], &tokens)).unwrap();
+
+        assert_eq!(
+            encoded["action"]["token_name"],
+            json!("0x3333333333333333333333333333333333333333")
+        );
+        assert_eq!(encoded["action"]["decimals"], json!(18));
+    }
+
+    #[test]
+    fn a_node_wears_the_kind_of_its_actor() {
+        let encoded = serde_json::to_value(ActorResponse::from(&ActorKind::Contract(
+            ContractKind::Erc20 {
+                symbol: "USDC".to_owned(),
+                decimals: 6,
+            },
+        )))
+        .unwrap();
+
+        assert_eq!(
+            encoded,
+            json!({ "kind": "erc20", "symbol": "USDC", "decimals": 6 })
         );
     }
 

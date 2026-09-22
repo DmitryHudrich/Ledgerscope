@@ -14,8 +14,8 @@ use domain::eth::BlockRange;
 
 use crate::{
     dto::{
-        CoverageResponse, GraphRequest, GraphResponse, HistogramResponse, RpcConfirmationResponse,
-        parse_address,
+        CoverageResponse, GraphRequest, GraphResponse, HistogramResponse, LowLevelGraphResponse,
+        RpcConfirmationResponse, parse_address,
     },
     openapi::ApiDoc,
     state::AppState,
@@ -30,6 +30,7 @@ pub fn router(state: AppState) -> Router {
         .route("/", get(index))
         .route("/openapi.json", get(openapi))
         .route("/graph", post(graph))
+        .route("/graph/low-level", post(low_level_graph))
         .route("/coverage", get(coverage))
         .route("/coverage/histogram", get(histogram))
         .with_state(state)
@@ -107,6 +108,20 @@ pub(crate) async fn graph(
     State(state): State<AppState>,
     Json(request): Json<GraphRequest>,
 ) -> Result<Response, ApiError> {
+    let asked = explore_request(&request)?;
+    let span = asked.span();
+
+    match state.explorer().explore(asked).await? {
+        Exploration::Graph(graph) => Ok(Json(GraphResponse::new(&graph, span)).into_response()),
+        Exploration::RpcNeeded(plan) => Ok((
+            StatusCode::CONFLICT,
+            Json(RpcConfirmationResponse::new(&plan, span)),
+        )
+            .into_response()),
+    }
+}
+
+fn explore_request(request: &GraphRequest) -> Result<ExploreRequest, ApiError> {
     if request.from_block > request.to_block {
         return Err(ApiError::bad_request(
             "from_block must not be above to_block",
@@ -121,11 +136,36 @@ pub(crate) async fn graph(
         ));
     }
 
-    let span = BlockRange::new(request.from_block, request.to_block);
-    let asked = ExploreRequest::new(roots, span, request.confirm_rpc);
+    Ok(ExploreRequest::new(
+        roots,
+        BlockRange::new(request.from_block, request.to_block),
+        request.confirm_rpc,
+    ))
+}
 
-    match state.explorer().explore(asked).await? {
-        Exploration::Graph(graph) => Ok(Json(GraphResponse::new(&graph, span)).into_response()),
+#[utoipa::path(
+    post,
+    path = "/graph/low-level",
+    tag = "graph",
+    request_body = GraphRequest,
+    responses(
+        (status = OK, description = "The raw from-to graph over the asked span, one edge per transaction", body = LowLevelGraphResponse),
+        (status = CONFLICT, description = "Part of the span is not indexed, resend with confirm_rpc", body = RpcConfirmationResponse),
+        (status = BAD_REQUEST, description = "The request is malformed or over the limits", body = ErrorResponse),
+        (status = BAD_GATEWAY, description = "Clickhouse or the node did not answer", body = ErrorResponse),
+    ),
+)]
+pub(crate) async fn low_level_graph(
+    State(state): State<AppState>,
+    Json(request): Json<GraphRequest>,
+) -> Result<Response, ApiError> {
+    let asked = explore_request(&request)?;
+    let span = asked.span();
+
+    match state.explorer().explore_low_level(asked).await? {
+        Exploration::Graph(graph) => {
+            Ok(Json(LowLevelGraphResponse::new(&graph, span)).into_response())
+        }
         Exploration::RpcNeeded(plan) => Ok((
             StatusCode::CONFLICT,
             Json(RpcConfirmationResponse::new(&plan, span)),

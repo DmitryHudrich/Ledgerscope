@@ -2881,6 +2881,8 @@ dependencies = [
  "futures",
  "ledgerscope-domain",
  "rangemap",
+ "serde",
+ "serde_json",
  "tokio",
  "tracing",
 ]

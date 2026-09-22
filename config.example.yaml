@@ -1,3 +1,5 @@
+proxy: ${ETH_RPC_PROXY-socks5h://127.0.0.1:2080}
+
 server:
   bind_addr: ${BIND_ADDR:-127.0.0.1:3000}
 
@@ -7,8 +9,8 @@ log:
 eth:
   rpc:
     url: ${ETH_RPC_URL:?set it in infra/.env or export it}
-    proxy: ${ETH_RPC_PROXY-socks5h://127.0.0.1:2080}
     rps: ${ETH_RPC_RPS:-15}
+  etherscan_json_path: ${ETHERSCAN_JSON_PATH:-labels.json}
 
 storage:
   persist_txs: ${STORAGE_PERSIST_TXS:-true}

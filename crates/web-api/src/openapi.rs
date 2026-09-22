@@ -8,7 +8,12 @@ use crate::routes;
         title = "Ledgerscope API",
         description = "Address graphs and index coverage over indexed eth transactions.",
     ),
-    paths(routes::graph, routes::coverage, routes::histogram),
+    paths(
+        routes::graph,
+        routes::low_level_graph,
+        routes::coverage,
+        routes::histogram
+    ),
     tags(
         (name = "graph", description = "Address graph exploration"),
         (name = "coverage", description = "What the index already holds"),
@@ -25,6 +30,7 @@ mod tests {
         let spec = serde_json::to_value(ApiDoc::openapi()).unwrap();
 
         assert!(spec["paths"]["/graph"]["post"].is_object());
+        assert!(spec["paths"]["/graph/low-level"]["post"].is_object());
         assert!(spec["paths"]["/coverage"]["get"].is_object());
         assert!(spec["paths"]["/coverage/histogram"]["get"].is_object());
         assert!(spec["components"]["schemas"]["GraphResponse"].is_object());
@@ -32,5 +38,13 @@ mod tests {
             spec["paths"]["/coverage/histogram"]["get"]["parameters"][2]["name"],
             serde_json::json!("buckets")
         );
+    }
+
+    #[test]
+    fn a_node_carries_its_actor_into_the_spec() {
+        let spec = serde_json::to_value(ApiDoc::openapi()).unwrap();
+
+        assert!(spec["components"]["schemas"]["NodeResponse"].is_object());
+        assert!(spec["components"]["schemas"]["ActorResponse"].is_object());
     }
 }
