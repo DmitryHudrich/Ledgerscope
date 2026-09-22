@@ -101,7 +101,7 @@ export function InvestigationPanel({
   return (
     <>
       <aside
-        className="absolute bottom-[var(--sheet-h)] left-0 top-0 z-20 flex w-12 flex-col items-center border-r border-hairline bg-surface-1 transition-[bottom] duration-200 ease-[cubic-bezier(0.22,0.61,0.36,1)]"
+        className="absolute bottom-[var(--sheet-h)] left-0 top-0 z-20 flex w-12 flex-col items-center border-r border-hairline bg-surface-1"
         aria-label="Investigation rail"
       >
         <nav

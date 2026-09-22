@@ -139,7 +139,7 @@ export function DetailsDrawer({
   return (
     <Panel
       as="aside"
-      className="absolute bottom-[var(--sheet-h)] right-0 top-0 z-10 flex w-[var(--inspector-w)] animate-drawer-in flex-col overflow-hidden bg-surface-1 shadow-none backdrop-blur-none transition-[bottom,width] duration-200 ease-[cubic-bezier(0.22,0.61,0.36,1)]"
+      className="absolute bottom-[var(--sheet-h)] right-0 top-0 z-10 flex w-[var(--inspector-w)] animate-drawer-in flex-col overflow-hidden bg-surface-1 shadow-none backdrop-blur-none transition-[width] duration-200 ease-[cubic-bezier(0.22,0.61,0.36,1)]"
       style={{ borderRadius: 0, borderWidth: 0, borderLeftWidth: 1 }}
       aria-label="Address details"
     >

@@ -103,6 +103,7 @@ export default function App() {
   const [showFlow, setShowFlow] = useState(true);
   const [frozen, setFrozen] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
+  const [sheetHeight, setSheetHeight] = useState<number>(SHEET_HEIGHT.default);
   const [sheetScope, setSheetScope] = useState<string | null>(null);
   const [sheetLinkScope, setSheetLinkScope] = useState<string | null>(null);
   const [temporaryPanel, setTemporaryPanel] = useState<TemporaryPanel | null>(null);
@@ -441,7 +442,7 @@ export default function App() {
         className="relative min-h-0 flex-1 overflow-hidden bg-plane [--inspector-w:0px] [--investigation-w:48px] [--sheet-h:40px]"
         style={
           {
-            '--sheet-h': hasGraph && sheetOpen ? SHEET_HEIGHT.expanded : SHEET_HEIGHT.collapsed,
+            '--sheet-h': `${hasGraph && sheetOpen ? sheetHeight : SHEET_HEIGHT.collapsed}px`,
             '--investigation-w': '48px',
             '--inspector-w': selectedNode || selectedIds.size > 1 || selectedLink ? '320px' : '0px',
             '--left-flyout-top': demo ? '68px' : '12px',
@@ -603,10 +604,12 @@ export default function App() {
             scope={sheetScope}
             linkScope={sheetLinkScope}
             open={sheetOpen}
+            height={sheetHeight}
             onOpenChange={(open) => {
               if (open) setTemporaryPanel(null);
               setSheetOpen(open);
             }}
+            onHeightChange={setSheetHeight}
             onScopeClear={() => { setSheetScope(null); setSheetLinkScope(null); }}
             onSelect={(id) => {
               setTemporaryPanel(null);

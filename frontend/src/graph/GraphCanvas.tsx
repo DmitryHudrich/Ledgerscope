@@ -316,18 +316,32 @@ export function GraphCanvas({
     const container = containerRef.current;
     const canvas = canvasRef.current;
     if (!container || !canvas) return;
+    const snapshot = document.createElement('canvas');
 
     const apply = () => {
       const rect = container.getBoundingClientRect();
       const dpr = window.devicePixelRatio || 1;
+      canvas.style.width = '100%';
+      canvas.style.height = '100%';
       const pixelWidth = Math.max(1, Math.round(rect.width * dpr));
       const pixelHeight = Math.max(1, Math.round(rect.height * dpr));
       size.current = { width: rect.width, height: rect.height, dpr };
       if (canvas.width === pixelWidth && canvas.height === pixelHeight) return;
+
+      // Resizing a canvas clears it immediately. Preserve the current pixels
+      // at their exact size so a ResizeObserver paint between this callback
+      // and the render loop never flashes blank or rubber-stretches the graph.
+      snapshot.width = canvas.width;
+      snapshot.height = canvas.height;
+      snapshot.getContext('2d')?.drawImage(canvas, 0, 0);
       canvas.width = pixelWidth;
       canvas.height = pixelHeight;
-      canvas.style.width = `${rect.width}px`;
-      canvas.style.height = `${rect.height}px`;
+      const resized = canvas.getContext('2d');
+      if (resized) {
+        resized.fillStyle = live.current.palette.plane;
+        resized.fillRect(0, 0, pixelWidth, pixelHeight);
+        resized.drawImage(snapshot, 0, 0);
+      }
       dirty.current = true;
     };
 

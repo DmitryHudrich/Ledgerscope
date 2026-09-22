@@ -1,4 +1,4 @@
-import { useMemo, useState, type CSSProperties, type ReactNode } from 'react';
+import { useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react';
 
 import { edgeEndpoints, edgeLabel, edgeTransfer, type EdgeTransfer } from '../api/edges';
 import type { GraphEdge } from '../api/types';
@@ -18,8 +18,10 @@ import { Badge, Button, Dot, Tag, cx, focusRing } from './ui';
 const ROW_LIMIT = 500;
 
 export const SHEET_HEIGHT = {
-  collapsed: '40px',
-  expanded: 'min(220px, 30vh)',
+  collapsed: 40,
+  default: 220,
+  min: 140,
+  topReserve: 160,
 } as const;
 
 type SortKey = 'block' | 'value' | 'asset';
@@ -30,14 +32,66 @@ interface Props {
   scope: string | null;
   linkScope: string | null;
   open: boolean;
+  height: number;
   onOpenChange: (next: boolean) => void;
+  onHeightChange: (next: number) => void;
   onScopeClear: () => void;
   onSelect: (id: string) => void;
 }
 
-export function TxSheet({ model, scope, linkScope, open, onOpenChange, onScopeClear, onSelect }: Props) {
+export function TxSheet({ model, scope, linkScope, open, height, onOpenChange, onHeightChange, onScopeClear, onSelect }: Props) {
   const [sort, setSort] = useState<SortKey>('block');
   const [descending, setDescending] = useState(true);
+  const [resizing, setResizing] = useState(false);
+  const sheetRef = useRef<HTMLElement>(null);
+
+  const bounds = () => {
+    const available = sheetRef.current?.parentElement?.clientHeight ?? window.innerHeight;
+    return {
+      min: Math.min(SHEET_HEIGHT.min, Math.max(SHEET_HEIGHT.collapsed, available - SHEET_HEIGHT.topReserve)),
+      max: Math.max(SHEET_HEIGHT.collapsed, available - SHEET_HEIGHT.topReserve),
+    };
+  };
+  const clampHeight = (next: number) => {
+    const { min, max } = bounds();
+    return Math.round(Math.min(max, Math.max(min, next)));
+  };
+
+  const startResize = (event: PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    if (!open) onOpenChange(true);
+    const handle = event.currentTarget;
+    const startY = event.clientY;
+    const startHeight = open ? height : SHEET_HEIGHT.default;
+    setResizing(true);
+    handle.setPointerCapture(event.pointerId);
+
+    const move = (moveEvent: globalThis.PointerEvent) => {
+      onHeightChange(clampHeight(startHeight + startY - moveEvent.clientY));
+    };
+    const finish = () => {
+      setResizing(false);
+      handle.removeEventListener('pointermove', move);
+      handle.removeEventListener('pointerup', finish);
+      handle.removeEventListener('pointercancel', finish);
+    };
+    handle.addEventListener('pointermove', move);
+    handle.addEventListener('pointerup', finish);
+    handle.addEventListener('pointercancel', finish);
+  };
+
+  const resizeWithKeyboard = (event: KeyboardEvent<HTMLDivElement>) => {
+    let next: number | null = null;
+    if (event.key === 'ArrowUp') next = height + 20;
+    if (event.key === 'ArrowDown') next = height - 20;
+    if (event.key === 'Home') next = bounds().min;
+    if (event.key === 'End') next = bounds().max;
+    if (next === null) return;
+    event.preventDefault();
+    if (!open) onOpenChange(true);
+    onHeightChange(clampHeight(next));
+  };
 
   const rows = useMemo(() => {
     const links = linkScope ? model.links.filter((link) => link.id === linkScope) : scope ? (model.linksByNode.get(scope) ?? []) : model.links;
@@ -78,14 +132,37 @@ export function TxSheet({ model, scope, linkScope, open, onOpenChange, onScopeCl
 
   return (
     <section
-      className="absolute bottom-0 left-0 right-0 z-12 flex h-[var(--sheet-height)] flex-col overflow-hidden border-t border-hairline bg-surface-1 shadow-panel transition-[height] duration-200 ease-[cubic-bezier(0.22,0.61,0.36,1)]"
+      ref={sheetRef}
+      className={cx(
+        'absolute bottom-0 left-0 right-0 z-12 flex h-[var(--sheet-height)] flex-col overflow-hidden border-t border-hairline bg-surface-1 shadow-panel',
+        resizing && 'select-none',
+      )}
       style={
         {
-          '--sheet-height': open ? SHEET_HEIGHT.expanded : SHEET_HEIGHT.collapsed,
+          '--sheet-height': `${open ? height : SHEET_HEIGHT.collapsed}px`,
         } as CSSProperties
       }
       aria-label="Transaction table"
     >
+      {open && (
+        <div
+          role="separator"
+          aria-label="Resize transactions panel"
+          aria-orientation="horizontal"
+          aria-valuemin={bounds().min}
+          aria-valuemax={bounds().max}
+          aria-valuenow={height}
+          tabIndex={0}
+          className={cx(
+            'group absolute inset-x-0 top-0 z-20 h-2 cursor-ns-resize touch-none outline-none',
+            'focus-visible:bg-[color-mix(in_srgb,var(--accent)_10%,transparent)]',
+          )}
+          onPointerDown={startResize}
+          onKeyDown={resizeWithKeyboard}
+        >
+          <span className="absolute left-1/2 top-0.5 h-1 w-10 -translate-x-1/2 rounded-full bg-hairline transition-colors group-hover:bg-accent group-focus-visible:bg-accent" aria-hidden="true" />
+        </div>
+      )}
       <div className="flex h-10 flex-none items-center gap-2 px-[10px]">
         <Button
           variant="ghost"

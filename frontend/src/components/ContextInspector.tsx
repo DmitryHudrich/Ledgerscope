@@ -4,7 +4,7 @@ import type { GraphLink, GraphModel } from '../graph/model';
 import { IconClose, IconTable } from './Icons';
 import { Button, MetaList, Panel, PanelSection, PanelTitle, Tag } from './ui';
 
-const shell = 'absolute bottom-[var(--sheet-h)] right-0 top-0 z-10 flex w-[var(--inspector-w)] animate-drawer-in flex-col overflow-hidden bg-surface-1 shadow-none backdrop-blur-none transition-[bottom,width] duration-200 ease-[cubic-bezier(0.22,0.61,0.36,1)]';
+const shell = 'absolute bottom-[var(--sheet-h)] right-0 top-0 z-10 flex w-[var(--inspector-w)] animate-drawer-in flex-col overflow-hidden bg-surface-1 shadow-none backdrop-blur-none transition-[width] duration-200 ease-[cubic-bezier(0.22,0.61,0.36,1)]';
 
 export function MultiSelectionInspector({
   ids,
