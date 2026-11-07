@@ -1,8 +1,11 @@
 mod interpolate;
 
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
-use adapters::eth::DEFAULT_RATE_LIMIT_RPS;
+use adapters::eth::{DEFAULT_CHAINLIST_URL, DEFAULT_RATE_LIMIT_RPS, ETHEREUM};
 use anyhow::Context;
 use serde::Deserialize;
 
@@ -19,6 +22,12 @@ const DEFAULT_MAX_DEPTH: u32 = 5;
 const DEFAULT_MAX_NODES: usize = 5_000;
 const DEFAULT_MAX_EDGES: usize = 20_000;
 const DEFAULT_MAX_BLOCKS: u64 = 100_000;
+const DEFAULT_RESCAN_INTERVAL_SECS: u64 = 1800;
+const DEFAULT_CHAINLIST_MAX_NODES: usize = 16;
+const DEFAULT_POSTGRES_URL: &str = "postgres://ledgerscope:ledgerscope@127.0.0.1:5432/ledgerscope";
+const DEFAULT_POSTGRES_MAX_CONNECTIONS: u32 = 10;
+const DEFAULT_SESSION_TTL_DAYS: u32 = 30;
+const DEFAULT_MAX_CANVAS_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -26,9 +35,12 @@ pub struct Config {
     pub proxy: String,
     pub server: ServerConfig,
     pub log: LogConfig,
-    pub eth: EthConfig,
+    pub labels: LabelsConfig,
+    pub rpc: RpcConfig,
+    pub chains: ChainsConfig,
     pub storage: StorageConfig,
     pub graph: GraphConfig,
+    pub accounts: AccountsConfig,
 }
 
 impl Default for Config {
@@ -37,9 +49,38 @@ impl Default for Config {
             proxy: DEFAULT_RPC_PROXY.to_owned(),
             server: ServerConfig::default(),
             log: LogConfig::default(),
-            eth: EthConfig::default(),
+            labels: LabelsConfig::default(),
+            rpc: RpcConfig::default(),
+            chains: ChainsConfig::default(),
             storage: StorageConfig::default(),
             graph: GraphConfig::default(),
+            accounts: AccountsConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AccountsConfig {
+    pub enabled: bool,
+    pub postgres_url: String,
+    pub max_connections: u32,
+    pub session_ttl_days: u32,
+    pub registration: bool,
+    pub cookie_secure: bool,
+    pub max_canvas_bytes: usize,
+}
+
+impl Default for AccountsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            postgres_url: DEFAULT_POSTGRES_URL.to_owned(),
+            max_connections: DEFAULT_POSTGRES_MAX_CONNECTIONS,
+            session_ttl_days: DEFAULT_SESSION_TTL_DAYS,
+            registration: true,
+            cookie_secure: false,
+            max_canvas_bytes: DEFAULT_MAX_CANVAS_BYTES,
         }
     }
 }
@@ -80,16 +121,163 @@ pub struct LogConfig {
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct EthConfig {
-    pub rpc: EthRpcConfig,
+pub struct LabelsConfig {
     pub etherscan_json_path: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RpcConfig {
+    pub rps: Option<u32>,
+    pub chainlist: Option<bool>,
+    pub chainlist_max_nodes: Option<usize>,
+    pub additionally_rpc: Vec<String>,
+    pub exclude_rpc: Vec<String>,
+    pub chainlist_url: Option<String>,
+    pub rescan_interval_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct EthRpcConfig {
-    pub url: String,
+pub struct ChainsConfig {
+    pub default: u64,
+    pub ethereum_l2: bool,
+    pub tron: bool,
+    pub skip: Vec<u64>,
+    pub networks: BTreeMap<u64, NetworkConfig>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct NetworkConfig {
+    pub name: Option<String>,
+    pub slug: Option<String>,
+    pub native_symbol: Option<String>,
+    pub native_decimals: Option<u8>,
+    pub rpc: RpcConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChainRpc {
     pub rps: u32,
+    pub chainlist: bool,
+    pub chainlist_max_nodes: usize,
+    pub own: Vec<String>,
+    pub exclude: Vec<String>,
+}
+
+impl Default for ChainsConfig {
+    fn default() -> Self {
+        Self {
+            default: ETHEREUM,
+            ethereum_l2: false,
+            tron: false,
+            skip: Vec::new(),
+            networks: BTreeMap::new(),
+        }
+    }
+}
+
+impl RpcConfig {
+    pub fn chainlist_url(&self) -> &str {
+        self.chainlist_url
+            .as_deref()
+            .unwrap_or(DEFAULT_CHAINLIST_URL)
+    }
+
+    pub fn rescan_interval_secs(&self) -> u64 {
+        self.rescan_interval_secs
+            .unwrap_or(DEFAULT_RESCAN_INTERVAL_SECS)
+    }
+
+    fn own_urls(&self) -> impl Iterator<Item = &str> {
+        self.additionally_rpc
+            .iter()
+            .map(|url| url.trim())
+            .filter(|url| !url.is_empty())
+    }
+
+    fn validate_shared(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.own_urls().next().is_none(),
+            "rpc.additionally_rpc belongs to a network: move it under chains.networks.<chain_id>.rpc"
+        );
+        self.validate_common("rpc")
+    }
+
+    fn validate_network(&self, chain_id: u64) -> anyhow::Result<()> {
+        let at = format!("chains.networks.{chain_id}.rpc");
+        anyhow::ensure!(
+            self.chainlist_url.is_none() && self.rescan_interval_secs.is_none(),
+            "{at}: chainlist_url and rescan_interval_secs are shared, set them under rpc"
+        );
+        self.validate_common(&at)
+    }
+
+    fn validate_common(&self, at: &str) -> anyhow::Result<()> {
+        anyhow::ensure!(self.rps != Some(0), "{at}.rps must be at least 1");
+        anyhow::ensure!(
+            self.chainlist_max_nodes != Some(0),
+            "{at}.chainlist_max_nodes must be at least 1"
+        );
+        Ok(())
+    }
+}
+
+impl Config {
+    pub fn chain_ids(&self, discovered: impl IntoIterator<Item = u64>) -> Vec<u64> {
+        let mut chain_ids: Vec<u64> = std::iter::once(self.chains.default)
+            .chain(self.chains.networks.keys().copied())
+            .chain(discovered)
+            .filter(|chain_id| {
+                *chain_id == self.chains.default || !self.chains.skip.contains(chain_id)
+            })
+            .collect();
+        chain_ids.sort_unstable();
+        chain_ids.dedup();
+        chain_ids
+    }
+
+    pub fn configured(&self, chain_id: u64) -> bool {
+        chain_id == self.chains.default || self.chains.networks.contains_key(&chain_id)
+    }
+
+    pub fn network(&self, chain_id: u64) -> Option<&NetworkConfig> {
+        self.chains.networks.get(&chain_id)
+    }
+
+    pub fn chain_rpc(&self, chain_id: u64) -> ChainRpc {
+        let shared = &self.rpc;
+        let empty = RpcConfig::default();
+        let own = self
+            .network(chain_id)
+            .map_or(&empty, |network| &network.rpc);
+
+        ChainRpc {
+            rps: own.rps.or(shared.rps).unwrap_or(DEFAULT_RATE_LIMIT_RPS),
+            chainlist: own.chainlist.or(shared.chainlist).unwrap_or(false),
+            chainlist_max_nodes: own
+                .chainlist_max_nodes
+                .or(shared.chainlist_max_nodes)
+                .unwrap_or(DEFAULT_CHAINLIST_MAX_NODES),
+            own: own.own_urls().map(str::to_owned).collect(),
+            exclude: shared
+                .exclude_rpc
+                .iter()
+                .chain(&own.exclude_rpc)
+                .map(|rule| rule.trim().to_owned())
+                .filter(|rule| !rule.is_empty())
+                .collect(),
+        }
+    }
+
+    pub fn needs_chainlist(&self) -> bool {
+        self.chains.ethereum_l2
+            || self
+                .chain_ids([])
+                .into_iter()
+                .any(|chain_id| self.chain_rpc(chain_id).chainlist)
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -127,15 +315,6 @@ impl Default for LogConfig {
     fn default() -> Self {
         Self {
             filter: DEFAULT_LOG_FILTER.to_owned(),
-        }
-    }
-}
-
-impl Default for EthRpcConfig {
-    fn default() -> Self {
-        Self {
-            url: String::new(),
-            rps: DEFAULT_RATE_LIMIT_RPS,
         }
     }
 }
@@ -203,10 +382,41 @@ impl Config {
             self.proxy = proxy;
         }
         if let Some(url) = env_set("ETH_RPC_URL") {
-            self.eth.rpc.url = url;
+            let own = &mut self
+                .chains
+                .networks
+                .entry(ETHEREUM)
+                .or_default()
+                .rpc
+                .additionally_rpc;
+            if !own.contains(&url) {
+                own.insert(0, url);
+            }
         }
         if let Some(rps) = env_set("ETH_RPC_RPS") {
-            self.eth.rpc.rps = rps.parse().context("ETH_RPC_RPS must be a number")?;
+            self.rpc.rps = Some(rps.parse().context("ETH_RPC_RPS must be a number")?);
+        }
+        if let Some(chainlist) = env_set("RPC_CHAINLIST") {
+            self.rpc.chainlist =
+                Some(parse_bool(&chainlist).with_context(|| {
+                    format!("RPC_CHAINLIST must be a boolean, got {chainlist}")
+                })?);
+        }
+        if let Some(l2) = env_set("CHAINS_ETHEREUM_L2") {
+            self.chains.ethereum_l2 = parse_bool(&l2)
+                .with_context(|| format!("CHAINS_ETHEREUM_L2 must be a boolean, got {l2}"))?;
+        }
+        if let Some(tron) = env_set("CHAINS_TRON") {
+            self.chains.tron = parse_bool(&tron)
+                .with_context(|| format!("CHAINS_TRON must be a boolean, got {tron}"))?;
+        }
+        if let Some(default) = env_set("CHAINS_DEFAULT") {
+            self.chains.default = default
+                .parse()
+                .context("CHAINS_DEFAULT must be a chain id")?;
+        }
+        if let Some(path) = env_set("ETHERSCAN_JSON_PATH") {
+            self.labels.etherscan_json_path = path;
         }
         if let Some(persist) = env_set("STORAGE_PERSIST_TXS") {
             self.storage.persist_txs = parse_bool(&persist)
@@ -226,6 +436,22 @@ impl Config {
         }
         if let Ok(url) = std::env::var("REDIS_URL") {
             self.storage.redis.url = url;
+        }
+        if let Some(enabled) = env_set("ACCOUNTS_ENABLED") {
+            self.accounts.enabled = parse_bool(&enabled)
+                .with_context(|| format!("ACCOUNTS_ENABLED must be a boolean, got {enabled}"))?;
+        }
+        if let Some(url) = env_set("POSTGRES_URL") {
+            self.accounts.postgres_url = url;
+        }
+        if let Some(registration) = env_set("AUTH_REGISTRATION") {
+            self.accounts.registration = parse_bool(&registration).with_context(|| {
+                format!("AUTH_REGISTRATION must be a boolean, got {registration}")
+            })?;
+        }
+        if let Some(secure) = env_set("AUTH_COOKIE_SECURE") {
+            self.accounts.cookie_secure = parse_bool(&secure)
+                .with_context(|| format!("AUTH_COOKIE_SECURE must be a boolean, got {secure}"))?;
         }
         if let Some(roots) = env_set("GRAPH_MAX_ROOTS") {
             self.graph.max_roots = roots.parse().context("GRAPH_MAX_ROOTS must be a number")?;
@@ -249,11 +475,29 @@ impl Config {
     }
 
     fn validate(&self) -> anyhow::Result<()> {
+        self.rpc.validate_shared()?;
+        for (chain_id, network) in &self.chains.networks {
+            network.rpc.validate_network(*chain_id)?;
+        }
         anyhow::ensure!(
-            !self.eth.rpc.url.is_empty(),
-            "eth.rpc.url is required: set it in the config or as ETH_RPC_URL"
+            !self.chains.skip.contains(&self.chains.default),
+            "chains.default {} is listed in chains.skip",
+            self.chains.default
         );
-        anyhow::ensure!(self.eth.rpc.rps > 0, "eth.rpc.rps must be at least 1");
+
+        let default = self.chain_rpc(self.chains.default);
+        anyhow::ensure!(
+            !default.own.is_empty() || default.chainlist,
+            "chain {} has no rpc: set chains.networks.{}.rpc.additionally_rpc (or ETH_RPC_URL) or turn rpc.chainlist on",
+            self.chains.default,
+            self.chains.default
+        );
+        if self.needs_chainlist() {
+            anyhow::ensure!(
+                !self.rpc.chainlist_url().is_empty(),
+                "rpc.chainlist_url must not be empty"
+            );
+        }
 
         anyhow::ensure!(
             !self.server.bind_addr.is_empty(),
@@ -280,6 +524,25 @@ impl Config {
             self.graph.max_blocks > 0,
             "graph.max_blocks must be at least 1"
         );
+
+        if self.accounts.enabled {
+            anyhow::ensure!(
+                !self.accounts.postgres_url.is_empty(),
+                "accounts.postgres_url is required when accounts.enabled is on"
+            );
+            anyhow::ensure!(
+                self.accounts.max_connections > 0,
+                "accounts.max_connections must be at least 1"
+            );
+            anyhow::ensure!(
+                self.accounts.session_ttl_days > 0,
+                "accounts.session_ttl_days must be at least 1"
+            );
+            anyhow::ensure!(
+                self.accounts.max_canvas_bytes >= 1024,
+                "accounts.max_canvas_bytes must be at least 1024"
+            );
+        }
 
         if self.storage.persist_txs {
             anyhow::ensure!(
@@ -313,4 +576,76 @@ fn config_path(explicit: Option<&Path>) -> Option<PathBuf> {
 
 fn env_set(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|value| !value.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const YAML: &str = "
+rpc:
+  rps: 10
+  chainlist: true
+  exclude_rpc: [bad.example]
+chains:
+  ethereum_l2: true
+  skip: [42170]
+  networks:
+    1:
+      rpc:
+        additionally_rpc: [https://mine.example]
+        rps: 25
+    8453:
+      rpc:
+        chainlist: false
+        additionally_rpc: [https://base.example]
+        exclude_rpc: [worse.example]
+";
+
+    #[test]
+    fn a_network_overrides_the_shared_rpc() {
+        let config = Config::from_yaml(YAML).unwrap();
+        config.validate().unwrap();
+
+        assert_eq!(
+            config.chain_rpc(1),
+            ChainRpc {
+                rps: 25,
+                chainlist: true,
+                chainlist_max_nodes: DEFAULT_CHAINLIST_MAX_NODES,
+                own: vec!["https://mine.example".to_owned()],
+                exclude: vec!["bad.example".to_owned()],
+            }
+        );
+
+        let base = config.chain_rpc(8453);
+        assert_eq!(base.rps, 10);
+        assert!(!base.chainlist);
+        assert_eq!(base.exclude, ["bad.example", "worse.example"]);
+    }
+
+    #[test]
+    fn unconfigured_chains_fall_back_to_the_shared_rpc() {
+        let config = Config::from_yaml(YAML).unwrap();
+        let arbitrum = config.chain_rpc(42161);
+
+        assert_eq!(arbitrum.rps, 10);
+        assert!(arbitrum.chainlist);
+        assert!(arbitrum.own.is_empty());
+    }
+
+    #[test]
+    fn skipped_chains_stay_out_but_the_default_never_does() {
+        let config = Config::from_yaml(YAML).unwrap();
+
+        assert_eq!(config.chain_ids([42161, 42170, 1]), [1, 8453, 42161]);
+    }
+
+    #[test]
+    fn own_rpcs_do_not_belong_to_every_chain() {
+        let config =
+            Config::from_yaml("rpc:\n  additionally_rpc: [https://mine.example]\n").unwrap();
+
+        assert!(config.validate().is_err());
+    }
 }

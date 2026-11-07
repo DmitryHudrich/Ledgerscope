@@ -1,3 +1,9 @@
+pub(crate) mod auth;
+pub(crate) mod canvases;
+pub(crate) mod labels;
+pub(crate) mod monitor;
+pub(crate) mod teams;
+
 use axum::{
     Json, Router,
     extract::{Query, State},
@@ -9,26 +15,38 @@ use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, OpenApi, ToSchema};
 use utoipa_scalar::{Scalar, Servable};
 
+use application::account::AccountError;
 use application::eth::{Exploration, ExploreError, ExploreRequest, GraphRoot};
 use domain::eth::BlockRange;
 
 use crate::{
+    auth::MaybeUser,
     dto::{
-        CoverageResponse, GraphRequest, GraphResponse, HistogramResponse, LowLevelGraphResponse,
-        RpcConfirmationResponse, parse_address,
+        ChainsResponse, CoverageResponse, GraphRequest, GraphResponse, HistogramResponse,
+        LowLevelGraphResponse, RpcConfirmationResponse, parse_address,
     },
     openapi::ApiDoc,
-    state::AppState,
+    state::{AppState, ChainState},
 };
 
 const DEFAULT_BUCKETS: u32 = 120;
 const MAX_BUCKETS: u32 = 1_000;
 
 pub fn router(state: AppState) -> Router {
+    let max_document_bytes = state.accounts().map_or(1024 * 1024, |accounts| {
+        accounts.canvases.max_document_bytes()
+    });
+
     Router::new()
+        .merge(auth::router())
+        .merge(teams::router())
+        .merge(canvases::router(max_document_bytes))
+        .merge(labels::router())
+        .merge(monitor::router())
         .merge(Scalar::with_url("/scalar", ApiDoc::openapi()))
         .route("/", get(index))
         .route("/openapi.json", get(openapi))
+        .route("/chains", get(chains))
         .route("/graph", post(graph))
         .route("/graph/low-level", post(low_level_graph))
         .route("/coverage", get(coverage))
@@ -56,9 +74,35 @@ pub struct ApiError {
 }
 
 impl ApiError {
+    pub(crate) fn new(status: StatusCode, message: impl Into<String>) -> Self {
+        Self {
+            status,
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn unavailable(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::SERVICE_UNAVAILABLE, message)
+    }
+
+    pub(crate) fn too_many(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::TOO_MANY_REQUESTS, message)
+    }
+
+    pub(crate) fn unauthorized(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::UNAUTHORIZED, message)
+    }
+
     fn bad_request(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
+            message: message.into(),
+        }
+    }
+
+    fn not_found(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::NOT_FOUND,
             message: message.into(),
         }
     }
@@ -83,6 +127,26 @@ impl IntoResponse for ApiError {
     }
 }
 
+impl From<AccountError> for ApiError {
+    fn from(error: AccountError) -> Self {
+        let status = match &error {
+            AccountError::Invalid(_) => StatusCode::BAD_REQUEST,
+            AccountError::Unauthenticated => StatusCode::UNAUTHORIZED,
+            AccountError::Forbidden(_) => StatusCode::FORBIDDEN,
+            AccountError::NotFound(_) => StatusCode::NOT_FOUND,
+            AccountError::Conflict(_) => StatusCode::CONFLICT,
+            AccountError::Storage(cause) => {
+                tracing::error!("account storage failed: {cause}");
+                return Self::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "storage failed, try again",
+                );
+            }
+        };
+        Self::new(status, error.to_string())
+    }
+}
+
 impl From<ExploreError> for ApiError {
     fn from(error: ExploreError) -> Self {
         match error {
@@ -90,6 +154,30 @@ impl From<ExploreError> for ApiError {
             other => Self::bad_request(other.to_string()),
         }
     }
+}
+
+pub(crate) fn chain<'a>(
+    state: &'a AppState,
+    selector: Option<&str>,
+) -> Result<&'a ChainState, ApiError> {
+    state.chain(selector).ok_or_else(|| {
+        ApiError::not_found(format!(
+            "chain {} is not served here, see /chains",
+            selector.unwrap_or_default()
+        ))
+    })
+}
+
+#[utoipa::path(
+    get,
+    path = "/chains",
+    tag = "chains",
+    responses(
+        (status = OK, description = "Every chain this server explores", body = ChainsResponse),
+    ),
+)]
+pub(crate) async fn chains(State(state): State<AppState>) -> Json<ChainsResponse> {
+    Json(ChainsResponse::new(&state))
 }
 
 #[utoipa::path(
@@ -101,23 +189,50 @@ impl From<ExploreError> for ApiError {
         (status = OK, description = "The address graph over the asked span", body = GraphResponse),
         (status = CONFLICT, description = "Part of the span is not indexed, resend with confirm_rpc", body = RpcConfirmationResponse),
         (status = BAD_REQUEST, description = "The request is malformed or over the limits", body = ErrorResponse),
+        (status = NOT_FOUND, description = "The chain is not served here", body = ErrorResponse),
         (status = BAD_GATEWAY, description = "Clickhouse or the node did not answer", body = ErrorResponse),
     ),
 )]
 pub(crate) async fn graph(
     State(state): State<AppState>,
+    MaybeUser(user): MaybeUser,
     Json(request): Json<GraphRequest>,
 ) -> Result<Response, ApiError> {
+    let chain = chain(
+        &state,
+        request
+            .chain
+            .as_ref()
+            .map(|chain| chain.selector())
+            .as_deref(),
+    )?;
     let asked = explore_request(&request)?;
+    ensure_mined(chain, &request).await?;
     let span = asked.span();
 
-    match state.explorer().explore(asked).await? {
-        Exploration::Graph(graph) => Ok(Json(GraphResponse::new(&graph, span)).into_response()),
+    match chain.explorer().explore(asked).await? {
+        Exploration::Graph(graph) => {
+            let addresses = graph.nodes().iter().map(|node| *node.address()).collect();
+            let mine =
+                labels::graph_labels(&state, user.as_ref(), chain.meta().chain_id, addresses).await;
+            Ok(Json(GraphResponse::new(&graph, span, &mine)).into_response())
+        }
         Exploration::RpcNeeded(plan) => Ok((
             StatusCode::CONFLICT,
             Json(RpcConfirmationResponse::new(&plan, span)),
         )
             .into_response()),
+    }
+}
+
+async fn ensure_mined(chain: &ChainState, request: &GraphRequest) -> Result<(), ApiError> {
+    match chain.head_block().await {
+        Some(head) if request.to_block > head => Err(ApiError::bad_request(format!(
+            "to_block {} is past the head of {} ({head})",
+            request.to_block,
+            chain.meta().name
+        ))),
+        _ => Ok(()),
     }
 }
 
@@ -152,19 +267,33 @@ fn explore_request(request: &GraphRequest) -> Result<ExploreRequest, ApiError> {
         (status = OK, description = "The raw from-to graph over the asked span, one edge per transaction", body = LowLevelGraphResponse),
         (status = CONFLICT, description = "Part of the span is not indexed, resend with confirm_rpc", body = RpcConfirmationResponse),
         (status = BAD_REQUEST, description = "The request is malformed or over the limits", body = ErrorResponse),
+        (status = NOT_FOUND, description = "The chain is not served here", body = ErrorResponse),
         (status = BAD_GATEWAY, description = "Clickhouse or the node did not answer", body = ErrorResponse),
     ),
 )]
 pub(crate) async fn low_level_graph(
     State(state): State<AppState>,
+    MaybeUser(user): MaybeUser,
     Json(request): Json<GraphRequest>,
 ) -> Result<Response, ApiError> {
+    let chain = chain(
+        &state,
+        request
+            .chain
+            .as_ref()
+            .map(|chain| chain.selector())
+            .as_deref(),
+    )?;
     let asked = explore_request(&request)?;
+    ensure_mined(chain, &request).await?;
     let span = asked.span();
 
-    match state.explorer().explore_low_level(asked).await? {
+    match chain.explorer().explore_low_level(asked).await? {
         Exploration::Graph(graph) => {
-            Ok(Json(LowLevelGraphResponse::new(&graph, span)).into_response())
+            let addresses = graph.actors().iter().map(|node| *node.address()).collect();
+            let mine =
+                labels::graph_labels(&state, user.as_ref(), chain.meta().chain_id, addresses).await;
+            Ok(Json(LowLevelGraphResponse::new(&graph, span, &mine)).into_response())
         }
         Exploration::RpcNeeded(plan) => Ok((
             StatusCode::CONFLICT,
@@ -179,6 +308,7 @@ pub(crate) async fn low_level_graph(
 pub struct SpanQuery {
     from_block: Option<u64>,
     to_block: Option<u64>,
+    chain: Option<String>,
 }
 
 impl SpanQuery {
@@ -213,8 +343,9 @@ pub(crate) async fn coverage(
     State(state): State<AppState>,
     Query(query): Query<SpanQuery>,
 ) -> Result<Json<CoverageResponse>, ApiError> {
+    let chain = chain(&state, query.chain.as_deref())?;
     let span = query.span()?.unwrap_or(BlockRange::new(0, u64::MAX));
-    let coverage = state
+    let coverage = chain
         .explorer()
         .coverage(span)
         .await
@@ -222,9 +353,10 @@ pub(crate) async fn coverage(
 
     Ok(Json(CoverageResponse::new(
         &coverage,
-        state.explorer().persistent(),
-        state.head_block().await,
-        state.explorer().limits(),
+        chain.meta().chain_id,
+        chain.explorer().persistent(),
+        chain.head_block().await,
+        chain.explorer().limits(),
     )))
 }
 
@@ -234,6 +366,7 @@ pub struct HistogramQuery {
     from_block: Option<u64>,
     to_block: Option<u64>,
     buckets: Option<u32>,
+    chain: Option<String>,
 }
 
 #[utoipa::path(
@@ -251,9 +384,10 @@ pub(crate) async fn histogram(
     State(state): State<AppState>,
     Query(query): Query<HistogramQuery>,
 ) -> Result<Json<HistogramResponse>, ApiError> {
+    let chain = chain(&state, query.chain.as_deref())?;
     let span = match span_of(query.from_block, query.to_block)? {
         Some(span) => Some(span),
-        None => indexed_span(&state).await?,
+        None => indexed_span(chain).await?,
     };
 
     let Some(span) = span else {
@@ -265,7 +399,7 @@ pub(crate) async fn histogram(
         .unwrap_or(DEFAULT_BUCKETS)
         .clamp(1, MAX_BUCKETS);
 
-    let histogram = state
+    let histogram = chain
         .explorer()
         .histogram(span, buckets)
         .await
@@ -274,8 +408,8 @@ pub(crate) async fn histogram(
     Ok(Json(HistogramResponse::new(Some(span), histogram)))
 }
 
-async fn indexed_span(state: &AppState) -> Result<Option<BlockRange>, ApiError> {
-    let coverage = state
+async fn indexed_span(chain: &ChainState) -> Result<Option<BlockRange>, ApiError> {
+    let coverage = chain
         .explorer()
         .coverage(BlockRange::new(0, u64::MAX))
         .await

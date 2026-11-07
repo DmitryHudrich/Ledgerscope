@@ -4,6 +4,7 @@ pub mod explorer;
 pub mod index;
 pub mod lowlevel;
 pub mod ports;
+pub mod scan;
 pub mod store;
 pub mod etherscan_json_labels {
     use std::{collections::HashMap, io, path::Path, str::FromStr};
@@ -30,6 +31,14 @@ pub mod etherscan_json_labels {
 
     impl JsonLabelProvider {
         pub fn read_all(path: &Path, chain_id: u64) -> Result<Self, io::Error> {
+            let mut chains = Self::read_chains(path, &[chain_id])?;
+            Ok(chains.remove(&chain_id).unwrap_or_else(Self::empty))
+        }
+
+        pub fn read_chains(
+            path: &Path,
+            chain_ids: &[u64],
+        ) -> Result<HashMap<u64, Self>, io::Error> {
             tracing::info!("begin read labels from '{}'", path.display());
             let all_labels = std::fs::read_to_string(path)?;
             let deserialized: Vec<DeserializedLabel> =
@@ -37,12 +46,15 @@ pub mod etherscan_json_labels {
                     io::Error::other(format!("{} is not a label file: {error}", path.display()))
                 })?;
 
-            let mut data: HashMap<EthAddress, Vec<AddressLabel>> = HashMap::new();
+            let mut chains: HashMap<u64, HashMap<EthAddress, Vec<AddressLabel>>> = chain_ids
+                .iter()
+                .map(|&chain_id| (chain_id, HashMap::new()))
+                .collect();
             let mut skipped = 0usize;
             for entry in deserialized {
-                if entry.chain_id != chain_id {
+                let Some(data) = chains.get_mut(&entry.chain_id) else {
                     continue;
-                }
+                };
 
                 let Ok(address) = EthAddress::from_str(&entry.address) else {
                     skipped += 1;
@@ -66,12 +78,24 @@ pub mod etherscan_json_labels {
                 tracing::warn!("{skipped} labels have an unreadable address and were dropped");
             }
 
-            tracing::info!(
-                "read labels for {} addresses of chain {chain_id}",
-                data.len()
-            );
+            Ok(chains
+                .into_iter()
+                .map(|(chain_id, data)| {
+                    if !data.is_empty() {
+                        tracing::info!(
+                            "read labels for {} addresses of chain {chain_id}",
+                            data.len()
+                        );
+                    }
+                    (chain_id, Self { data })
+                })
+                .collect())
+        }
 
-            Ok(Self { data })
+        pub fn empty() -> Self {
+            Self {
+                data: HashMap::new(),
+            }
         }
     }
 
@@ -110,4 +134,5 @@ pub use ports::{
     ActorRepository, ActorResolver, EthRpcSource, EthTxCache, EthTxIndex, EthTxRepository,
     EthTxSource, LabelProvider,
 };
+pub use scan::{NoScans, ScanBoard, ScanJob, ScanObserver};
 pub use store::StoringEthTxSource;

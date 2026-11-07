@@ -1,4 +1,5 @@
 import type {
+  ChainsResponse,
   CoverageResponse,
   GraphQuery,
   GraphResponse,
@@ -28,7 +29,7 @@ export class RpcConfirmationRequired extends Error {
 
 const UNREACHABLE = 'Backend unreachable. Start `cargo run -p ledgerscope-web-api`.';
 
-async function call(path: string, init: RequestInit, signal?: AbortSignal): Promise<Response> {
+export async function call(path: string, init: RequestInit, signal?: AbortSignal): Promise<Response> {
   try {
     return await fetch(`${API_BASE}${path}`, { ...init, signal });
   } catch (cause) {
@@ -37,7 +38,7 @@ async function call(path: string, init: RequestInit, signal?: AbortSignal): Prom
   }
 }
 
-async function failure(response: Response): Promise<ApiError> {
+export async function failure(response: Response): Promise<ApiError> {
   const body = await response.text().catch(() => '');
   let message = body.trim();
 
@@ -64,6 +65,7 @@ export async function fetchGraph(
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
+        chain: query.chain,
         roots: query.roots,
         from_block: query.from_block,
         to_block: query.to_block,
@@ -87,8 +89,20 @@ export async function fetchGraph(
   return payload;
 }
 
-export async function fetchCoverage(signal?: AbortSignal): Promise<CoverageResponse> {
-  const response = await call('/coverage', { method: 'GET' }, signal);
+export async function fetchChains(signal?: AbortSignal): Promise<ChainsResponse> {
+  const response = await call('/chains', { method: 'GET' }, signal);
+  if (!response.ok) throw await failure(response);
+
+  const payload = (await response.json()) as ChainsResponse;
+  if (!payload || !Array.isArray(payload.chains)) {
+    throw new ApiError('Malformed response: expected { chains }.');
+  }
+  return payload;
+}
+
+export async function fetchCoverage(chain?: number, signal?: AbortSignal): Promise<CoverageResponse> {
+  const suffix = chain === undefined ? '' : `?chain=${chain}`;
+  const response = await call(`/coverage${suffix}`, { method: 'GET' }, signal);
   if (!response.ok) throw await failure(response);
 
   return (await response.json()) as CoverageResponse;
@@ -99,6 +113,7 @@ export async function fetchHistogram(
   signal?: AbortSignal,
 ): Promise<HistogramResponse> {
   const params = new URLSearchParams();
+  if (query.chain !== undefined) params.set('chain', String(query.chain));
   if (query.from_block !== undefined) params.set('from_block', String(query.from_block));
   if (query.to_block !== undefined) params.set('to_block', String(query.to_block));
   if (query.buckets !== undefined) params.set('buckets', String(query.buckets));

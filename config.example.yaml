@@ -6,11 +6,34 @@ server:
 log:
   filter: ${RUST_LOG:-info}
 
-eth:
-  rpc:
-    url: ${ETH_RPC_URL:?set it in infra/.env or export it}
-    rps: ${ETH_RPC_RPS:-15}
+labels:
   etherscan_json_path: ${ETHERSCAN_JSON_PATH:-labels.json}
+
+rpc:
+  rps: ${ETH_RPC_RPS:-15}
+  chainlist: ${RPC_CHAINLIST:-true}
+  chainlist_url: https://chainlist.org/rpcs.json
+  chainlist_max_nodes: 16
+  rescan_interval_secs: 1800
+  exclude_rpc: []
+
+chains:
+  default: 1
+  ethereum_l2: ${CHAINS_ETHEREUM_L2:-true}
+  tron: ${CHAINS_TRON:-true}
+  skip: []
+  networks:
+    1:
+      name: Ethereum
+      rpc:
+        additionally_rpc: []
+        exclude_rpc: []
+    42161:
+      rpc:
+        additionally_rpc: []
+    8453:
+      rpc:
+        additionally_rpc: []
 
 storage:
   persist_txs: ${STORAGE_PERSIST_TXS:-true}
@@ -28,3 +51,12 @@ graph:
   max_nodes: ${GRAPH_MAX_NODES:-5000}
   max_edges: ${GRAPH_MAX_EDGES:-20000}
   max_blocks: ${GRAPH_MAX_BLOCKS:-100000}
+
+accounts:
+  enabled: ${ACCOUNTS_ENABLED:-true}
+  postgres_url: ${POSTGRES_URL:-postgres://ledgerscope:ledgerscope@127.0.0.1:5432/ledgerscope}
+  max_connections: 10
+  session_ttl_days: 30
+  registration: ${AUTH_REGISTRATION:-true}
+  cookie_secure: ${AUTH_COOKIE_SECURE:-false}
+  max_canvas_bytes: 8388608

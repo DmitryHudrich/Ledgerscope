@@ -13,7 +13,7 @@ ledgerscope-application.workspace = true
 ledgerscope-adapters.workspace = true
 
 anyhow.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["time"] }
 tracing.workspace = true
 reqwest.workspace = true
 
@@ -24,8 +24,12 @@ clap.workspace = true
 serde.workspace = true
 serde_yaml.workspace = true
 tracing-subscriber.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+time.workspace = true
+futures.workspace = true
+async-stream.workspace = true
 
 [dev-dependencies]
-serde_json.workspace = true
 serde_urlencoded.workspace = true
 alloy-primitives.workspace = true

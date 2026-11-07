@@ -18,9 +18,11 @@ use crate::eth::{
     classificator::EthTxClassificator,
     lowlevel::{LowLevelGraph, LowLevelNode},
     ports::{ActorResolver, EthTxIndex, EthTxSource},
+    scan::{NoScans, ScanObserver},
 };
 
 const ASKING_CHUNK: usize = 128;
+const FILL_WINDOW: u64 = 24;
 const CLASSIFY_CONCURRENCY: usize = 20;
 
 #[derive(Clone, Copy, Debug)]
@@ -237,6 +239,7 @@ pub struct EthExplorer {
     label_provider: Arc<dyn LabelProvider>,
     actors: Arc<dyn ActorResolver>,
     limits: ExploreLimits,
+    scans: Arc<dyn ScanObserver>,
 }
 
 impl EthExplorer {
@@ -255,7 +258,12 @@ impl EthExplorer {
             actors,
             limits,
             label_provider,
+            scans: Arc::new(NoScans),
         }
+    }
+
+    pub fn with_scans(self, scans: Arc<dyn ScanObserver>) -> Self {
+        Self { scans, ..self }
     }
 
     pub fn limits(&self) -> ExploreLimits {
@@ -297,9 +305,17 @@ impl EthExplorer {
         }
 
         if !missing.is_empty() && self.index.persistent() {
+            let job = self.scans.begin(&missing);
+            let mut filled = Ok(());
             for gap in &missing {
-                self.fill(*gap).await.map_err(ExploreError::Io)?;
+                filled = self.fill(*gap, job).await;
+                if filled.is_err() {
+                    break;
+                }
             }
+            self.scans
+                .finish(job, filled.as_ref().err().map(ToString::to_string));
+            filled.map_err(ExploreError::Io)?;
         }
 
         Ok(Ready::Walk(missing))
@@ -360,32 +376,41 @@ impl EthExplorer {
         Ok(())
     }
 
-    async fn fill(&self, span: BlockRange) -> Result<(), io::Error> {
+    async fn fill(&self, span: BlockRange, job: u64) -> Result<(), io::Error> {
         tracing::info!(
             "asking the rpc for blocks {}..={}",
             span.from_block(),
             span.to_block()
         );
 
-        let mut stream = self.source.txs(span.from_block(), span.to_block()).await;
-        let mut stumble = None;
+        let mut from = span.from_block();
+        loop {
+            let to = from.saturating_add(FILL_WINDOW - 1).min(span.to_block());
+            let mut stream = self.source.txs(from, to).await;
+            let mut stumble = None;
+            let mut txs = 0;
 
-        while let Some(item) = stream.next().await {
-            if let Err(error) = item {
-                tracing::error!(
-                    "blocks {}..={} stumbled: {error}",
-                    span.from_block(),
-                    span.to_block()
-                );
-                if stumble.is_none() {
-                    stumble = Some(error);
+            while let Some(item) = stream.next().await {
+                match item {
+                    Ok(_) => txs += 1,
+                    Err(error) => {
+                        tracing::error!("blocks {from}..={to} stumbled: {error}");
+                        if stumble.is_none() {
+                            stumble = Some(error);
+                        }
+                    }
                 }
             }
-        }
 
-        match stumble {
-            Some(error) => Err(error),
-            None => Ok(()),
+            if let Some(error) = stumble {
+                return Err(error);
+            }
+            self.scans.advance(job, to - from + 1, txs);
+
+            if to >= span.to_block() {
+                return Ok(());
+            }
+            from = to + 1;
         }
     }
 

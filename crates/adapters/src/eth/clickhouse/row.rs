@@ -3,7 +3,7 @@ use std::{io, str::FromStr};
 use alloy_primitives::{B256, Bytes, TxHash, U256};
 use serde::{Deserialize, Serialize};
 
-use domain::eth::{EthAddress, EthLog, EthReceipt, EthTx, MinedTx};
+use domain::eth::{EthAddress, EthLog, EthReceipt, EthTx, IssuedAsset, MinedTx};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TxRow {
@@ -19,6 +19,14 @@ pub struct TxRow {
     pub log_addresses: Vec<String>,
     pub log_topics: Vec<Vec<String>>,
     pub log_data: Vec<String>,
+    #[serde(default)]
+    pub asset_id: String,
+    #[serde(default)]
+    pub asset_symbol: String,
+    #[serde(default)]
+    pub asset_decimals: u8,
+    #[serde(default)]
+    pub action: String,
 }
 
 impl TxRow {
@@ -51,6 +59,16 @@ impl TxRow {
                 .iter()
                 .map(|log| log.data().to_string())
                 .collect(),
+            asset_id: tx
+                .asset()
+                .map(|asset| asset.id().to_owned())
+                .unwrap_or_default(),
+            asset_symbol: tx
+                .asset()
+                .map(|asset| asset.symbol().to_owned())
+                .unwrap_or_default(),
+            asset_decimals: tx.asset().map(IssuedAsset::decimals).unwrap_or_default(),
+            action: tx.action().unwrap_or_default().to_owned(),
         }
     }
 
@@ -68,6 +86,14 @@ impl TxRow {
                     .transpose()?,
             )
             .data(parse::<Bytes>(&self.data, "data")?)
+            .maybe_asset((!self.asset_id.is_empty()).then(|| {
+                IssuedAsset::new(
+                    self.asset_id.clone(),
+                    self.asset_symbol.clone(),
+                    self.asset_decimals,
+                )
+            }))
+            .maybe_action((!self.action.is_empty()).then(|| self.action.clone()))
             .build();
 
         let receipt = EthReceipt::new(
@@ -199,5 +225,43 @@ mod tests {
         assert!(encoded.contains("\"block_number\":21000000"));
         assert!(encoded.contains("\"succeeded\":1"));
         assert!(encoded.contains("\"log_topics\":[["));
+    }
+
+    #[test]
+    fn a_tron_asset_and_action_survive_the_round_trip() {
+        let tx = EthTx::builder()
+            .tx_hash(TxHash::with_last_byte(8))
+            .block_number(87_561_000)
+            .timestamp(1_793_356_395)
+            .amount(U256::from(4_444_u64))
+            .from(EthAddress::from([1u8; 20]))
+            .to(EthAddress::from([2u8; 20]))
+            .data(Bytes::new())
+            .asset(IssuedAsset::new(
+                "1005193".to_owned(),
+                "gas.bi".to_owned(),
+                6,
+            ))
+            .action("DelegateResource".to_owned())
+            .build();
+        let mined = MinedTx::new(tx, EthReceipt::new(true, None, Vec::new()));
+
+        let after = TxRow::from_mined(&mined).into_mined().unwrap();
+
+        assert_eq!(after.tx(), mined.tx());
+    }
+
+    #[test]
+    fn an_old_row_without_tron_columns_still_reads() {
+        let mut encoded = serde_json::to_value(TxRow::from_mined(&sample())).unwrap();
+        for column in ["asset_id", "asset_symbol", "asset_decimals", "action"] {
+            encoded.as_object_mut().unwrap().remove(column);
+        }
+
+        let row: TxRow = serde_json::from_value(encoded).unwrap();
+        let after = row.into_mined().unwrap();
+
+        assert!(after.tx().asset().is_none());
+        assert!(after.tx().action().is_none());
     }
 }

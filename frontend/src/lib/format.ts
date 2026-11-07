@@ -1,9 +1,8 @@
-const PICO_ETH_PER_WEI = 10n ** 6n;
+import { displayAddress, nativeDecimals } from './chain';
 
 export function weiToEth(wei: bigint): number {
   const negative = wei < 0n;
-  const pico = (negative ? -wei : wei) / PICO_ETH_PER_WEI;
-  const value = Number(pico) / 1e12;
+  const value = unitsToNumber(negative ? -wei : wei, nativeDecimals());
   return negative ? -value : value;
 }
 
@@ -73,8 +72,9 @@ export function formatCompact(value: number): string {
 }
 
 export function shortAddress(address: string, lead = 6, tail = 4): string {
-  if (address.length <= lead + tail + 2) return address;
-  return `${address.slice(0, lead)}…${address.slice(-tail)}`;
+  const shown = displayAddress(address);
+  if (shown.length <= lead + tail + 2) return shown;
+  return `${shown.slice(0, lead)}…${shown.slice(-tail)}`;
 }
 
 export function shortHash(hash: string): string {

@@ -1,7 +1,9 @@
 import { edgeLabel } from '../api/edges';
 import { formatCount, formatTimestamp, formatUnits, shortAddress } from '../lib/format';
 import type { GraphLink, GraphModel } from '../graph/model';
-import { IconClose, IconTable } from './Icons';
+import type { GraphGroup } from '../lib/groups';
+import { GroupPicker } from './GroupPicker';
+import { IconClose, IconEyeOff, IconFocus, IconTable } from './Icons';
 import { Button, MetaList, Panel, PanelSection, PanelTitle, Tag } from './ui';
 
 const shell = 'absolute bottom-[var(--sheet-h)] right-0 top-0 z-10 flex w-[var(--inspector-w)] animate-drawer-in flex-col overflow-hidden bg-surface-1 shadow-none backdrop-blur-none transition-[width] duration-200 ease-[cubic-bezier(0.22,0.61,0.36,1)]';
@@ -11,11 +13,17 @@ export function MultiSelectionInspector({
   model,
   onRemove,
   onClear,
+  groups,
+  onGroup,
+  onFade,
 }: {
   ids: Set<string>;
   model: GraphModel;
   onRemove: () => void;
   onClear: () => void;
+  groups: GraphGroup[];
+  onGroup: (target: string | { name: string }) => void;
+  onFade: () => void;
 }) {
   const connections = model.links.filter((link) => ids.has(link.source.id) || ids.has(link.target.id)).length;
   return (
@@ -27,13 +35,27 @@ export function MultiSelectionInspector({
       <PanelSection>
         <MetaList className="mt-0"><div><dt>Visible connections</dt><dd>{formatCount(connections)}</dd></div></MetaList>
         <p className="mb-0 mt-3 text-xs leading-relaxed text-text-muted">Drag any selected node to move the group. Relative positions stay pinned.</p>
-        <div className="mt-4 grid gap-2"><Button variant="primary" onClick={onRemove}>Remove from canvas</Button><Button onClick={onClear}>Clear selection</Button></div>
+        <div className="mt-4 grid gap-2">
+          <GroupPicker groups={groups} onPick={onGroup} />
+          <div className="grid grid-cols-2 gap-2">
+            <Button onClick={onFade} title="Make them and their transactions dim, see Focus"><IconFocus size={14} /> Fade</Button>
+            <Button onClick={onRemove}><IconEyeOff size={14} /> Hide</Button>
+          </div>
+          <Button variant="ghost" onClick={onClear}>Clear selection</Button>
+        </div>
       </PanelSection>
     </Panel>
   );
 }
 
-export function EdgeInspector({ link, onClose, onShowTransactions }: { link: GraphLink; onClose: () => void; onShowTransactions: () => void }) {
+export function EdgeInspector({ link, onClose, onShowTransactions, groups, onGroup, onHide }: {
+  link: GraphLink;
+  onClose: () => void;
+  onShowTransactions: () => void;
+  groups: GraphGroup[];
+  onGroup: (target: string | { name: string }) => void;
+  onHide: () => void;
+}) {
   const first = link.txs[0];
   return (
     <Panel as="aside" className={shell} style={{ borderRadius: 0, borderWidth: 0, borderLeftWidth: 1 }} aria-label="Transfer details">
@@ -53,6 +75,10 @@ export function EdgeInspector({ link, onClose, onShowTransactions }: { link: Gra
         </MetaList>
         {link.count === 1 && first && <p className="mb-0 mt-3 break-all font-mono-ui text-[11px] text-text-muted">{first.tx_hash}</p>}
         <Button variant="primary" className="mt-4 w-full" onClick={onShowTransactions}><IconTable /> View transactions ({formatCount(link.count)})</Button>
+        <div className="mt-3 grid gap-2">
+          <GroupPicker groups={groups} onPick={onGroup} label={link.count === 1 ? 'Add the transaction to group' : `Add ${link.count} transactions to group`} />
+          <Button onClick={onHide}><IconEyeOff size={14} /> Hide {link.count === 1 ? 'transaction' : `${formatCount(link.count)} transactions`}</Button>
+        </div>
       </PanelSection>
     </Panel>
   );

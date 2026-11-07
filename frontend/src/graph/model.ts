@@ -1,5 +1,4 @@
 import {
-  ETH_ASSET,
   contractAddressesOf,
   edgeEndpoints,
   edgeFlavor,
@@ -8,6 +7,7 @@ import {
 } from '../api/edges';
 import type { AddressLabel, GraphEdge, GraphResponse } from '../api/types';
 import { weiToEth } from '../lib/format';
+import { nativeSymbol } from '../lib/chain';
 
 export type NodeKind = 'focus' | 'contract' | 'eoa';
 
@@ -563,7 +563,7 @@ export function netFlow(node: GraphNode): AssetFlow[] {
 }
 
 export function assetLabel(flow: AssetFlow): string {
-  return flow.native ? ETH_ASSET : flow.symbol;
+  return flow.native ? nativeSymbol() : flow.symbol;
 }
 
 function assignCurves(links: GraphLink[]): void {

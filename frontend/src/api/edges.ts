@@ -1,5 +1,6 @@
 import type { GraphEdge } from './types';
 import { parseWei } from '../lib/format';
+import { nativeDecimals, nativeSymbol } from '../lib/chain';
 
 export const ETH_ASSET = 'ETH';
 
@@ -22,6 +23,10 @@ export function edgeFlavor(edge: GraphEdge): EdgeFlavor {
   switch (edge.kind) {
     case 'native_transfer':
       return 'native';
+    case 'asset_transfer':
+      return 'token';
+    case 'system_action':
+      return 'call';
     case 'contract_deployment':
       return 'deployment';
     case 'protocol':
@@ -34,7 +39,10 @@ export function edgeFlavor(edge: GraphEdge): EdgeFlavor {
 export function edgeEndpoints(edge: GraphEdge): Endpoints | null {
   switch (edge.kind) {
     case 'native_transfer':
+    case 'asset_transfer':
       return { from: edge.from, to: edge.to };
+    case 'system_action':
+      return edge.to ? { from: edge.from, to: edge.to } : null;
     case 'contract_deployment':
       return { from: edge.deployer, to: edge.contract_address };
     case 'contract_interaction':
@@ -50,9 +58,18 @@ export function edgeTransfer(edge: GraphEdge): EdgeTransfer | null {
   if (edge.kind === 'native_transfer') {
     return {
       key: ETH_ASSET,
-      symbol: ETH_ASSET,
-      decimals: 18,
+      symbol: nativeSymbol(),
+      decimals: nativeDecimals(),
       native: true,
+      amount: parseWei(edge.amount),
+    };
+  }
+  if (edge.kind === 'asset_transfer') {
+    return {
+      key: `asset:${edge.asset_id}`,
+      symbol: edge.symbol,
+      decimals: edge.decimals,
+      native: false,
       amount: parseWei(edge.amount),
     };
   }
@@ -94,7 +111,11 @@ export function contractAddressesOf(edge: GraphEdge): string[] {
 export function edgeLabel(edge: GraphEdge): string {
   switch (edge.kind) {
     case 'native_transfer':
-      return 'ETH transfer';
+      return `${nativeSymbol()} transfer`;
+    case 'asset_transfer':
+      return `${edge.symbol} transfer`;
+    case 'system_action':
+      return humanizeAction(edge.action);
     case 'contract_deployment':
       return 'deployment';
     case 'protocol':
@@ -104,4 +125,9 @@ export function edgeLabel(edge: GraphEdge): string {
         ? `${edge.action.token_name} transfer`
         : 'contract call';
   }
+}
+
+function humanizeAction(action: string): string {
+  const words = action.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase();
+  return words.charAt(0).toUpperCase() + words.slice(1);
 }

@@ -5,6 +5,35 @@ use bon::Builder;
 
 use crate::eth::{EthAddress, EthReceipt};
 
+#[derive(Eq, Clone, Debug, Hash, PartialEq)]
+pub struct IssuedAsset {
+    id: String,
+    symbol: String,
+    decimals: u8,
+}
+
+impl IssuedAsset {
+    pub fn new(id: String, symbol: String, decimals: u8) -> Self {
+        Self {
+            id,
+            symbol,
+            decimals,
+        }
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn symbol(&self) -> &str {
+        &self.symbol
+    }
+
+    pub fn decimals(&self) -> u8 {
+        self.decimals
+    }
+}
+
 #[derive(Eq, Clone, Debug, Hash, PartialEq, Builder)]
 pub struct EthTx {
     pub(crate) tx_hash: TxHash,
@@ -16,6 +45,9 @@ pub struct EthTx {
     pub(crate) from: EthAddress,
     pub(crate) to: Option<EthAddress>,
     pub(crate) data: Bytes,
+
+    pub(crate) asset: Option<IssuedAsset>,
+    pub(crate) action: Option<String>,
 }
 
 impl EthTx {
@@ -45,6 +77,14 @@ impl EthTx {
 
     pub fn data(&self) -> &Bytes {
         &self.data
+    }
+
+    pub fn asset(&self) -> Option<&IssuedAsset> {
+        self.asset.as_ref()
+    }
+
+    pub fn action(&self) -> Option<&str> {
+        self.action.as_deref()
     }
 }
 

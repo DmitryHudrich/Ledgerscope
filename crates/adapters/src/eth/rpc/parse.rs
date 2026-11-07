@@ -1,13 +1,13 @@
 use alloy::{
     consensus::Transaction,
-    network::TransactionResponse,
-    rpc::types::{Block, Log, TransactionReceipt},
+    network::{AnyRpcBlock, AnyTransactionReceipt, ReceiptResponse, TransactionResponse},
+    rpc::types::Log,
 };
 use alloy_primitives::TxHash;
 
 use domain::eth::{EthAddress, EthLog, EthReceipt, EthTx};
 
-pub fn block_txs(block: &Block) -> Vec<EthTx> {
+pub fn block_txs(block: &AnyRpcBlock) -> Vec<EthTx> {
     block
         .transactions
         .txns()
@@ -25,18 +25,18 @@ pub fn block_txs(block: &Block) -> Vec<EthTx> {
         .collect()
 }
 
-pub fn block_receipts(receipts: &[TransactionReceipt]) -> Vec<(TxHash, EthReceipt)> {
+pub fn block_receipts(receipts: &[AnyTransactionReceipt]) -> Vec<(TxHash, EthReceipt)> {
     receipts
         .iter()
         .map(|found| (found.transaction_hash, receipt(found)))
         .collect()
 }
 
-pub fn receipt(receipt: &TransactionReceipt) -> EthReceipt {
+pub fn receipt(receipt: &AnyTransactionReceipt) -> EthReceipt {
     EthReceipt::new(
         receipt.status(),
-        receipt.contract_address.map(EthAddress::from),
-        receipt.logs().iter().map(log).collect(),
+        receipt.contract_address().map(EthAddress::from),
+        receipt.inner.inner.logs().iter().map(log).collect(),
     )
 }
 

@@ -35,6 +35,33 @@ export interface Scene {
   showGrid: boolean;
   showFlow: boolean;
   transparentBackground?: boolean;
+  groups?: SceneGroup[];
+  fade?: SceneFade | null;
+}
+
+export interface SceneFade {
+  nodes: Set<string>;
+  links: Set<string>;
+  opacity: number;
+  blur: number;
+}
+
+let fadeLayer: HTMLCanvasElement | null = null;
+
+function layerFor(width: number, height: number): CanvasRenderingContext2D | null {
+  if (typeof document === 'undefined') return null;
+  fadeLayer ??= document.createElement('canvas');
+  if (fadeLayer.width !== width) fadeLayer.width = width;
+  if (fadeLayer.height !== height) fadeLayer.height = height;
+  return fadeLayer.getContext('2d');
+}
+
+export interface SceneGroup {
+  id: string;
+  name: string;
+  color: string;
+  nodes: GraphNode[];
+  links: GraphLink[];
 }
 
 const DIM = 0.86;
@@ -109,21 +136,23 @@ export function drawScene(ctx: CanvasRenderingContext2D, scene: Scene): void {
     maxY: (height - t.y) / t.k + pad,
   };
 
+  if (scene.groups && scene.groups.length > 0) drawGroups(ctx, scene.groups, scene);
+
+  const fade = scene.fade ?? null;
+  const fadedLinks: GraphLink[] = [];
+  const fadedNodes: GraphNode[] = [];
+
   const highlightLinks = scene.highlightLinks;
   const dimmed: GraphLink[] = [];
   const lit: GraphLink[] = [];
   for (const link of model.links) {
     if (!linkInView(link, view)) continue;
+    if (fade && !fade.links.has(link.id) && link.id !== scene.selectedLinkId) {
+      fadedLinks.push(link);
+      continue;
+    }
     if ((highlightLinks && highlightLinks.has(link.id)) || link.id === scene.selectedLinkId) lit.push(link);
     else dimmed.push(link);
-  }
-
-  const contextAlpha = 1 - DIM * scene.focusMix;
-  for (const link of dimmed) drawLink(ctx, link, scene, contextAlpha, false);
-  for (const link of lit) drawLink(ctx, link, scene, 1, true);
-
-  if (scene.showFlow && lit.length > 0 && lit.length <= 400) {
-    for (const link of lit) drawFlow(ctx, link, scene);
   }
 
   const visible: GraphNode[] = [];
@@ -136,7 +165,39 @@ export function drawScene(ctx: CanvasRenderingContext2D, scene: Scene): void {
     ) {
       continue;
     }
+    const pinned = node.id === scene.activeId;
+    if (fade && !fade.nodes.has(node.id) && !pinned) {
+      fadedNodes.push(node);
+      continue;
+    }
     visible.push(node);
+  }
+
+  if (fade && (fadedLinks.length > 0 || fadedNodes.length > 0) && fade.opacity > 0.001) {
+    const layer = layerFor(Math.round(width * dpr), Math.round(height * dpr));
+    if (layer) {
+      layer.setTransform(1, 0, 0, 1, 0, 0);
+      layer.clearRect(0, 0, layer.canvas.width, layer.canvas.height);
+      layer.setTransform(dpr * t.k, 0, 0, dpr * t.k, dpr * t.x, dpr * t.y);
+      layer.lineCap = 'round';
+      for (const link of fadedLinks) drawLink(layer, link, scene, 1, false);
+      for (const node of fadedNodes) drawNode(layer, node, scene, 1);
+
+      ctx.save();
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.globalAlpha = fade.opacity;
+      if (fade.blur > 0) ctx.filter = `blur(${(fade.blur * dpr).toFixed(1)}px)`;
+      ctx.drawImage(layer.canvas, 0, 0);
+      ctx.restore();
+    }
+  }
+
+  const contextAlpha = 1 - DIM * scene.focusMix;
+  for (const link of dimmed) drawLink(ctx, link, scene, contextAlpha, false);
+  for (const link of lit) drawLink(ctx, link, scene, 1, true);
+
+  if (scene.showFlow && lit.length > 0 && lit.length <= 400) {
+    for (const link of lit) drawFlow(ctx, link, scene);
   }
 
   const highlightNodes = scene.highlightNodes;
@@ -152,6 +213,83 @@ export function drawScene(ctx: CanvasRenderingContext2D, scene: Scene): void {
 
   drawLabels(ctx, visible, scene);
   ctx.restore();
+}
+
+const HULL_PAD = 16;
+const HULL_SAMPLES = 10;
+
+function hull(points: Array<[number, number]>): Array<[number, number]> {
+  const sorted = [...points].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  if (sorted.length < 3) return sorted;
+  const cross = (o: [number, number], a: [number, number], b: [number, number]) =>
+    (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lower: Array<[number, number]> = [];
+  for (const point of sorted) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], point) <= 0) lower.pop();
+    lower.push(point);
+  }
+  const upper: Array<[number, number]> = [];
+  for (let index = sorted.length - 1; index >= 0; index -= 1) {
+    const point = sorted[index];
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], point) <= 0) upper.pop();
+    upper.push(point);
+  }
+  upper.pop();
+  lower.pop();
+  return lower.concat(upper);
+}
+
+function drawGroups(ctx: CanvasRenderingContext2D, groups: SceneGroup[], scene: Scene): void {
+  const { transform: t } = scene;
+
+  for (const group of groups) {
+    ctx.strokeStyle = withAlpha(group.color, 0.32);
+    ctx.lineWidth = 7 / t.k;
+    for (const link of group.links) {
+      ctx.beginPath();
+      if (link.selfLoop) {
+        const { cx, cy, r } = loopGeometry(link.source);
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      } else {
+        const { cx, cy } = controlPoint(link);
+        ctx.moveTo(link.source.x, link.source.y);
+        ctx.quadraticCurveTo(cx, cy, link.target.x, link.target.y);
+      }
+      ctx.stroke();
+    }
+
+    if (group.nodes.length === 0) continue;
+    const points: Array<[number, number]> = [];
+    for (const node of group.nodes) {
+      const radius = node.r + HULL_PAD / Math.sqrt(t.k);
+      for (let step = 0; step < HULL_SAMPLES; step += 1) {
+        const angle = (step / HULL_SAMPLES) * Math.PI * 2;
+        points.push([node.x + Math.cos(angle) * radius, node.y + Math.sin(angle) * radius]);
+      }
+    }
+    const outline = hull(points);
+    if (outline.length < 3) continue;
+
+    ctx.beginPath();
+    ctx.moveTo(outline[0][0], outline[0][1]);
+    for (const [x, y] of outline.slice(1)) ctx.lineTo(x, y);
+    ctx.closePath();
+    ctx.fillStyle = withAlpha(group.color, 0.09);
+    ctx.fill();
+    ctx.setLineDash([6 / t.k, 4 / t.k]);
+    ctx.strokeStyle = withAlpha(group.color, 0.7);
+    ctx.lineWidth = 1.4 / t.k;
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    const top = outline.reduce((best, point) => (point[1] < best[1] ? point : best), outline[0]);
+    const size = 11 / t.k;
+    ctx.font = `600 ${size}px ${FONT}`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'bottom';
+    ctx.fillStyle = withAlpha(group.color, 0.95);
+    ctx.fillText(group.name, top[0], top[1] - 4 / t.k);
+  }
 }
 
 function linkInView(

@@ -16,6 +16,8 @@ tokio.workspace = true
 tracing.workspace = true
 rangemap.workspace = true
 alloy-primitives.workspace = true
+uuid.workspace = true
+time.workspace = true
 
 serde.workspace = true
 serde_json.workspace = true

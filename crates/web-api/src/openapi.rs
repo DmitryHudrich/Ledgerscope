@@ -6,17 +6,60 @@ use crate::routes;
 #[openapi(
     info(
         title = "Ledgerscope API",
-        description = "Address graphs and index coverage over indexed eth transactions.",
+        description = "Address graphs and index coverage over indexed transactions of ethereum and its l2s.",
     ),
     paths(
+        routes::chains,
         routes::graph,
         routes::low_level_graph,
         routes::coverage,
-        routes::histogram
+        routes::histogram,
+        routes::auth::auth_config,
+        routes::auth::register,
+        routes::auth::login,
+        routes::auth::logout,
+        routes::auth::logout_everywhere,
+        routes::auth::me,
+        routes::auth::update_me,
+        routes::auth::change_password,
+        routes::teams::teams,
+        routes::teams::create_team,
+        routes::teams::team,
+        routes::teams::rename_team,
+        routes::teams::delete_team,
+        routes::teams::add_member,
+        routes::teams::change_role,
+        routes::teams::remove_member,
+        routes::canvases::canvases,
+        routes::canvases::create_canvas,
+        routes::canvases::canvas,
+        routes::canvases::update_canvas,
+        routes::canvases::delete_canvas,
+        routes::canvases::shares,
+        routes::canvases::share,
+        routes::canvases::unshare,
+        routes::canvases::links,
+        routes::canvases::create_link,
+        routes::canvases::revoke_link,
+        routes::canvases::public_canvas,
+        routes::labels::labels,
+        routes::labels::create_label,
+        routes::labels::update_label,
+        routes::labels::delete_label,
+        routes::monitor::calls,
+        routes::monitor::nodes,
+        routes::monitor::scans,
+        routes::monitor::stream,
     ),
     tags(
+        (name = "chains", description = "Chains the server explores"),
         (name = "graph", description = "Address graph exploration"),
         (name = "coverage", description = "What the index already holds"),
+        (name = "auth", description = "Accounts and cookie sessions"),
+        (name = "teams", description = "Teams, members and roles"),
+        (name = "canvases", description = "Saved canvases, sharing and public links"),
+        (name = "labels", description = "Your own and your teams' address labels"),
+        (name = "monitor", description = "Live rpc calls, node health and block scans"),
     ),
 )]
 pub struct ApiDoc;
@@ -29,10 +72,17 @@ mod tests {
     fn every_route_reaches_the_spec() {
         let spec = serde_json::to_value(ApiDoc::openapi()).unwrap();
 
+        assert!(spec["paths"]["/chains"]["get"].is_object());
         assert!(spec["paths"]["/graph"]["post"].is_object());
         assert!(spec["paths"]["/graph/low-level"]["post"].is_object());
         assert!(spec["paths"]["/coverage"]["get"].is_object());
         assert!(spec["paths"]["/coverage/histogram"]["get"].is_object());
+        assert!(spec["paths"]["/auth/login"]["post"].is_object());
+        assert!(spec["paths"]["/teams/{team_id}/members/{user_id}"]["patch"].is_object());
+        assert!(spec["paths"]["/canvases/{canvas_id}"]["patch"].is_object());
+        assert!(spec["paths"]["/public/canvases/{token}"]["get"].is_object());
+        assert!(spec["paths"]["/labels"]["get"].is_object());
+        assert!(spec["paths"]["/monitor/stream"]["get"].is_object());
         assert!(spec["components"]["schemas"]["GraphResponse"].is_object());
         assert_eq!(
             spec["paths"]["/coverage/histogram"]["get"]["parameters"][2]["name"],

@@ -1,4 +1,4 @@
-import { useEffect, useImperativeHandle, useRef, useState, type RefObject } from 'react';
+import { useEffect, useImperativeHandle, useMemo, useRef, useState, type RefObject } from 'react';
 import {
   forceCollide,
   forceLink,
@@ -19,11 +19,15 @@ import {
   findNodeAt,
   toWorld,
   type LabelMode,
+  type SceneFade,
+  type SceneGroup,
   type Transform,
 } from './draw';
+import type { GraphGroup } from '../lib/groups';
 import { assetLabel, netFlow, type GraphLink, type GraphModel, type GraphNode } from './model';
 import type { Annotation, AnnotationKind, AnnotationStyle, AnnotationTool } from './annotations';
 import { getPrimarySystemLabel } from './labels';
+import { nativeSymbol } from '../lib/chain';
 
 export interface GraphHandle {
   fit(): void;
@@ -53,6 +57,9 @@ interface Props {
   showFlow: boolean;
   frozen: boolean;
   incrementalLayoutVersion: number;
+  restoredLayoutVersion?: number;
+  groups?: GraphGroup[];
+  fade?: SceneFade | null;
   onSelect: (id: string | null, additive?: boolean) => void;
   onSelectLink: (id: string | null) => void;
   onSelectMany: (ids: Set<string>) => void;
@@ -184,6 +191,9 @@ export function GraphCanvas({
   showFlow,
   frozen,
   incrementalLayoutVersion,
+  restoredLayoutVersion = 0,
+  groups,
+  fade = null,
   onSelect,
   onSelectLink,
   onSelectMany,
@@ -198,6 +208,7 @@ export function GraphCanvas({
   const simulation = useRef<Simulation<GraphNode, GraphLink> | null>(null);
   const renderedModel = useRef<GraphModel | null>(null);
   const handledLayoutVersion = useRef(incrementalLayoutVersion);
+  const handledRestoredVersion = useRef(restoredLayoutVersion);
 
   const hoveredNode = useRef<GraphNode | null>(null);
   const hoveredLink = useRef<GraphLink | null>(null);
@@ -215,11 +226,28 @@ export function GraphCanvas({
 
   const [hover, setHover] = useState<Hover | null>(null);
 
-  const live = useRef({ model, palette, selectedId, selectedIds, selectedLinkId, nodeLabels, annotationTool, annotations, annotationStyle, selectedAnnotationIds, searchMatches, labelMode, showGrid, showFlow });
-  live.current = { model, palette, selectedId, selectedIds, selectedLinkId, nodeLabels, annotationTool, annotations, annotationStyle, selectedAnnotationIds, searchMatches, labelMode, showGrid, showFlow };
+  const sceneGroups = useMemo<SceneGroup[]>(() => (groups ?? [])
+    .filter((group) => !group.hidden)
+    .map((group) => {
+      const txs = new Set(group.txs);
+      return {
+        id: group.id,
+        name: group.name,
+        color: group.color,
+        nodes: group.nodes.flatMap((id) => {
+          const node = model.byId.get(id);
+          return node ? [node] : [];
+        }),
+        links: txs.size === 0 ? [] : model.links.filter((link) => link.txs.some((tx) => txs.has(tx.tx_hash.toLowerCase()))),
+      };
+    })
+    .filter((group) => group.nodes.length > 0 || group.links.length > 0), [groups, model]);
+
+  const live = useRef({ model, palette, selectedId, selectedIds, selectedLinkId, nodeLabels, annotationTool, annotations, annotationStyle, selectedAnnotationIds, searchMatches, labelMode, showGrid, showFlow, sceneGroups, fade });
+  live.current = { model, palette, selectedId, selectedIds, selectedLinkId, nodeLabels, annotationTool, annotations, annotationStyle, selectedAnnotationIds, searchMatches, labelMode, showGrid, showFlow, sceneGroups, fade };
   useEffect(() => {
     dirty.current = true;
-  }, [palette, selectedId, selectedIds, selectedLinkId, nodeLabels, annotationTool, annotations, annotationStyle, selectedAnnotationIds, searchMatches, labelMode, showGrid, showFlow]);
+  }, [fade, sceneGroups, palette, selectedId, selectedIds, selectedLinkId, nodeLabels, annotationTool, annotations, annotationStyle, selectedAnnotationIds, searchMatches, labelMode, showGrid, showFlow]);
 
   useEffect(() => {
     const nodes = model.nodes;
@@ -227,6 +255,8 @@ export function GraphCanvas({
     const preserveExisting =
       incrementalLayoutVersion !== handledLayoutVersion.current && previous !== null;
     handledLayoutVersion.current = incrementalLayoutVersion;
+    const restoring = restoredLayoutVersion !== handledRestoredVersion.current;
+    handledRestoredVersion.current = restoredLayoutVersion;
     renderedModel.current = model;
     hoveredNode.current = null;
     hoveredLink.current = null;
@@ -271,7 +301,8 @@ export function GraphCanvas({
       .alphaMin(0.01);
 
     sim.stop();
-    const budget = preserveExisting
+    if (restoring) sim.alpha(0);
+    const budget = restoring ? 0 : preserveExisting
       ? nodes.length > 1200
         ? 45
         : nodes.length > 400
@@ -303,7 +334,7 @@ export function GraphCanvas({
       sim.on('tick', null);
       sim.stop();
     };
-  }, [incrementalLayoutVersion, model]);
+  }, [incrementalLayoutVersion, restoredLayoutVersion, model]);
 
   useEffect(() => {
     const sim = simulation.current;
@@ -439,6 +470,8 @@ export function GraphCanvas({
         time,
         showGrid: state.showGrid,
         showFlow: state.showFlow,
+        groups: state.sceneGroups,
+        fade: state.fade,
         // The canvas owns the background so drawGrid uses the exact same
         // world transform as nodes and links rather than a screen-fixed CSS pattern.
         transparentBackground: false,
@@ -961,12 +994,18 @@ const KIND_LABEL: Record<GraphNode['kind'], string> = {
   eoa: 'Wallet',
 };
 
-const TONE_LABEL: Record<GraphLink['tone'], string> = {
-  eth: 'ETH transfers',
-  token: 'Token transfers',
-  mixed: 'ETH + token transfers',
-  call: 'Contract interactions',
-};
+function toneLabel(tone: GraphLink['tone']): string {
+  switch (tone) {
+    case 'eth':
+      return `${nativeSymbol()} transfers`;
+    case 'token':
+      return 'Token transfers';
+    case 'mixed':
+      return `${nativeSymbol()} + token transfers`;
+    case 'call':
+      return 'Contract interactions';
+  }
+}
 
 const TIP_ASSETS = 4;
 
@@ -994,13 +1033,13 @@ function NodeTip({ node }: { node: GraphNode }) {
         <div>
           <dt>In</dt>
           <dd>
-            {formatEth(node.valueIn)} ETH · {formatCount(node.inCount)} tx
+            {formatEth(node.valueIn)} {nativeSymbol()} · {formatCount(node.inCount)} tx
           </dd>
         </div>
         <div>
           <dt>Out</dt>
           <dd>
-            {formatEth(node.valueOut)} ETH · {formatCount(node.outCount)} tx
+            {formatEth(node.valueOut)} {nativeSymbol()} · {formatCount(node.outCount)} tx
           </dd>
         </div>
         <div>
@@ -1037,7 +1076,7 @@ function LinkTip({ link }: { link: GraphLink }) {
       <div className="flex items-center gap-[6px]">
         <Dot tone={link.tone === 'call' ? 'eoa' : 'token'} />
         <span className="text-[10px] uppercase tracking-[0.07em] text-text-muted">
-          {TONE_LABEL[link.tone]}
+          {toneLabel(link.tone)}
         </span>
       </div>
       <div className="mb-[7px] mt-[3px] break-all font-mono-ui text-xs">
@@ -1125,6 +1164,8 @@ function exportPng(
     searchMatches: Set<string>;
     labelMode: LabelMode;
     selectedId: string | null;
+    sceneGroups?: SceneGroup[];
+    fade?: SceneFade | null;
   },
   filename: string,
 ): void {
@@ -1162,6 +1203,8 @@ function exportPng(
     time: 0,
     showGrid: false,
     showFlow: false,
+    groups: state.sceneGroups,
+    fade: state.fade,
   });
 
   canvas.toBlob((blob) => {

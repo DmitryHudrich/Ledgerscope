@@ -27,6 +27,24 @@ export type Interaction =
 
       amount: string;
     }
+  | {
+      kind: 'asset_transfer';
+      asset_id: string;
+      symbol: string;
+      decimals: number;
+      from: string;
+      to: string;
+
+      amount: string;
+    }
+  | {
+      kind: 'system_action';
+      action: string;
+      from: string;
+      to: string | null;
+
+      amount: string;
+    }
   | { kind: 'contract_deployment'; deployer: string; contract_address: string }
   | {
       kind: 'contract_interaction';
@@ -97,7 +115,26 @@ export interface GraphRoot {
   depth: number;
 }
 
+export type ChainFamily = 'evm' | 'tron';
+
+export interface ChainInfo {
+  chain_id: number;
+  family: ChainFamily;
+  name: string;
+  slug: string;
+  native_symbol: string;
+  native_decimals: number;
+  l2_of: number | null;
+  rpc_nodes: number;
+}
+
+export interface ChainsResponse {
+  default_chain: number;
+  chains: ChainInfo[];
+}
+
 export interface GraphQuery {
+  chain?: number;
   roots: GraphRoot[];
   from_block: number;
   to_block: number;
@@ -122,6 +159,7 @@ export interface GraphLimits {
 }
 
 export interface CoverageResponse {
+  chain_id: number;
   persisted: boolean;
   chain_head: number | null;
   lowest_block: number | null;
@@ -146,6 +184,7 @@ export interface HistogramResponse {
 }
 
 export interface HistogramQuery {
+  chain?: number;
   from_block?: number;
   to_block?: number;
   buckets?: number;

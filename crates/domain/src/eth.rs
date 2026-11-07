@@ -33,9 +33,10 @@ pub use address::{EthAddress, EthAddressParseError};
 pub use block::BlockRef;
 pub use coverage::{BlockBucket, BlockRange, IndexCoverage};
 pub use graph::{
-    ContractAction, Interaction, InteractionEdge, InteractionId, InteractionKind, TxMeta,
+    AssetTransfer, ContractAction, Interaction, InteractionEdge, InteractionId, InteractionKind,
+    TxMeta,
 };
 pub use label::*;
 pub use lowlevel::{LowLevelActor, LowLevelInteraction, LowLevelTarget};
 pub use receipt::{EthLog, EthReceipt};
-pub use tx::{EthTx, MinedTx};
+pub use tx::{EthTx, IssuedAsset, MinedTx};

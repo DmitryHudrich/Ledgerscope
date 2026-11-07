@@ -14,7 +14,10 @@ services:
     image: ledgerscope/web-api:dev
     network_mode: host
     environment:
-      ETH_RPC_URL: ${ETH_RPC_URL:?set ETH_RPC_URL in infra/.env}
+      ETH_RPC_URL: ${ETH_RPC_URL:-}
+      RPC_CHAINLIST: ${RPC_CHAINLIST:-true}
+      CHAINS_ETHEREUM_L2: ${CHAINS_ETHEREUM_L2:-true}
+      CHAINS_TRON: ${CHAINS_TRON:-true}
       # Host loopback, because the namespace is shared. Empty = direct connection.
       ETH_RPC_PROXY: ${ETH_RPC_PROXY-socks5h://127.0.0.1:2080}
       # Path inside the container to the etherscan label dump.
@@ -30,10 +33,15 @@ services:
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-ledgerscope}
       # Empty = no cache, ClickHouse alone answers what is already indexed.
       REDIS_URL: ${REDIS_URL-redis://127.0.0.1:6379}
+      POSTGRES_URL: ${POSTGRES_URL:-postgres://ledgerscope:ledgerscope@127.0.0.1:5432/ledgerscope}
+      AUTH_COOKIE_SECURE: ${AUTH_COOKIE_SECURE:-false}
+      AUTH_REGISTRATION: ${AUTH_REGISTRATION:-true}
     depends_on:
       clickhouse:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:$${API_PORT}/ >/dev/null"]
@@ -81,6 +89,24 @@ services:
       start_period: 5s
     restart: unless-stopped
 
+  postgres:
+    image: postgres:17-alpine
+    network_mode: host
+    command: ["postgres", "-p", "${POSTGRES_PORT:-5432}"]
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-ledgerscope}
+      POSTGRES_USER: ${POSTGRES_USER:-ledgerscope}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ledgerscope}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -p ${POSTGRES_PORT:-5432} -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
   web:
     build:
       context: ..
@@ -107,3 +133,4 @@ volumes:
   clickhouse-data:
   clickhouse-logs:
   redis-data:
+  postgres-data:

@@ -1,5 +1,6 @@
 import { formatCompact } from '../lib/format';
 import { DEFAULT_FILTERS, type GraphFilters } from '../graph/model';
+import { nativeSymbol } from '../lib/chain';
 
 export interface FilterActivity {
   activeFilterCount: number;
@@ -15,10 +16,10 @@ export function getFilterActivity(
 
   if (highlightAddress.trim() !== '') labels.push('Address highlight');
   if (filters.minEth !== DEFAULT_FILTERS.minEth) {
-    labels.push(`Min flow ≥ ${formatCompact(filters.minEth)} ETH`);
+    labels.push(`Min flow ≥ ${formatCompact(filters.minEth)} ${nativeSymbol()}`);
   }
   if (filters.showNative !== DEFAULT_FILTERS.showNative) {
-    labels.push(filters.showNative ? 'ETH transfers shown' : 'ETH transfers hidden');
+    labels.push(`${nativeSymbol()} transfers ${filters.showNative ? 'shown' : 'hidden'}`);
   }
   if (filters.showTokens !== DEFAULT_FILTERS.showTokens) {
     labels.push(filters.showTokens ? 'Token transfers shown' : 'Token transfers hidden');

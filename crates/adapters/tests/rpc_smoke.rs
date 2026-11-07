@@ -1,4 +1,4 @@
-use adapters::eth::RpcTxSource;
+use adapters::eth::{RpcPool, RpcTxSource};
 use application::eth::ports::{EthRpcSource, EthTxSource};
 use domain::eth::BlockRef;
 use futures::StreamExt;
@@ -86,11 +86,11 @@ fn single(id: &Value, result: Value) -> Value {
 }
 
 fn source(url: &str) -> RpcTxSource {
-    RpcTxSource::new(
+    RpcTxSource::new(RpcPool::fixed(
         reqwest::Client::builder().no_proxy().build().unwrap(),
-        reqwest::Url::parse(url).unwrap(),
+        vec![reqwest::Url::parse(url).unwrap()],
         50,
-    )
+    ))
 }
 
 fn block(number: u64, tx_hash: &str) -> Value {

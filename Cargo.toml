@@ -27,6 +27,7 @@ serde_json = "1"
 serde_yaml = "0.9"
 serde_urlencoded = "0.7"
 hex = "0"
+bs58 = { version = "0.5", features = ["check"] }
 alloy-primitives = "1"
 alloy = { version = "2", features = ["providers", "provider-http", "rpc-types-eth", "json-rpc"] }
 tower = "0.5"
@@ -36,3 +37,19 @@ axum = "0"
 utoipa = { version = "5", features = ["axum_extras"] }
 utoipa-scalar = { version = "0.3", features = ["axum"] }
 rangemap = "1"
+sqlx = { version = "0.9", default-features = false, features = [
+  "postgres",
+  "runtime-tokio",
+  "migrate",
+  "derive",
+  "macros",
+  "json",
+  "uuid",
+  "time",
+] }
+uuid = { version = "1", features = ["v4", "serde"] }
+time = { version = "0.3", features = ["serde", "formatting", "parsing"] }
+argon2 = "0.6"
+sha2 = "0.10"
+base64 = "0.22"
+getrandom = "0.3"

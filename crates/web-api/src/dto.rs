@@ -1,3 +1,6 @@
+pub mod account;
+pub mod monitor;
+
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
@@ -11,11 +14,29 @@ use domain::eth::{
     EthAddress, IndexCoverage, Interaction, InteractionEdge, InteractionKind, LowLevelInteraction,
 };
 
+use crate::state::{AppState, ChainState};
+
 const DEFAULT_DEPTH: u32 = 1;
 
 const DEFAULT_DECIMALS: u8 = 18;
 
 type Tokens<'a> = HashMap<&'a EthAddress, (&'a str, u8)>;
+
+pub type ExtraLabels = HashMap<EthAddress, Vec<AddressLabel>>;
+
+fn labels_of(
+    address: &EthAddress,
+    own: &[AddressLabel],
+    extra: &ExtraLabels,
+) -> Vec<AddressLabelResponse> {
+    extra
+        .get(address)
+        .into_iter()
+        .flatten()
+        .chain(own)
+        .map(AddressLabelResponse::from)
+        .collect()
+}
 
 fn tokens_of(actors: &[Actor]) -> Tokens<'_> {
     actors
@@ -24,8 +45,26 @@ fn tokens_of(actors: &[Actor]) -> Tokens<'_> {
         .collect()
 }
 
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(untagged)]
+pub enum ChainParam {
+    Id(u64),
+    Name(String),
+}
+
+impl ChainParam {
+    pub fn selector(&self) -> String {
+        match self {
+            Self::Id(chain_id) => chain_id.to_string(),
+            Self::Name(name) => name.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct GraphRequest {
+    #[serde(default)]
+    pub chain: Option<ChainParam>,
     pub roots: Vec<RootRequest>,
     pub from_block: u64,
     pub to_block: u64,
@@ -73,11 +112,15 @@ pub struct GraphResponse {
 }
 
 impl GraphResponse {
-    pub fn new(graph: &AddressGraph, span: BlockRange) -> Self {
+    pub fn new(graph: &AddressGraph, span: BlockRange, extra: &ExtraLabels) -> Self {
         let tokens = tokens_of(graph.actors());
 
         Self {
-            nodes: graph.nodes().iter().map(NodeResponse::from).collect(),
+            nodes: graph
+                .nodes()
+                .iter()
+                .map(|node| NodeResponse::new(node, extra))
+                .collect(),
             edges: graph
                 .edges()
                 .iter()
@@ -105,12 +148,12 @@ pub struct LowLevelGraphResponse {
 }
 
 impl LowLevelGraphResponse {
-    pub fn new(graph: &LowLevelGraph, span: BlockRange) -> Self {
+    pub fn new(graph: &LowLevelGraph, span: BlockRange, extra: &ExtraLabels) -> Self {
         Self {
             actors: graph
                 .actors()
                 .iter()
-                .map(LowLevelActorResponse::from)
+                .map(|node| LowLevelActorResponse::new(node, extra))
                 .collect(),
             interactions: graph
                 .interactions()
@@ -153,16 +196,11 @@ pub struct LowLevelActorResponse {
     expanded: bool,
 }
 
-impl From<&LowLevelNode> for LowLevelActorResponse {
-    fn from(node: &LowLevelNode) -> Self {
+impl LowLevelActorResponse {
+    pub fn new(node: &LowLevelNode, extra: &ExtraLabels) -> Self {
         Self {
             address: node.address().to_string(),
-            labels: node
-                .actor()
-                .labels()
-                .iter()
-                .map(AddressLabelResponse::from)
-                .collect(),
+            labels: labels_of(node.address(), node.actor().labels(), extra),
             depth: node.depth(),
             root: node.root(),
             expanded: node.expanded(),
@@ -220,16 +258,11 @@ pub enum ActorResponse {
     Unknown,
 }
 
-impl From<&GraphNode> for NodeResponse {
-    fn from(node: &GraphNode) -> Self {
+impl NodeResponse {
+    pub fn new(node: &GraphNode, extra: &ExtraLabels) -> Self {
         Self {
             address: node.address().to_string(),
-            labels: node
-                .actor()
-                .labels()
-                .iter()
-                .map(AddressLabelResponse::from)
-                .collect(),
+            labels: labels_of(node.address(), node.actor().labels(), extra),
             depth: node.depth(),
             root: node.root(),
             expanded: node.expanded(),
@@ -286,7 +319,52 @@ impl RpcConfirmationResponse {
 }
 
 #[derive(Serialize, ToSchema)]
+pub struct ChainsResponse {
+    default_chain: u64,
+    chains: Vec<ChainResponse>,
+}
+
+impl ChainsResponse {
+    pub fn new(state: &AppState) -> Self {
+        Self {
+            default_chain: state.default_chain(),
+            chains: state.chains().map(ChainResponse::new).collect(),
+        }
+    }
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct ChainResponse {
+    chain_id: u64,
+    family: String,
+    name: String,
+    slug: String,
+    native_symbol: String,
+    native_decimals: u8,
+    l2_of: Option<u64>,
+    rpc_nodes: usize,
+}
+
+impl ChainResponse {
+    fn new(chain: &ChainState) -> Self {
+        let meta = chain.meta();
+
+        Self {
+            chain_id: meta.chain_id,
+            family: meta.family.name().to_owned(),
+            name: meta.name.clone(),
+            slug: meta.slug.clone(),
+            native_symbol: meta.native_symbol.clone(),
+            native_decimals: meta.native_decimals,
+            l2_of: meta.l2_of,
+            rpc_nodes: chain.rpc_nodes(),
+        }
+    }
+}
+
+#[derive(Serialize, ToSchema)]
 pub struct CoverageResponse {
+    chain_id: u64,
     persisted: bool,
     chain_head: Option<u64>,
     lowest_block: Option<u64>,
@@ -300,11 +378,13 @@ pub struct CoverageResponse {
 impl CoverageResponse {
     pub fn new(
         coverage: &IndexCoverage,
+        chain_id: u64,
         persisted: bool,
         chain_head: Option<u64>,
         limits: ExploreLimits,
     ) -> Self {
         Self {
+            chain_id,
             persisted,
             chain_head,
             lowest_block: coverage.lowest_block(),
@@ -402,6 +482,20 @@ pub enum InteractionResponse {
         to: String,
         amount: String,
     },
+    AssetTransfer {
+        asset_id: String,
+        symbol: String,
+        decimals: u8,
+        from: String,
+        to: String,
+        amount: String,
+    },
+    SystemAction {
+        action: String,
+        from: String,
+        to: Option<String>,
+        amount: String,
+    },
     ContractDeployment {
         deployer: String,
         contract_address: String,
@@ -448,6 +542,25 @@ impl InteractionResponse {
                 from: transfer.from().to_string(),
                 to: transfer.to().to_string(),
                 amount: transfer.amount().to_string(),
+            },
+            InteractionKind::AssetTransfer(transfer) => Self::AssetTransfer {
+                asset_id: transfer.asset().id().to_owned(),
+                symbol: transfer.asset().symbol().to_owned(),
+                decimals: transfer.asset().decimals(),
+                from: transfer.from().to_string(),
+                to: transfer.to().to_string(),
+                amount: transfer.amount().to_string(),
+            },
+            InteractionKind::SystemAction {
+                action,
+                from,
+                to,
+                amount,
+            } => Self::SystemAction {
+                action: action.clone(),
+                from: from.to_string(),
+                to: to.map(|to| to.to_string()),
+                amount: amount.to_string(),
             },
             InteractionKind::ContractDeployment {
                 contract_address,
@@ -498,10 +611,7 @@ impl ContractActionResponse {
 }
 
 pub fn parse_address(value: &str) -> Result<EthAddress, String> {
-    value
-        .trim()
-        .parse::<EthAddress>()
-        .map_err(|error| format!("{value} is not an eth address: {error}"))
+    EthAddress::parse_any(value).map_err(|error| format!("{value} is not an address: {error}"))
 }
 
 #[cfg(test)]
@@ -716,7 +826,7 @@ mod tests {
         );
 
         assert_eq!(
-            serde_json::to_value(LowLevelActorResponse::from(&node)).unwrap(),
+            serde_json::to_value(LowLevelActorResponse::new(&node, &ExtraLabels::new())).unwrap(),
             json!({
                 "address": "0x1111111111111111111111111111111111111111",
                 "labels": [{"value": "Binance 7", "source": "etherscan.io"}],
@@ -724,6 +834,37 @@ mod tests {
                 "root": false,
                 "expanded": true
             })
+        );
+    }
+
+    #[test]
+    fn your_labels_come_before_the_ones_the_server_knows() {
+        let address: EthAddress = "0x1111111111111111111111111111111111111111"
+            .parse()
+            .unwrap();
+        let node = LowLevelNode::new(
+            domain::eth::LowLevelActor::new(
+                address,
+                vec![AddressLabel::new(
+                    "Binance 7".to_owned(),
+                    "etherscan.io".to_owned(),
+                )],
+            ),
+            0,
+            true,
+            true,
+        );
+        let extra = ExtraLabels::from([(
+            address,
+            vec![AddressLabel::new("Suspect".to_owned(), "you".to_owned())],
+        )]);
+
+        assert_eq!(
+            serde_json::to_value(LowLevelActorResponse::new(&node, &extra)).unwrap()["labels"],
+            json!([
+                {"value": "Suspect", "source": "you"},
+                {"value": "Binance 7", "source": "etherscan.io"}
+            ])
         );
     }
 
@@ -742,7 +883,7 @@ mod tests {
         );
 
         assert_eq!(
-            serde_json::to_value(LowLevelActorResponse::from(&node)).unwrap()["labels"],
+            serde_json::to_value(LowLevelActorResponse::new(&node, &ExtraLabels::new())).unwrap()["labels"],
             json!([])
         );
     }
@@ -791,6 +932,7 @@ mod tests {
         let coverage = IndexCoverage::new(vec![BlockRange::new(10, 20)], 42);
         let encoded = serde_json::to_value(CoverageResponse::new(
             &coverage,
+            1,
             true,
             Some(21_000_000),
             ExploreLimits::default(),

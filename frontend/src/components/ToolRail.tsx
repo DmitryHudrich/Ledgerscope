@@ -4,6 +4,7 @@ import type { LabelMode } from '../graph/draw';
 import type { AnnotationStyle, AnnotationTool } from '../graph/annotations';
 import {
   IconDownload,
+  IconJson,
   IconFit,
   IconFlow,
   IconFreeze,
@@ -33,6 +34,8 @@ interface Props {
   onLabelModeChange: (next: LabelMode) => void;
   onUnpin: () => void;
   onExport: () => void;
+  onExportJson: () => void;
+  focusControl?: ReactNode;
   disabled: boolean;
   annotationTool: AnnotationTool;
   onAnnotationToolChange: (tool: AnnotationTool) => void;
@@ -64,6 +67,8 @@ export function ToolRail({
   onLabelModeChange,
   onUnpin,
   onExport,
+  onExportJson,
+  focusControl,
   disabled,
   annotationTool,
   onAnnotationToolChange,
@@ -134,9 +139,13 @@ export function ToolRail({
       >
         <IconLabels />
       </Tool>
+      {focusControl}
       <hr className="mx-0.5 my-1 w-[calc(100%-4px)] border-0 border-t border-hairline" />
       <Tool label="Export PNG" onClick={onExport} disabled={disabled}>
         <IconDownload />
+      </Tool>
+      <Tool label="Export JSON" onClick={onExportJson} disabled={disabled}>
+        <IconJson />
       </Tool>
       <hr className="mx-0.5 my-1 w-[calc(100%-4px)] border-0 border-t border-hairline" />
       {([

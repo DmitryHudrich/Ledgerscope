@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 
-import { RpcConfirmationRequired, fetchCoverage, fetchGraph, fetchHistogram } from './api/client';
+import { ApiError, RpcConfirmationRequired, fetchChains, fetchCoverage, fetchGraph, fetchHistogram } from './api/client';
+import { canvasApi, isUserLabelSource, labelApi, type CanvasInfo, type Me, type OwnerRequest, type UserLabel } from './api/account';
 import { demoGraph } from './api/demo';
 import type {
   BlockRangeSpan,
+  ChainInfo,
   CoverageResponse,
   GraphResponse,
   GraphRoot,
@@ -20,6 +22,19 @@ import { TopBar } from './components/TopBar';
 import { SHEET_HEIGHT, TxSheet } from './components/TxSheet';
 import { getFilterActivity } from './components/filterActivity';
 import { RpcConfirm } from './components/RpcConfirm';
+import { AccountMenu, type AccountAction } from './components/account/AccountMenu';
+import { AuthDialog } from './components/account/AuthDialog';
+import { CanvasControls, type SaveState } from './components/account/CanvasControls';
+import { CanvasesDialog } from './components/account/CanvasesDialog';
+import { LabelsDialog } from './components/account/LabelsDialog';
+import { NodeLabels } from './components/account/NodeLabels';
+import { ProfileDialog } from './components/account/ProfileDialog';
+import { SaveCanvasDialog } from './components/account/SaveCanvasDialog';
+import { ShareDialog } from './components/account/ShareDialog';
+import { TeamsDialog } from './components/account/TeamsDialog';
+import { errorText } from './components/Modal';
+import { MonitorPanel } from './components/monitor/MonitorPanel';
+import { ScanProgress } from './components/monitor/ScanProgress';
 import { Button, Dot, Kbd, Panel } from './components/ui';
 import { GraphCanvas, type GraphHandle } from './graph/GraphCanvas';
 import { DEFAULT_ANNOTATION_STYLE, type Annotation, type AnnotationStyle, type AnnotationTool } from './graph/annotations';
@@ -33,7 +48,28 @@ import {
   withoutNodes,
   type GraphFilters,
   type GraphModel,
+  type NodePosition,
 } from './graph/model';
+import { clampRange, sameRange, type BlockLimits } from './lib/blockRange';
+import { readStoredChain, setActiveChain, storeChain } from './lib/chain';
+import {
+  documentBytes,
+  fingerprint,
+  parseDocument,
+  restoredPositions,
+  toDocument,
+  type CanvasDocument,
+  type CanvasState,
+} from './lib/canvasDocument';
+import { useAccount } from './lib/useAccount';
+import { addToGroup, hiddenSets, withoutTxs, type GraphGroup } from './lib/groups';
+import { downloadJson, graphExport } from './lib/exportGraph';
+import { focusSets, readFocus, writeFocus, type FocusSettings } from './lib/focus';
+import { FocusControl } from './components/FocusControl';
+import { GroupPicker } from './components/GroupPicker';
+import { GroupsPanel } from './components/GroupsPanel';
+import { IconEyeOff, IconFocus } from './components/Icons';
+import { useMonitor, type Health } from './lib/useMonitor';
 import { readPalette, useTheme, type VizPalette } from './lib/theme';
 
 const INITIAL_ROOTS: GraphRoot[] = [
@@ -48,6 +84,69 @@ function readAnnotations(): Annotation[] {
 }
 
 type TemporaryPanel = WorkspacePanel | 'advanced';
+type Dialog = 'auth' | 'profile' | 'teams' | 'canvases' | 'labels' | 'save' | 'share';
+
+const SNAPSHOT_BUDGET = 7 * 1024 * 1024;
+
+const HEALTH_DOT: Record<Health, string> = {
+  idle: 'bg-text-muted opacity-60',
+  good: 'bg-good',
+  degraded: 'bg-series-focus',
+  failing: 'bg-critical',
+  offline: 'bg-critical opacity-60',
+};
+
+const HEALTH_TITLE: Record<Health, string> = {
+  idle: 'No RPC calls in the last minute',
+  good: 'RPC nodes answer fine',
+  degraded: 'Some RPC calls were retried in the last minute',
+  failing: 'Many RPC calls fail',
+  offline: 'The monitor is not connected to the server',
+};
+const LABEL_CHUNK = 200;
+
+function urlParam(name: string): string | null {
+  return new URLSearchParams(window.location.search).get(name);
+}
+
+function setUrlParam(name: string, value: string | null) {
+  const url = new URL(window.location.href);
+  for (const key of ['canvas', 'share']) url.searchParams.delete(key);
+  if (value) url.searchParams.set(name, value);
+  window.history.replaceState(null, '', url);
+}
+
+function withUserLabels(graph: GraphResponse, fresh: Map<string, UserLabel[]>): GraphResponse {
+  return {
+    ...graph,
+    nodes: graph.nodes.map((node) => {
+      const mine = fresh.get(node.address.toLowerCase());
+      if (!mine) return node;
+      const ordered = [...mine].sort((a, b) => Number(a.owner.kind === 'team') - Number(b.owner.kind === 'team'));
+      return {
+        ...node,
+        labels: [
+          ...ordered.map((label) => ({ value: label.value, source: label.owner.kind === 'team' ? `team:${label.owner.team_name ?? ''}` : 'you' })),
+          ...node.labels.filter((label) => !isUserLabelSource(label.source)),
+        ],
+      };
+    }),
+  };
+}
+
+function withoutUserLabels(graph: GraphResponse): GraphResponse {
+  return {
+    ...graph,
+    nodes: graph.nodes.map((node) => ({ ...node, labels: node.labels.filter((label) => !isUserLabelSource(label.source)) })),
+  };
+}
+
+function chainOrder(defaultChain: number) {
+  return (a: ChainInfo, b: ChainInfo) =>
+    Number(b.chain_id === defaultChain) - Number(a.chain_id === defaultChain)
+    || Number(b.rpc_nodes > 0) - Number(a.rpc_nodes > 0)
+    || a.name.localeCompare(b.name);
+}
 
 function storedSelection(coverage: CoverageResponse, maxBlocks: number): BlockBounds | null {
   const widest = coverage.ranges.reduce<BlockRangeSpan | null>(
@@ -73,6 +172,10 @@ export default function App() {
   const [roots, setRoots] = useState<GraphRoot[]>(INITIAL_ROOTS);
   const [selection, setSelection] = useState<BlockBounds>(INITIAL_SELECTION);
   const [demo, setDemo] = useState(true);
+  const [chains, setChains] = useState<ChainInfo[]>([]);
+  const [chainId, setChainId] = useState<number | null>(null);
+  const [defaultChain, setDefaultChain] = useState<number | null>(null);
+  const [chainsLoaded, setChainsLoaded] = useState(false);
 
   const [response, setResponse] = useState<GraphResponse | null>(null);
   const [coverage, setCoverage] = useState<CoverageResponse | null>(null);
@@ -89,6 +192,7 @@ export default function App() {
     message: string;
   } | null>(null);
   const [incrementalLayoutVersion, setIncrementalLayoutVersion] = useState(0);
+  const [restoredLayoutVersion, setRestoredLayoutVersion] = useState(0);
 
   const [filterState, setFilterState] = useState<GraphFilters>(DEFAULT_FILTERS);
   const [search, setSearch] = useState('');
@@ -96,6 +200,10 @@ export default function App() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [selectedLinkId, setSelectedLinkId] = useState<string | null>(null);
   const [removedNodeIds, setRemovedNodeIds] = useState<Set<string>>(() => new Set());
+  const [hiddenTxs, setHiddenTxs] = useState<Set<string>>(() => new Set());
+  const [groups, setGroups] = useState<GraphGroup[]>([]);
+  const [focus, setFocus] = useState<FocusSettings>(readFocus);
+  const [dimmed, setDimmed] = useState<Set<string>>(() => new Set());
   const [annotations, setAnnotations] = useState<Annotation[]>(readAnnotations);
   const [annotationTool, setAnnotationTool] = useState<AnnotationTool>('select');
   const [annotationStyle, setAnnotationStyle] = useState<AnnotationStyle>(DEFAULT_ANNOTATION_STYLE);
@@ -108,6 +216,19 @@ export default function App() {
   const [sheetLinkScope, setSheetLinkScope] = useState<string | null>(null);
   const [temporaryPanel, setTemporaryPanel] = useState<TemporaryPanel | null>(null);
 
+  const account = useAccount();
+  const monitor = useMonitor(chainsLoaded && chains.length > 0);
+  const [dialog, setDialog] = useState<Dialog | null>(null);
+  const [canvas, setCanvas] = useState<CanvasInfo | null>(null);
+  const [shareTarget, setShareTarget] = useState<CanvasInfo | null>(null);
+  const [savedPrint, setSavedPrint] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [publicView, setPublicView] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [monitorOpen, setMonitorOpen] = useState(false);
+  const loadStartedAt = useRef(0);
+
   const graph = useRef<GraphHandle | null>(null);
   const annotationUndo = useRef<Annotation[][]>([]);
   const annotationRedo = useRef<Annotation[][]>([]);
@@ -116,6 +237,40 @@ export default function App() {
   const requestId = useRef(0);
   const snapped = useRef(false);
   const buildingFrom = useRef(false);
+  const restored = useRef<Map<string, NodePosition> | null>(null);
+  const runAfterLoad = useRef(false);
+  const openedFromUrl = useRef(false);
+
+  const chain = useMemo(
+    () => chains.find((candidate) => candidate.chain_id === chainId) ?? null,
+    [chains, chainId],
+  );
+
+  const refreshChains = useCallback(async () => {
+    try {
+      const next = await fetchChains();
+      const ordered = [...next.chains].sort(chainOrder(next.default_chain));
+      setChains(ordered);
+      setDefaultChain(next.default_chain);
+      setChainId((current) => {
+        if (current !== null && ordered.some((candidate) => candidate.chain_id === current)) return current;
+        const stored = readStoredChain();
+        const picked = ordered.find((candidate) => candidate.chain_id === stored)
+          ?? ordered.find((candidate) => candidate.chain_id === next.default_chain)
+          ?? ordered[0];
+        setActiveChain(picked ?? null);
+        return picked?.chain_id ?? null;
+      });
+    } catch {
+      setChains([]);
+    } finally {
+      setChainsLoaded(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshChains();
+  }, [refreshChains]);
 
   const limits = useMemo(
     () => ({
@@ -124,6 +279,16 @@ export default function App() {
       maxBlocks: coverage?.limits.max_blocks ?? FALLBACK_LIMITS.maxBlocks,
     }),
     [coverage],
+  );
+
+  const blockLimits = useMemo<BlockLimits>(
+    () => ({ head: coverage?.chain_head ?? null, maxBlocks: limits.maxBlocks }),
+    [coverage?.chain_head, limits.maxBlocks],
+  );
+
+  const changeSelection = useCallback(
+    (next: BlockBounds) => setSelection(clampRange(next, blockLimits)),
+    [blockLimits],
   );
 
   useEffect(() => {
@@ -141,12 +306,18 @@ export default function App() {
   }, []);
 
   const filters = useMemo<GraphFilters>(() => ({ ...filterState, focus: '' }), [filterState]);
+  const hidden = useMemo(() => hiddenSets(removedNodeIds, hiddenTxs, groups), [groups, hiddenTxs, removedNodeIds]);
+  const visibleResponse = useMemo(() => (response ? withoutTxs(response, hidden.txs) : null), [hidden.txs, response]);
   const rawModel = useMemo(() => {
-    if (!response) return EMPTY_MODEL;
-    const previous = modelRef.current.nodes.length > 0 ? positionsOf(modelRef.current) : undefined;
-    return buildGraph(response, filters, previous);
-  }, [response, filters]);
-  const model = useMemo(() => withoutNodes(rawModel, removedNodeIds), [rawModel, removedNodeIds]);
+    if (!visibleResponse) return EMPTY_MODEL;
+    const previous = restored.current ?? (modelRef.current.nodes.length > 0 ? positionsOf(modelRef.current) : undefined);
+    return buildGraph(visibleResponse, filters, previous);
+  }, [visibleResponse, filters]);
+
+  useEffect(() => {
+    if (rawModel.nodes.length > 0) restored.current = null;
+  }, [rawModel]);
+  const model = useMemo(() => withoutNodes(rawModel, hidden.nodes), [rawModel, hidden.nodes]);
   const nodeLabels = useMemo(() => new Map(
     model.nodes.map((node) => [node.id, truncateCanvasLabel(getNodeDisplayName(node))] as const),
   ), [model]);
@@ -178,6 +349,40 @@ export default function App() {
     return matches;
   }, [search, model]);
 
+  const focusResult = useMemo(() => focusSets(model, focus, {
+    roots: new Set(roots.map((root) => root.address.toLowerCase())),
+    selected: selectedIds,
+    grouped: new Set(groups.filter((group) => !group.hidden).flatMap((group) => group.nodes)),
+    searchMatches,
+    dimmed,
+  }), [dimmed, focus, groups, model, roots, searchMatches, selectedIds]);
+  const fade = useMemo(
+    () => (focusResult ? { nodes: focusResult.nodes, links: focusResult.links, opacity: focus.opacity, blur: focus.blur } : null),
+    [focus.blur, focus.opacity, focusResult],
+  );
+  const changeFocus = useCallback((next: FocusSettings) => {
+    setFocus(next);
+    writeFocus(next);
+  }, []);
+
+  const dimNodes = useCallback((ids: string[], faded: boolean) => {
+    setDimmed((current) => {
+      const next = new Set(current);
+      for (const id of ids) {
+        if (faded) next.add(id);
+        else next.delete(id);
+      }
+      return next;
+    });
+    if (faded) {
+      setFocus((current) => {
+        const next = { ...current, enabled: true, scope: 'chosen' as const };
+        writeFocus(next);
+        return next;
+      });
+    }
+  }, []);
+
   const filterActivity = useMemo(
     () => getFilterActivity(filterState, search),
     [filterState, search],
@@ -196,8 +401,10 @@ export default function App() {
       setBuildFeedback(null);
       setTemporaryPanel(null);
       setLoading(true);
+      loadStartedAt.current = Date.now();
 
       const query = {
+        chain: chainId ?? undefined,
         roots: requestedRoots,
         from_block: selection.from,
         to_block: selection.to,
@@ -207,7 +414,6 @@ export default function App() {
         const payload = demo ? demoGraph(query) : await fetchGraph(query);
         if (requestId.current !== id) return null;
         setResponse(payload);
-        setRemovedNodeIds(new Set());
         return payload;
       } catch (cause) {
         if (requestId.current !== id) return null;
@@ -222,17 +428,18 @@ export default function App() {
         if (requestId.current === id) setLoading(false);
       }
     },
-    [demo, roots, selection],
+    [chainId, demo, roots, selection],
   );
 
   const refreshCoverage = useCallback(async () => {
+    const chainParam = chainId ?? undefined;
     try {
-      const next = await fetchCoverage();
+      const next = await fetchCoverage(chainParam);
       setCoverage(next);
       const from = next.lowest_block ?? Math.max((next.chain_head ?? INITIAL_SELECTION.to) - HEAD_WINDOW, 0);
       const to = next.highest_block ?? next.chain_head ?? INITIAL_SELECTION.to;
       try {
-        setHistogram(await fetchHistogram({ from_block: from, to_block: to, buckets: 80 }));
+        setHistogram(await fetchHistogram({ chain: chainParam, from_block: from, to_block: to, buckets: 80 }));
       } catch {
         setHistogram(null);
       }
@@ -242,11 +449,36 @@ export default function App() {
     } finally {
       setCoverageLoaded(true);
     }
-  }, []);
+  }, [chainId]);
 
   useEffect(() => {
-    void refreshCoverage();
-  }, [refreshCoverage]);
+    if (chainsLoaded) void refreshCoverage();
+  }, [chainsLoaded, refreshCoverage]);
+
+  const changeChain = useCallback((next: number) => {
+    const picked = chains.find((candidate) => candidate.chain_id === next);
+    if (!picked || picked.chain_id === chainId) return;
+    storeChain(picked.chain_id);
+    setActiveChain(picked);
+    requestId.current += 1;
+    snapped.current = false;
+    setChainId(picked.chain_id);
+    setResponse(null);
+    setPending(null);
+    setError(null);
+    setLoading(false);
+    setCoverage(null);
+    setHistogram(null);
+    setCoverageLoaded(false);
+    setPrimed(false);
+    setSelectedId(null);
+    setSelectedIds(new Set());
+    setSelectedLinkId(null);
+    setRemovedNodeIds(new Set());
+    setHiddenTxs(new Set());
+    setGroups([]);
+    setDimmed(new Set());
+  }, [chainId, chains]);
 
   useEffect(() => {
     if (!coverageLoaded || snapped.current) return;
@@ -255,6 +487,13 @@ export default function App() {
     if (next) setSelection(next);
     setPrimed(true);
   }, [coverageLoaded, coverage]);
+
+  useEffect(() => {
+    setSelection((current) => {
+      const next = clampRange(current, blockLimits);
+      return sameRange(current, next) ? current : next;
+    });
+  }, [blockLimits]);
 
   useEffect(() => {
     if (primed) void run();
@@ -348,6 +587,7 @@ export default function App() {
 
   const removeSelected = useCallback(() => {
     if (selectedIds.size === 0) return;
+    setIncrementalLayoutVersion((version) => version + 1);
     setRemovedNodeIds((current) => new Set([...current, ...selectedIds]));
     setSelectedIds(new Set());
     setSelectedId(null);
@@ -361,7 +601,8 @@ export default function App() {
         target instanceof HTMLTextAreaElement ||
         target?.isContentEditable;
       if (event.key === 'Escape') {
-        if (selectedIds.size > 0 || selectedLinkId) {
+        if (monitorOpen) setMonitorOpen(false);
+        else if (selectedIds.size > 0 || selectedLinkId) {
           setSelectedIds(new Set());
           setSelectedId(null);
           setSelectedLinkId(null);
@@ -413,7 +654,311 @@ export default function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [pending, removeSelected, selectedIds.size, selectedLinkId, temporaryPanel]);
+  }, [monitorOpen, pending, removeSelected, selectedIds.size, selectedLinkId, temporaryPanel]);
+
+  const canvasState = useCallback((): CanvasState => ({
+    chainId: chainId ?? defaultChain ?? 1,
+    roots,
+    selection,
+    filters: filterState,
+    labelMode,
+    showFlow,
+    removed: removedNodeIds,
+    hiddenTxs,
+    groups,
+    dimmed,
+    annotations,
+    positions: positionsOf(modelRef.current),
+    graph: response,
+  }), [annotations, chainId, defaultChain, dimmed, filterState, groups, hiddenTxs, labelMode, removedNodeIds, response, roots, selection, showFlow]);
+
+  const currentPrint = useMemo(() => fingerprint(canvasState()), [canvasState]);
+  const saveState: SaveState = saving ? 'saving' : saveError ? 'error' : canvas && savedPrint === currentPrint ? 'clean' : 'dirty';
+
+  const documentForSave = useCallback((): { document: CanvasDocument; trimmed: boolean } => {
+    const state = canvasState();
+    const shared = { ...state, graph: state.graph ? withoutUserLabels(state.graph) : null };
+    const full = toDocument(shared, true);
+    if (documentBytes(full) <= SNAPSHOT_BUDGET) return { document: full, trimmed: false };
+    return { document: toDocument(shared, false), trimmed: true };
+  }, [canvasState]);
+
+  const applyDocument = useCallback((document: CanvasDocument) => {
+    const picked = chains.find((candidate) => candidate.chain_id === document.chain_id);
+    if (!picked) throw new Error(`Chain ${document.chain_id} of this canvas is not served by this server.`);
+
+    requestId.current += 1;
+    snapped.current = true;
+    if (picked.chain_id !== chainId) {
+      storeChain(picked.chain_id);
+      setActiveChain(picked);
+      setChainId(picked.chain_id);
+      setCoverage(null);
+      setHistogram(null);
+      setCoverageLoaded(false);
+    }
+    setDemo(false);
+    setPending(null);
+    setError(null);
+    setLoading(false);
+    setSelectedId(null);
+    setSelectedIds(new Set());
+    setSelectedLinkId(null);
+    setRoots(document.roots);
+    setSelection(document.selection);
+    setFilterState(document.filters);
+    setLabelMode(document.label_mode);
+    setShowFlow(document.show_flow);
+    setRemovedNodeIds(new Set(document.removed));
+    setHiddenTxs(new Set(document.hidden_txs));
+    setGroups(document.groups);
+    setDimmed(new Set(document.dimmed));
+    annotationUndo.current = [];
+    annotationRedo.current = [];
+    annotationsRef.current = document.annotations;
+    setAnnotations(document.annotations);
+
+    const positions = restoredPositions(document);
+    modelRef.current = EMPTY_MODEL;
+    restored.current = positions.size > 0 ? positions : null;
+    if (document.graph) {
+      setResponse(document.graph);
+      setFrozen(positions.size > 0);
+      if (positions.size > 0) setRestoredLayoutVersion((version) => version + 1);
+    } else {
+      setResponse(null);
+      runAfterLoad.current = true;
+    }
+
+    return fingerprint({
+      chainId: document.chain_id,
+      roots: document.roots,
+      selection: document.selection,
+      filters: document.filters,
+      labelMode: document.label_mode,
+      showFlow: document.show_flow,
+      removed: new Set(document.removed),
+      hiddenTxs: new Set(document.hidden_txs),
+      groups: document.groups,
+      dimmed: new Set(document.dimmed),
+      annotations: document.annotations,
+      positions,
+      graph: document.graph,
+    });
+  }, [chainId, chains]);
+
+  useEffect(() => {
+    if (!runAfterLoad.current) return;
+    runAfterLoad.current = false;
+    void run();
+  }, [run]);
+
+  const refreshUserLabels = useCallback(async (addresses: string[], chain: number | null = chainId) => {
+    if (!account.me || chain === null || addresses.length === 0) return;
+    const fresh = new Map<string, UserLabel[]>(addresses.map((address) => [address.toLowerCase(), []]));
+    for (let start = 0; start < addresses.length; start += LABEL_CHUNK) {
+      const chunk = addresses.slice(start, start + LABEL_CHUNK);
+      for (const label of await labelApi.list(chain, chunk)) {
+        fresh.get(label.address.toLowerCase())?.push(label);
+      }
+    }
+    setResponse((current) => (current ? withUserLabels(current, fresh) : current));
+  }, [account.me, chainId]);
+
+  const openCanvas = useCallback(async (id: string) => {
+    try {
+      const opened = await canvasApi.open(id);
+      const document = parseDocument(opened.document);
+      const print = applyDocument(document);
+      if (document.graph) {
+        void refreshUserLabels(document.graph.nodes.map((node) => node.address), document.chain_id).catch(() => undefined);
+      }
+      setCanvas(opened.canvas);
+      setSavedPrint(print);
+      setSaveError(null);
+      setPublicView(false);
+      setDialog(null);
+      setUrlParam('canvas', opened.canvas.id);
+    } catch (cause) {
+      setNotice(`Could not open the canvas: ${errorText(cause)}`);
+    }
+  }, [applyDocument, refreshUserLabels]);
+
+  const save = useCallback(async () => {
+    if (publicView) return;
+    if (!account.me) {
+      setDialog('auth');
+      return;
+    }
+    if (!canvas || canvas.access === 'view') {
+      setSaveError(null);
+      setDialog('save');
+      return;
+    }
+
+    const { document, trimmed } = documentForSave();
+    const print = currentPrint;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      let saved: CanvasInfo;
+      try {
+        saved = await canvasApi.update(canvas.id, canvas.version, { document, chain_id: document.chain_id });
+      } catch (cause) {
+        if (!(cause instanceof ApiError) || cause.status !== 409) throw cause;
+        if (!window.confirm(`${cause.message}\n\nOverwrite it with your version?`)) throw cause;
+        const latest = await canvasApi.open(canvas.id);
+        saved = await canvasApi.update(canvas.id, latest.canvas.version, { document, chain_id: document.chain_id });
+      }
+      setCanvas(saved);
+      setSavedPrint(print);
+      if (trimmed) setNotice('The graph is too big to store whole: the canvas keeps roots, range, layout and drawings, and rebuilds the graph on open.');
+    } catch (cause) {
+      setSaveError(errorText(cause));
+      setNotice(`Not saved: ${errorText(cause)}`);
+    } finally {
+      setSaving(false);
+    }
+  }, [account.me, canvas, currentPrint, documentForSave, publicView]);
+
+  const saveNew = useCallback(async (title: string, owner: OwnerRequest) => {
+    const { document, trimmed } = documentForSave();
+    const print = currentPrint;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const created = await canvasApi.create(title, document.chain_id, owner, document);
+      setCanvas(created);
+      setSavedPrint(print);
+      setDialog(null);
+      setUrlParam('canvas', created.id);
+      if (trimmed) setNotice('The graph is too big to store whole: the canvas keeps roots, range, layout and drawings, and rebuilds the graph on open.');
+    } catch (cause) {
+      setSaveError(errorText(cause));
+    } finally {
+      setSaving(false);
+    }
+  }, [currentPrint, documentForSave]);
+
+  const detachCanvas = useCallback(() => {
+    setCanvas(null);
+    setSavedPrint(null);
+    setSaveError(null);
+    setPublicView(false);
+    setUrlParam('canvas', null);
+  }, []);
+
+  const signedIn = useCallback((me: Me) => {
+    account.setMe(me);
+    setDialog(null);
+    if (response && !demo) {
+      void refreshUserLabels(response.nodes.map((node) => node.address)).catch(() => undefined);
+    }
+  }, [account, demo, refreshUserLabels, response]);
+
+  const signedOut = useCallback(() => {
+    account.setMe(null);
+    setDialog(null);
+    detachCanvas();
+    setResponse((current) => (current ? withoutUserLabels(current) : current));
+  }, [account, detachCanvas]);
+
+  const accountAction = useCallback((action: AccountAction) => {
+    if (action === 'logout') {
+      void account.logout().finally(signedOut);
+      return;
+    }
+    setDialog(action);
+  }, [account, signedOut]);
+
+  useEffect(() => {
+    if (openedFromUrl.current || !chainsLoaded || !account.ready) return;
+    const token = urlParam('share');
+    const id = urlParam('canvas');
+    if (!token && !id) return;
+    openedFromUrl.current = true;
+    if (token) {
+      void canvasApi.openPublic(token)
+        .then((opened) => {
+          applyDocument(parseDocument(opened.document));
+          setCanvas(null);
+          setPublicView(true);
+          setNotice(`Read-only copy of “${opened.title}”.`);
+        })
+        .catch((cause) => setNotice(`This shared link does not open: ${errorText(cause)}`));
+    } else if (id && account.me) {
+      void openCanvas(id);
+    } else if (id) {
+      setDialog('auth');
+      openedFromUrl.current = false;
+    }
+  }, [account.me, account.ready, applyDocument, chainsLoaded, openCanvas]);
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+        event.preventDefault();
+        void save();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [save]);
+
+  useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(() => setNotice(null), 6000);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
+
+  const activeScan = loading
+    ? monitor.scans.find((job) => job.running && job.chain_id === chainId && job.started_ms >= loadStartedAt.current - 2000) ?? null
+    : null;
+
+  const changeLayoutGently = useCallback(() => setIncrementalLayoutVersion((version) => version + 1), []);
+
+  const hideNodes = useCallback((ids: string[]) => {
+    changeLayoutGently();
+    setRemovedNodeIds((current) => new Set([...current, ...ids]));
+    setSelectedId(null);
+    setSelectedIds(new Set());
+  }, [changeLayoutGently]);
+
+  const hideTxs = useCallback((hashes: string[]) => {
+    changeLayoutGently();
+    setHiddenTxs((current) => new Set([...current, ...hashes.map((hash) => hash.toLowerCase())]));
+    setSelectedLinkId(null);
+  }, [changeLayoutGently]);
+
+  const changeGroups = useCallback((next: GraphGroup[]) => {
+    setGroups((current) => {
+      const visibilityChanged = current.length !== next.length
+        || current.some((group, index) => group.hidden !== next[index]?.hidden || group.id !== next[index]?.id);
+      if (visibilityChanged) changeLayoutGently();
+      return next;
+    });
+  }, [changeLayoutGently]);
+
+  const groupItems = useCallback((target: string | { name: string }, nodes: string[], txs: string[]) => {
+    setGroups((current) => addToGroup(current, target, nodes, txs.map((hash) => hash.toLowerCase())));
+    setNotice(typeof target === 'string' ? 'Added to the group.' : `Group “${target.name.trim() || 'new'}” created.`);
+  }, []);
+
+  const exportJson = useCallback(() => {
+    const data = graphExport({
+      model,
+      chain,
+      roots,
+      selection,
+      groups,
+      hiddenNodes: removedNodeIds,
+      hiddenTxs,
+      allEdges: response?.edges ?? [],
+    });
+    const name = (canvas?.title ?? `ledgerscope-${chain?.slug ?? 'graph'}-${selection.from}-${selection.to}`)
+      .replace(/[^\w.-]+/g, '-');
+    downloadJson(data, `${name}.json`);
+  }, [canvas?.title, chain, groups, hiddenTxs, model, removedNodeIds, response, roots, selection]);
 
   const selectedNode = selectedId ? (model.byId.get(selectedId) ?? null) : null;
   const selectedLink = selectedLinkId ? (model.links.find((link) => link.id === selectedLinkId) ?? null) : null;
@@ -422,12 +967,18 @@ export default function App() {
   return (
     <div className="flex h-full flex-col overflow-hidden">
       <TopBar
+        chains={chains}
+        chain={chain}
+        defaultChain={defaultChain}
+        onChainChange={changeChain}
+        onChainsRefresh={() => void refreshChains()}
         roots={roots}
         maxRoots={limits.maxRoots}
+        maxBlocks={limits.maxBlocks}
         selection={selection}
         coverage={coverage}
         histogram={histogram}
-        onSelectionChange={setSelection}
+        onSelectionChange={changeSelection}
         onSubmit={submitFromTopBar}
         loading={loading || buildingFromId !== null}
         demo={demo}
@@ -436,6 +987,37 @@ export default function App() {
         onAdvancedOpenChange={(open) => setTemporaryPanel(open ? 'advanced' : null)}
         theme={theme}
         onThemeChange={setTheme}
+        canvasSlot={<>
+          {chains.length > 0 && (
+            <Button
+              variant="ghost"
+              className="h-8 gap-1.5 px-2.5 text-xs"
+              aria-pressed={monitorOpen}
+              title={HEALTH_TITLE[monitor.health]}
+              onClick={() => setMonitorOpen(!monitorOpen)}
+            >
+              <span className={`size-1.5 rounded-full ${HEALTH_DOT[monitor.health]}`} aria-hidden="true" />
+              RPC
+              {monitor.scans.some((job) => job.running) && <span className="text-[10px] text-accent">scanning</span>}
+            </Button>
+          )}
+          {account.config?.enabled && (account.me || publicView) ? (
+          <CanvasControls
+            canvas={canvas}
+            saveState={saveState}
+            publicView={publicView}
+            onSave={() => void save()}
+            onShare={() => {
+              setShareTarget(canvas);
+              setDialog('share');
+            }}
+            onBrowse={() => setDialog('canvases')}
+          />
+          ) : null}
+        </>}
+        accountSlot={account.config?.enabled ? (
+          <AccountMenu me={account.me} onSignIn={() => setDialog('auth')} onAction={accountAction} />
+        ) : null}
       />
 
       <main
@@ -447,7 +1029,7 @@ export default function App() {
             '--inspector-w': selectedNode || selectedIds.size > 1 || selectedLink ? '320px' : '0px',
             '--left-flyout-top': demo ? '68px' : '12px',
             '--filter-indicator-left':
-              temporaryPanel !== null && temporaryPanel !== 'advanced' ? '332px' : '60px',
+              temporaryPanel === 'groups' ? '372px' : temporaryPanel !== null && temporaryPanel !== 'advanced' ? '332px' : '60px',
           } as CSSProperties
         }
       >
@@ -468,6 +1050,9 @@ export default function App() {
           showFlow={showFlow}
           frozen={frozen}
           incrementalLayoutVersion={incrementalLayoutVersion}
+          restoredLayoutVersion={restoredLayoutVersion}
+          groups={groups}
+          fade={fade}
           onSelect={select}
           onSelectLink={selectLink}
           onSelectMany={selectMany}
@@ -501,6 +1086,35 @@ export default function App() {
           onCenter={(id) => graph.current?.centerOn(id)}
           labelMode={labelMode}
           onLabelModeChange={setLabelMode}
+          groupsBadge={groups.length + (removedNodeIds.size > 0 || hiddenTxs.size > 0 ? 1 : 0)}
+          groupsPanel={(
+            <GroupsPanel
+              groups={groups}
+              edges={response?.edges ?? []}
+              selection={[...selectedIds]}
+              hiddenNodes={removedNodeIds}
+              hiddenTxs={hiddenTxs}
+              onGroupsChange={changeGroups}
+              onCreateFromSelection={(name) => groupItems({ name }, [...selectedIds], [])}
+              onSelectMembers={(ids) => selectMany(new Set(ids.filter((id) => model.byId.has(id))))}
+              onShowNode={(id) => {
+                changeLayoutGently();
+                setRemovedNodeIds((current) => {
+                  const next = new Set(current);
+                  next.delete(id);
+                  return next;
+                });
+              }}
+              onShowAllNodes={() => {
+                changeLayoutGently();
+                setRemovedNodeIds(new Set());
+              }}
+              onShowAllTxs={() => {
+                changeLayoutGently();
+                setHiddenTxs(new Set());
+              }}
+            />
+          )}
         />
 
         {demo && (
@@ -543,6 +1157,21 @@ export default function App() {
           onLabelModeChange={setLabelMode}
           onUnpin={() => graph.current?.unpinAll()}
           onExport={() => graph.current?.exportPng('ledgerscope.png')}
+          onExportJson={exportJson}
+          focusControl={(
+            <FocusControl
+              settings={focus}
+              onChange={changeFocus}
+              bright={focusResult?.nodes.size ?? null}
+              total={model.nodes.length}
+              disabled={!hasGraph}
+              dimmedCount={dimmed.size}
+              selectedCount={selectedIds.size}
+              onDimSelected={() => dimNodes([...selectedIds], true)}
+              onUndimSelected={() => dimNodes([...selectedIds], false)}
+              onClearDimmed={() => setDimmed(new Set())}
+            />
+          )}
           annotationTool={annotationTool}
           onAnnotationToolChange={setAnnotationTool}
           annotationStyle={annotationStyle}
@@ -579,16 +1208,52 @@ export default function App() {
               setSheetOpen(true);
             }}
             onClose={() => setSelectedId(null)}
+            actionsSlot={(
+              <div className="mt-2 grid gap-1.5 border-t border-hairline pt-2">
+                <GroupPicker groups={groups} onPick={(target) => groupItems(target, [selectedNode.id], [])} />
+                <div className="grid grid-cols-2 gap-1.5">
+                  <Button variant="ghost" className="px-2" onClick={() => dimNodes([selectedNode.id], !dimmed.has(selectedNode.id))}>
+                    <IconFocus size={14} /> {dimmed.has(selectedNode.id) ? 'Restore' : 'Fade'}
+                  </Button>
+                  <Button variant="ghost" className="px-2" onClick={() => hideNodes([selectedNode.id])}>
+                    <IconEyeOff size={14} /> Hide
+                  </Button>
+                </div>
+              </div>
+            )}
+            labelsSlot={account.config?.enabled && !demo ? (
+              <NodeLabels
+                me={account.me}
+                chainId={chainId}
+                address={selectedNode.id}
+                readOnly={publicView}
+                onSignIn={() => setDialog('auth')}
+                onChanged={(address, labels) => setResponse((current) => (
+                  current ? withUserLabels(current, new Map([[address.toLowerCase(), labels]])) : current
+                ))}
+              />
+            ) : null}
           />
         )}
 
         {selectedIds.size > 1 && (
-          <MultiSelectionInspector ids={selectedIds} model={model} onRemove={removeSelected} onClear={() => select(null)} />
+          <MultiSelectionInspector
+            ids={selectedIds}
+            model={model}
+            onRemove={removeSelected}
+            onClear={() => select(null)}
+            groups={groups}
+            onGroup={(target) => groupItems(target, [...selectedIds], [])}
+            onFade={() => dimNodes([...selectedIds], true)}
+          />
         )}
 
         {selectedLink && (
           <EdgeInspector
             link={selectedLink}
+            groups={groups}
+            onGroup={(target) => groupItems(target, [], selectedLink.txs.map((tx) => tx.tx_hash))}
+            onHide={() => hideTxs(selectedLink.txs.map((tx) => tx.tx_hash))}
             onClose={() => selectLink(null)}
             onShowTransactions={() => {
               setSheetScope(null);
@@ -611,6 +1276,9 @@ export default function App() {
             }}
             onHeightChange={setSheetHeight}
             onScopeClear={() => { setSheetScope(null); setSheetLinkScope(null); }}
+            groups={groups}
+            onHideTxs={hideTxs}
+            onGroupTxs={(target, hashes) => groupItems(target, [], hashes)}
             onSelect={(id) => {
               setTemporaryPanel(null);
               setSelectedId(id);
@@ -629,12 +1297,16 @@ export default function App() {
 
         {loading && (
           <div className="pointer-events-none absolute bottom-[var(--sheet-h)] left-[var(--investigation-w)] right-[var(--inspector-w)] top-0 z-11 grid place-content-center justify-items-center p-6 text-center">
-            <Panel className="pointer-events-auto grid max-w-[440px] justify-items-center gap-2 px-6 py-[22px]">
+            <Panel className="pointer-events-auto grid w-[min(440px,calc(100vw-48px))] grid-cols-[minmax(0,1fr)] justify-items-center gap-2 px-6 py-[22px]">
               <div className="size-[22px] animate-spin-exact rounded-full border-2 border-hairline-strong border-t-accent" aria-hidden="true" />
-              <h2 className="m-0 text-base font-semibold">Building investigation graph</h2>
-              <p className="m-0 text-[13px] text-text-secondary">
-                Stored blocks answer immediately. Missing live blocks can take longer over JSON-RPC.
-              </p>
+              <h2 className="m-0 text-base font-semibold">{activeScan ? 'Fetching blocks over RPC' : 'Building investigation graph'}</h2>
+              {activeScan ? (
+                <ScanProgress job={activeScan} calls={monitor.calls} onOpenMonitor={() => setMonitorOpen(true)} />
+              ) : (
+                <p className="m-0 text-[13px] text-text-secondary">
+                  Stored blocks answer immediately. Missing live blocks can take longer over JSON-RPC.
+                </p>
+              )}
             </Panel>
           </div>
         )}
@@ -664,7 +1336,85 @@ export default function App() {
             </div>
           </div>
         )}
+        {monitorOpen && (
+          <MonitorPanel monitor={monitor} chains={chains} chainId={chainId} onClose={() => setMonitorOpen(false)} />
+        )}
+
+        {notice && (
+          <Panel className="absolute bottom-[calc(var(--sheet-h)+12px)] left-1/2 z-40 flex max-w-[560px] -translate-x-1/2 items-center gap-3 px-4 py-2.5 text-xs text-text-secondary shadow-pop" role="status">
+            <span>{notice}</span>
+            <Button variant="ghost" className="h-7 px-2" onClick={() => setNotice(null)}>Dismiss</Button>
+          </Panel>
+        )}
       </main>
+
+      {dialog === 'auth' && account.config && (
+        <AuthDialog registrationOpen={account.config.registration_open} onSignedIn={signedIn} onClose={() => setDialog(null)} />
+      )}
+      {dialog === 'profile' && account.me && (
+        <ProfileDialog me={account.me} onChanged={account.setMe} onSignedOutEverywhere={signedOut} onClose={() => setDialog(null)} />
+      )}
+      {dialog === 'teams' && account.me && (
+        <TeamsDialog me={account.me} onTeamsChanged={account.refresh} onClose={() => setDialog(null)} />
+      )}
+      {dialog === 'canvases' && account.me && (
+        <CanvasesDialog
+          me={account.me}
+          chains={chains}
+          currentId={canvas?.id ?? null}
+          onOpen={(picked) => {
+            if (canvas && saveState === 'dirty' && picked.id !== canvas.id && !window.confirm('Your canvas has unsaved changes. Open another one anyway?')) return;
+            void openCanvas(picked.id);
+          }}
+          onShare={(picked) => {
+            setShareTarget(picked);
+            setDialog('share');
+          }}
+          onDeleted={(id) => {
+            if (canvas?.id === id) detachCanvas();
+          }}
+          onSaveNew={() => {
+            setSaveError(null);
+            setDialog('save');
+          }}
+          onDetach={canvas ? () => {
+            detachCanvas();
+            setDialog(null);
+          } : undefined}
+          onClose={() => setDialog(null)}
+        />
+      )}
+      {dialog === 'save' && account.me && (
+        <SaveCanvasDialog
+          me={account.me}
+          initialTitle={canvas ? `${canvas.title} (copy)` : roots[0] ? `Investigation ${roots[0].address.slice(0, 10)}` : 'Investigation'}
+          busy={saving}
+          error={saveError}
+          onSave={(title, owner) => void saveNew(title, owner)}
+          onClose={() => setDialog(null)}
+        />
+      )}
+      {dialog === 'share' && shareTarget && (
+        <ShareDialog canvas={shareTarget} onClose={() => setDialog(null)} />
+      )}
+      {dialog === 'labels' && account.me && (
+        <LabelsDialog
+          chains={chains}
+          chainId={chainId}
+          onFocusAddress={(address) => {
+            const id = address.toLowerCase();
+            if (model.byId.has(id)) {
+              setDialog(null);
+              setSelectedId(id);
+              graph.current?.centerOn(id);
+            } else {
+              setNotice('This address is not on the current graph.');
+            }
+          }}
+          onChanged={(address) => void refreshUserLabels([address]).catch(() => undefined)}
+          onClose={() => setDialog(null)}
+        />
+      )}
     </div>
   );
 }

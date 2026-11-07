@@ -1,6 +1,6 @@
 use alloy_primitives::{TxHash, U256};
 
-use crate::eth::{ActorHint, EthAddress, EthReceipt, EthTx};
+use crate::eth::{ActorHint, EthAddress, EthReceipt, EthTx, IssuedAsset};
 
 #[derive(Clone, Debug)]
 pub enum ContractAction {
@@ -40,7 +40,7 @@ impl TryFrom<EthTx> for NativeTransfer {
     type Error = EthTx;
 
     fn try_from(tx: EthTx) -> Result<Self, Self::Error> {
-        if tx.to.is_none() || !tx.data.is_empty() {
+        if tx.to.is_none() || !tx.data.is_empty() || tx.asset.is_some() || tx.action.is_some() {
             return Err(tx);
         }
         Ok(Self {
@@ -52,9 +52,59 @@ impl TryFrom<EthTx> for NativeTransfer {
 }
 
 #[derive(Clone, Debug)]
+pub struct AssetTransfer {
+    asset: IssuedAsset,
+    from: EthAddress,
+    to: EthAddress,
+
+    amount: U256,
+}
+
+impl AssetTransfer {
+    pub fn asset(&self) -> &IssuedAsset {
+        &self.asset
+    }
+
+    pub fn from(&self) -> &EthAddress {
+        &self.from
+    }
+
+    pub fn to(&self) -> &EthAddress {
+        &self.to
+    }
+
+    pub fn amount(&self) -> U256 {
+        self.amount
+    }
+}
+
+impl TryFrom<EthTx> for AssetTransfer {
+    type Error = EthTx;
+
+    fn try_from(tx: EthTx) -> Result<Self, Self::Error> {
+        let (Some(asset), Some(to)) = (tx.asset.clone(), tx.to) else {
+            return Err(tx);
+        };
+        Ok(Self {
+            asset,
+            from: tx.from,
+            to,
+            amount: tx.amount,
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
 pub enum InteractionKind {
     Protocol,
     NativeTransfer(NativeTransfer),
+    AssetTransfer(AssetTransfer),
+    SystemAction {
+        action: String,
+        from: EthAddress,
+        to: Option<EthAddress>,
+        amount: U256,
+    },
     ContractDeployment {
         contract_address: EthAddress,
         deployer: EthAddress,
@@ -71,6 +121,8 @@ impl InteractionKind {
         match self {
             InteractionKind::Protocol => None,
             InteractionKind::NativeTransfer(NativeTransfer { from, to, .. }) => Some((from, to)),
+            InteractionKind::AssetTransfer(AssetTransfer { from, to, .. }) => Some((from, to)),
+            InteractionKind::SystemAction { from, to, .. } => to.as_ref().map(|to| (from, to)),
             InteractionKind::ContractDeployment {
                 contract_address,
                 deployer,
@@ -89,9 +141,9 @@ impl InteractionKind {
     pub fn actor_hints(&self) -> Vec<(EthAddress, ActorHint)> {
         match self {
             InteractionKind::Protocol => Vec::new(),
-            InteractionKind::NativeTransfer(NativeTransfer { from, .. }) => {
-                vec![(*from, ActorHint::Eoa)]
-            }
+            InteractionKind::NativeTransfer(NativeTransfer { from, .. })
+            | InteractionKind::AssetTransfer(AssetTransfer { from, .. })
+            | InteractionKind::SystemAction { from, .. } => vec![(*from, ActorHint::Eoa)],
             InteractionKind::ContractDeployment {
                 contract_address,
                 deployer,

@@ -117,6 +117,25 @@ async fn an_empty_range_is_still_remembered() {
 }
 
 #[tokio::test]
+async fn chains_keep_their_blocks_apart() {
+    let Some(mainnet) = repository("ledgerscope_smoke_chains").await else {
+        return;
+    };
+    let arbitrum = mainnet.for_chain(42161);
+
+    mainnet.save(900, 900, &[mined(900, 7)]).await.unwrap();
+
+    assert!(arbitrum.indexed_blocks(900, 900).await.unwrap().is_empty());
+    assert!(arbitrum.txs(900, 900).await.unwrap().is_empty());
+
+    arbitrum.save(900, 900, &[]).await.unwrap();
+
+    assert_eq!(arbitrum.indexed_blocks(900, 900).await.unwrap(), vec![900]);
+    assert!(arbitrum.txs(900, 900).await.unwrap().is_empty());
+    assert_eq!(mainnet.txs(900, 900).await.unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn saving_the_same_block_twice_keeps_one_tx() {
     let Some(repository) = repository("ledgerscope_smoke_twice").await else {
         return;

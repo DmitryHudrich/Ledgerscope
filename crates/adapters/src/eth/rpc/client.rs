@@ -1,14 +1,16 @@
-use std::{collections::HashMap, io};
+use std::{collections::HashMap, io, sync::Arc};
 
+use crate::eth::rpc::{parse, pool::RpcPool};
 use alloy::{
     eips::{BlockId, BlockNumberOrTag},
-    network::TransactionBuilder,
+    network::{AnyNetwork, AnyRpcBlock, AnyTransactionReceipt, TransactionBuilder},
     providers::{Provider, RootProvider},
     rpc::{
         client::{BatchRequest, ClientBuilder},
         json_rpc::{RpcRecv, RpcSend},
-        types::{Block, TransactionInput, TransactionReceipt, TransactionRequest},
+        types::{TransactionInput, TransactionRequest},
     },
+    serde::WithOtherFields,
 };
 use alloy_primitives::{Bytes, TxHash};
 use application::{
@@ -16,29 +18,23 @@ use application::{
     eth::ports::{EthRpcSource, EthTxSource},
 };
 use domain::eth::{BlockRef, EthAddress, EthReceipt, MinedTx};
-use reqwest::{Client, Url};
-
-use crate::eth::rpc::{client::rate_limit::RateLimitLayer, parse};
-
-mod rate_limit;
+use futures::{StreamExt, TryStreamExt};
 
 pub const DEFAULT_RATE_LIMIT_RPS: u32 = 15;
 
+const BATCH_SIZE: usize = 3;
+const CHUNKS_IN_FLIGHT: usize = 4;
+
 pub struct RpcTxSource {
-    provider: RootProvider,
-    batch_size: usize,
+    provider: RootProvider<AnyNetwork>,
 }
 
 impl RpcTxSource {
-    pub fn new(http_client: Client, rpc_url: Url, rps: u32) -> Self {
-        let rps = rps.max(1);
-        let client = ClientBuilder::default()
-            .layer(RateLimitLayer::new(rps))
-            .http_with_client(http_client, rpc_url);
+    pub fn new(pool: Arc<RpcPool>) -> Self {
+        let client = ClientBuilder::default().transport(pool.transport(), false);
 
         Self {
             provider: RootProvider::new(client),
-            batch_size: rps as usize,
         }
     }
 
@@ -54,40 +50,60 @@ impl RpcTxSource {
         Resp: RpcRecv,
     {
         let blocks: Vec<u64> = (from_block..=to_block).collect();
-        let mut answers = Vec::with_capacity(blocks.len());
+        let mut chunks = Vec::new();
+        for chunk in blocks.chunks(BATCH_SIZE) {
+            chunks.push(self.batch_chunk(method, chunk, &params));
+        }
 
-        for chunk in blocks.chunks(self.batch_size) {
-            let mut batch = BatchRequest::new(self.provider.client());
-            let mut waiters = Vec::with_capacity(chunk.len());
+        let answers: Vec<Vec<Resp>> = futures::stream::iter(chunks)
+            .buffered(CHUNKS_IN_FLIGHT)
+            .try_collect()
+            .await?;
 
-            for &block in chunk {
-                let waiter = batch
-                    .add_call::<Params, Option<Resp>>(method, &params(block))
-                    .map_err(|error| {
-                        io::Error::other(format!("{method} for block {block}: {error}"))
-                    })?;
+        Ok(answers.into_iter().flatten().collect())
+    }
 
-                waiters.push(waiter);
-            }
+    async fn batch_chunk<Params, Resp>(
+        &self,
+        method: &'static str,
+        chunk: &[u64],
+        params: &impl Fn(u64) -> Params,
+    ) -> Result<Vec<Resp>, io::Error>
+    where
+        Params: RpcSend,
+        Resp: RpcRecv,
+    {
+        let mut batch = BatchRequest::new(self.provider.client());
+        let mut waiters = Vec::with_capacity(chunk.len());
 
-            batch
-                .send()
-                .await
-                .map_err(|error| io::Error::other(format!("{method} failed: {error}")))?;
+        for &block in chunk {
+            let waiter = batch
+                .add_call::<Params, Option<Resp>>(method, &params(block))
+                .map_err(|error| {
+                    io::Error::other(format!("{method} for block {block}: {error}"))
+                })?;
 
-            for (&block, waiter) in chunk.iter().zip(waiters) {
-                match waiter.await {
-                    Ok(Some(answer)) => answers.push(answer),
-                    Ok(None) => {
-                        return Err(io::Error::other(format!(
-                            "{method} knows nothing about block {block}"
-                        )));
-                    }
-                    Err(error) => {
-                        return Err(io::Error::other(format!(
-                            "{method} for block {block}: {error}"
-                        )));
-                    }
+            waiters.push(waiter);
+        }
+
+        batch
+            .send()
+            .await
+            .map_err(|error| io::Error::other(format!("{method} failed: {error}")))?;
+
+        let mut answers = Vec::with_capacity(chunk.len());
+        for (&block, waiter) in chunk.iter().zip(waiters) {
+            match waiter.await {
+                Ok(Some(answer)) => answers.push(answer),
+                Ok(None) => {
+                    return Err(io::Error::other(format!(
+                        "{method} knows nothing about block {block}"
+                    )));
+                }
+                Err(error) => {
+                    return Err(io::Error::other(format!(
+                        "{method} for block {block}: {error}"
+                    )));
                 }
             }
         }
@@ -96,14 +112,14 @@ impl RpcTxSource {
     }
 
     async fn mined_txs(&self, from_block: u64, to_block: u64) -> Result<Vec<MinedTx>, io::Error> {
-        let blocks = self.batch::<_, Block>(
+        let blocks = self.batch::<_, AnyRpcBlock>(
             "eth_getBlockByNumber",
             from_block,
             to_block,
             |block_number| (BlockNumberOrTag::Number(block_number), true),
         );
 
-        let receipts = self.batch::<_, Vec<TransactionReceipt>>(
+        let receipts = self.batch::<_, Vec<AnyTransactionReceipt>>(
             "eth_getBlockReceipts",
             from_block,
             to_block,
@@ -158,7 +174,7 @@ impl EthRpcSource for RpcTxSource {
             .input(TransactionInput::new(Bytes::copy_from_slice(data)));
 
         self.provider
-            .call(request)
+            .call(WithOtherFields::new(request))
             .block(block_id(block))
             .await
             .map_err(|error| io::Error::other(format!("eth_call failed: {error}")))

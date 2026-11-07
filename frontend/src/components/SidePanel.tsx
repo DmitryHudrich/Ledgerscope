@@ -14,6 +14,7 @@ import {
 import {
   IconClose,
   IconFilter,
+  IconGroups,
   IconLegend,
   IconOverview,
   IconSearch,
@@ -34,8 +35,9 @@ import {
   Tooltip,
   cx,
 } from './ui';
+import { displayAddress, nativeSymbol } from '../lib/chain';
 
-export type WorkspacePanel = 'addresses' | 'filters' | 'legend' | 'stats';
+export type WorkspacePanel = 'addresses' | 'filters' | 'legend' | 'stats' | 'groups';
 
 interface Props {
   model: GraphModel;
@@ -56,6 +58,8 @@ interface Props {
   onCenter: (id: string) => void;
   labelMode: LabelMode;
   onLabelModeChange: (next: LabelMode) => void;
+  groupsPanel?: ReactNode;
+  groupsBadge?: number;
 }
 
 export function sliderToEth(position: number): number {
@@ -87,6 +91,8 @@ export function InvestigationPanel({
   onCenter,
   labelMode,
   onLabelModeChange,
+  groupsPanel,
+  groupsBadge = 0,
 }: Props) {
   const counts = { eoa: 0, contract: 0, focus: 0 };
   for (const node of model.nodes) counts[node.kind] += 1;
@@ -95,7 +101,7 @@ export function InvestigationPanel({
     onPanelChange(activePanel === next ? null : next);
 
   const title = activePanel
-    ? ({ addresses: 'Addresses', filters: 'Filters', legend: 'Legend', stats: 'Graph stats' } as const)[activePanel]
+    ? ({ addresses: 'Addresses', filters: 'Filters', legend: 'Legend', stats: 'Graph stats', groups: 'Groups & hidden' } as const)[activePanel]
     : '';
 
   return (
@@ -120,13 +126,18 @@ export function InvestigationPanel({
           <TabButton label="Stats" active={activePanel === 'stats'} onClick={() => changePanel('stats')}>
             <IconOverview />
           </TabButton>
+          {groupsPanel && (
+            <TabButton label="Groups & hidden" active={activePanel === 'groups'} badge={groupsBadge} onClick={() => changePanel('groups')}>
+              <IconGroups />
+            </TabButton>
+          )}
         </nav>
       </aside>
 
       {activePanel && (
         <Panel
           as="aside"
-          className="absolute bottom-[calc(var(--sheet-h)+12px)] left-[60px] top-[var(--left-flyout-top)] z-15 flex w-[260px] animate-drawer-in flex-col overflow-hidden shadow-pop transition-[top] duration-150"
+          className={cx("absolute bottom-[calc(var(--sheet-h)+12px)] left-[60px] top-[var(--left-flyout-top)] z-15 flex animate-drawer-in flex-col overflow-hidden shadow-pop transition-[top] duration-150", activePanel === "groups" ? "w-[300px]" : "w-[260px]")}
           aria-label={`${title} flyout`}
           data-left-flyout
         >
@@ -171,6 +182,7 @@ export function InvestigationPanel({
               />
             )}
             {activePanel === 'stats' && <StatsPanel model={model} />}
+            {activePanel === 'groups' && groupsPanel}
           </div>
         </Panel>
       )}
@@ -238,7 +250,7 @@ function AddressesPanel({ model, roots, maxDepth, onSelect, onCenter, onRemove, 
                 <button
                   type="button"
                   className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-ui-sm border-0 bg-transparent px-1 py-1.5 text-left focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-default disabled:opacity-55"
-                  title={node ? root.address : `${root.address} — no activity in the current graph`}
+                  title={node ? displayAddress(root.address) : `${displayAddress(root.address)} — no activity in the current graph`}
                   disabled={!node}
                   onClick={() => { onSelect(root.address); onCenter(root.address); }}
                 >
@@ -283,13 +295,13 @@ function FiltersPanel({ filters, onFiltersChange, search, onSearchChange, matchC
       </div>
       <div className="mb-5 grid gap-2">
         <div className="flex items-baseline justify-between text-xs text-text-secondary">
-          <label htmlFor="f-min">Minimum ETH flow</label>
-          <span className="tabular-nums text-text-primary">{filters.minEth <= 0 ? 'Any' : `${formatCompact(filters.minEth)} ETH`}</span>
+          <label htmlFor="f-min">Minimum {nativeSymbol()} flow</label>
+          <span className="tabular-nums text-text-primary">{filters.minEth <= 0 ? 'Any' : `${formatCompact(filters.minEth)} ${nativeSymbol()}`}</span>
         </div>
         <RangeInput id="f-min" min={0} max={100} step={1} value={ethToSlider(filters.minEth)} onChange={(event) => patch({ minEth: sliderToEth(Number(event.target.value)) })} />
       </div>
       <div className="grid gap-1">
-        <Checkbox checked={filters.showNative} onChange={(event) => patch({ showNative: event.target.checked })}>ETH transfers</Checkbox>
+        <Checkbox checked={filters.showNative} onChange={(event) => patch({ showNative: event.target.checked })}>{nativeSymbol()} transfers</Checkbox>
         <Checkbox checked={filters.showTokens} onChange={(event) => patch({ showTokens: event.target.checked })}>Token transfers</Checkbox>
         <Checkbox checked={filters.showCalls} onChange={(event) => patch({ showCalls: event.target.checked })}>Contract calls & deployments</Checkbox>
         <Checkbox checked={filters.hideIsolated} onChange={(event) => patch({ hideIsolated: event.target.checked })}>Hide unconnected addresses</Checkbox>
@@ -310,7 +322,7 @@ function StatsPanel({ model }: { model: GraphModel }) {
         <Stat label="Addresses" value={formatCount(stats.nodes)} />
         <Stat label="Flows" value={formatCount(stats.links)} />
         <Stat label="Transfers" value={formatCount(stats.transfers)} />
-        <Stat label="ETH moved" value={formatEth(stats.volume)} unit="ETH" />
+        <Stat label={`${nativeSymbol()} moved`} value={formatEth(stats.volume)} unit={nativeSymbol()} />
       </StatGrid>
       <MetaList className="mt-4">
         <div><dt>Token transfers</dt><dd>{formatCount(stats.tokenTransfers)}</dd></div>
@@ -328,7 +340,7 @@ function StatsPanel({ model }: { model: GraphModel }) {
         ) : (
           <div className="grid gap-1.5">
             {stats.assets.map((flow) => (
-              <div className="flex items-center gap-2 text-xs" key={flow.key} title={flow.native ? 'ETH' : flow.key}>
+              <div className="flex items-center gap-2 text-xs" key={flow.key} title={flow.native ? nativeSymbol() : flow.key}>
                 <Dot tone={flow.native ? 'focus' : 'token'} />
                 <span className="max-w-[92px] overflow-hidden text-ellipsis whitespace-nowrap font-mono-ui">{assetLabel(flow)}</span>
                 <span className="ml-auto tabular-nums">{formatUnits(flow.amount, flow.decimals)}</span>

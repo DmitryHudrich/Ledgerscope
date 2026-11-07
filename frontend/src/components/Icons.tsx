@@ -180,3 +180,39 @@ export const IconLogo = (p: IconProps) => (
     <path d="M5.9 5.2 9.8 10M5.7 4.2l4.9-.4M4 6.5v3.6M5 11.5l4.2.2" />
   </Icon>
 );
+
+export const IconGroups = (p: IconProps) => (
+  <Icon {...p}>
+    <circle cx="5" cy="5.5" r="2.2" />
+    <circle cx="11" cy="5.5" r="2.2" />
+    <circle cx="8" cy="11" r="2.2" />
+    <path d="M1.5 8.5c0 4.2 3 6 6.5 6s6.5-1.8 6.5-6" strokeDasharray="1.6 1.6" />
+  </Icon>
+);
+
+export const IconEye = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8 12.1 12.5 8 12.5 1.5 8 1.5 8Z" />
+    <circle cx="8" cy="8" r="1.9" />
+  </Icon>
+);
+
+export const IconEyeOff = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M6.2 3.8A6.6 6.6 0 0 1 8 3.5c4.1 0 6.5 4.5 6.5 4.5a11 11 0 0 1-1.7 2.2M10 11.9a5.8 5.8 0 0 1-2 .6C3.9 12.5 1.5 8 1.5 8a11.3 11.3 0 0 1 2.6-3" />
+    <path d="m2 2 12 12" />
+  </Icon>
+);
+
+export const IconJson = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M5.5 2.5c-1.5 0-2 .8-2 2v1.5c0 1-.6 2-1.5 2 .9 0 1.5 1 1.5 2v1.5c0 1.2.5 2 2 2M10.5 2.5c1.5 0 2 .8 2 2v1.5c0 1 .6 2 1.5 2-.9 0-1.5 1-1.5 2v1.5c0 1.2-.5 2-2 2" />
+  </Icon>
+);
+
+export const IconFocus = (p: IconProps) => (
+  <Icon {...p}>
+    <circle cx="8" cy="8" r="2.4" fill="currentColor" stroke="none" />
+    <circle cx="8" cy="8" r="5.6" strokeDasharray="1.8 1.9" opacity=".55" />
+  </Icon>
+);

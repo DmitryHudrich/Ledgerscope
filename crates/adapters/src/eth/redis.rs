@@ -3,8 +3,9 @@ use std::io;
 use application::eth::ports::EthTxCache;
 use redis::{AsyncCommands, aio::ConnectionManager};
 
-const INDEXED_KEY: &str = "ledgerscope:eth:indexed_blocks";
+use crate::eth::chainlist::ETHEREUM;
 
+#[derive(Clone)]
 pub struct RedisTxCache {
     connection: ConnectionManager,
     key: String,
@@ -12,7 +13,14 @@ pub struct RedisTxCache {
 
 impl RedisTxCache {
     pub async fn connect(url: &str) -> Result<Self, io::Error> {
-        Self::connect_with_key(url, INDEXED_KEY).await
+        Self::connect_with_key(url, &indexed_key(ETHEREUM)).await
+    }
+
+    pub fn for_chain(&self, chain_id: u64) -> Self {
+        Self {
+            connection: self.connection.clone(),
+            key: indexed_key(chain_id),
+        }
     }
 
     pub async fn connect_with_key(url: &str, key: &str) -> Result<Self, io::Error> {
@@ -28,6 +36,10 @@ impl RedisTxCache {
             key: key.to_owned(),
         })
     }
+}
+
+fn indexed_key(chain_id: u64) -> String {
+    format!("ledgerscope:chain:{chain_id}:indexed_blocks")
 }
 
 #[async_trait::async_trait]

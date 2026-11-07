@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 
 import type { CoverageResponse, HistogramResponse } from '../api/types';
+import { clampRange, rangeProblem, type BlockLimits, type RangeEdge } from '../lib/blockRange';
 import { formatCount } from '../lib/format';
 import { IconChevron } from './Icons';
 import { Button, Field, FieldLabel, Input, Panel, RangeInput, cx } from './ui';
@@ -10,10 +11,9 @@ interface Props {
   to: number;
   coverage: CoverageResponse | null;
   histogram: HistogramResponse | null;
+  limits: BlockLimits;
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onFromChange: (value: string) => void;
-  onToChange: (value: string) => void;
   onRangeChange: (next: Bounds) => void;
 }
 
@@ -35,10 +35,9 @@ export function BlockRangeControl({
   to,
   coverage,
   histogram,
+  limits,
   open,
   onOpenChange,
-  onFromChange,
-  onToChange,
   onRangeChange,
 }: Props) {
   const root = useRef<HTMLDivElement>(null);
@@ -71,12 +70,14 @@ export function BlockRangeControl({
     const padding = Math.max(100, (to - from + 1) * 10);
     const storedFrom = coverage?.lowest_block ?? from - padding;
     const storedTo = coverage?.highest_block ?? to + padding;
-    const head = coverage?.chain_head;
+    const head = limits.head;
+    const low = Math.max(0, Math.min(from - padding, storedFrom, head === null ? from : head - 100));
+    const high = Math.max(to + padding, storedTo, head ?? to);
     return {
-      from: Math.max(0, Math.min(from - padding, storedFrom, head === null || head === undefined ? from : head - 100)),
-      to: Math.max(to + padding, storedTo, head ?? to),
+      from: low,
+      to: head === null ? high : Math.min(high, head),
     };
-  }, [coverage, from, to]);
+  }, [coverage, from, limits.head, to]);
 
   const indexedInSelection = useMemo(() => {
     if (!coverage) return null;
@@ -107,20 +108,36 @@ export function BlockRangeControl({
     };
   }, [from, sliderBounds, to]);
 
-  const commitInput = (key: 'from' | 'to', raw: string) => {
-    const value = Number.parseInt(raw, 10);
-    if (!Number.isFinite(value) || value < 0) {
-      setValidation('Enter a non-negative block number.');
+  const candidate = (key: RangeEdge, raw: string) => ({
+    from: key === 'from' ? Number.parseInt(raw, 10) : from,
+    to: key === 'to' ? Number.parseInt(raw, 10) : to,
+  });
+
+  const editInput = (key: RangeEdge, raw: string) => {
+    if (key === 'from') setFromDraft(raw);
+    else setToDraft(raw);
+    if (raw === '') {
+      setValidation('Enter a block number.');
       return;
     }
-    const next = { from, to, [key]: value };
-    if (next.from > next.to) {
-      setValidation('From block cannot be greater than To block.');
-      return;
-    }
+    const next = candidate(key, raw);
+    const problem = rangeProblem(next, limits);
+    setValidation(problem);
+    if (!problem) onRangeChange(next);
+  };
+
+  const settleInput = (key: RangeEdge) => {
+    const raw = key === 'from' ? fromDraft : toDraft;
+    const next = raw === '' ? { from, to } : clampRange(candidate(key, raw), limits, key);
     setValidation(null);
-    if (key === 'from') onFromChange(String(value));
-    else onToChange(String(value));
+    setFromDraft(String(next.from));
+    setToDraft(String(next.to));
+    onRangeChange(next);
+  };
+
+  const slide = (key: RangeEdge, value: number) => {
+    setValidation(null);
+    onRangeChange(clampRange(key === 'from' ? { from: value, to } : { from, to: value }, limits, key));
   };
 
   return (
@@ -160,10 +177,13 @@ export function BlockRangeControl({
                 invalid={validation !== null}
                 value={fromDraft}
                 inputMode="numeric"
-                onChange={(event) => {
-                  const value = digitsOnly(event.target.value);
-                  setFromDraft(value);
-                  commitInput('from', value);
+                onChange={(event) => editInput('from', digitsOnly(event.target.value))}
+                onBlur={() => settleInput('from')}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault();
+                    settleInput('from');
+                  }
                 }}
               />
             </Field>
@@ -175,16 +195,25 @@ export function BlockRangeControl({
                 invalid={validation !== null}
                 value={toDraft}
                 inputMode="numeric"
-                onChange={(event) => {
-                  const value = digitsOnly(event.target.value);
-                  setToDraft(value);
-                  commitInput('to', value);
+                onChange={(event) => editInput('to', digitsOnly(event.target.value))}
+                onBlur={() => settleInput('to')}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault();
+                    settleInput('to');
+                  }
                 }}
               />
             </Field>
           </div>
 
-          {validation && <p className="mb-0 mt-2 text-[11px] text-critical">{validation}</p>}
+          {validation ? (
+            <p className="mb-0 mt-2 text-[11px] text-critical">{validation} It will be corrected when you leave the field.</p>
+          ) : (
+            <p className="mb-0 mt-2 text-[11px] text-text-muted">
+              Blocks 0 – {limits.head === null ? 'chain head' : formatCount(limits.head)}, at most {formatCount(limits.maxBlocks)} per graph.
+            </p>
+          )}
 
           <section className="mt-3 border-t border-hairline pt-3" aria-label="Indexed coverage">
             <div className="mb-1.5 flex items-center justify-between text-[10px] uppercase tracking-[0.07em] text-text-muted">
@@ -240,11 +269,7 @@ export function BlockRangeControl({
                   min={sliderBounds.from}
                   max={sliderBounds.to}
                   value={clamp(from, sliderBounds.from, sliderBounds.to)}
-                  onChange={(event) => {
-                    const value = Number(event.target.value);
-                    setValidation(null);
-                    onRangeChange({ from: value, to: Math.max(value, to) });
-                  }}
+                  onChange={(event) => slide('from', Number(event.target.value))}
                 />
                 <RangeInput
                   aria-label="To block"
@@ -252,11 +277,7 @@ export function BlockRangeControl({
                   min={sliderBounds.from}
                   max={sliderBounds.to}
                   value={clamp(to, sliderBounds.from, sliderBounds.to)}
-                  onChange={(event) => {
-                    const value = Number(event.target.value);
-                    setValidation(null);
-                    onRangeChange({ from: Math.min(value, from), to: value });
-                  }}
+                  onChange={(event) => slide('to', Number(event.target.value))}
                 />
               </div>
             </div>

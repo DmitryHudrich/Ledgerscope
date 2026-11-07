@@ -12,8 +12,11 @@ import {
   shortHash,
   unitsToNumber,
 } from '../lib/format';
-import { IconChevron } from './Icons';
+import type { GraphGroup } from '../lib/groups';
+import { GroupPicker } from './GroupPicker';
+import { IconChevron, IconEyeOff } from './Icons';
 import { Badge, Button, Dot, Tag, cx, focusRing } from './ui';
+import { nativeSymbol } from '../lib/chain';
 
 const ROW_LIMIT = 500;
 
@@ -37,9 +40,13 @@ interface Props {
   onHeightChange: (next: number) => void;
   onScopeClear: () => void;
   onSelect: (id: string) => void;
+  groups: GraphGroup[];
+  onHideTxs: (hashes: string[]) => void;
+  onGroupTxs: (target: string | { name: string }, hashes: string[]) => void;
 }
 
-export function TxSheet({ model, scope, linkScope, open, height, onOpenChange, onHeightChange, onScopeClear, onSelect }: Props) {
+export function TxSheet({ model, scope, linkScope, open, height, onOpenChange, onHeightChange, onScopeClear, onSelect, groups, onHideTxs, onGroupTxs }: Props) {
+  const [picked, setPicked] = useState<Set<string>>(() => new Set());
   const [sort, setSort] = useState<SortKey>('block');
   const [descending, setDescending] = useState(true);
   const [resizing, setResizing] = useState(false);
@@ -120,6 +127,19 @@ export function TxSheet({ model, scope, linkScope, open, height, onOpenChange, o
     return all;
   }, [linkScope, model, scope, sort, descending]);
 
+  const shownHashes = useMemo(
+    () => [...new Set(rows.slice(0, ROW_LIMIT).map(({ tx }) => tx.tx_hash.toLowerCase()))],
+    [rows],
+  );
+  const pickedShown = shownHashes.filter((hash) => picked.has(hash));
+  const allPicked = shownHashes.length > 0 && pickedShown.length === shownHashes.length;
+  const togglePick = (hash: string) => setPicked((current) => {
+    const next = new Set(current);
+    if (next.has(hash)) next.delete(hash);
+    else next.add(hash);
+    return next;
+  });
+
   const toggleSort = (key: SortKey) => {
     if (key === sort) setDescending((value) => !value);
     else {
@@ -178,6 +198,31 @@ export function TxSheet({ model, scope, linkScope, open, height, onOpenChange, o
           </span>
           <Badge>{formatCount(rows.length)}</Badge>
         </Button>
+        {open && pickedShown.length > 0 && (
+          <div className="flex min-w-0 items-center gap-1.5 border-l border-hairline pl-2">
+            <span className="whitespace-nowrap text-xs text-text-secondary">{formatCount(pickedShown.length)} selected</span>
+            <Button
+              className="h-7 px-2 text-xs"
+              onClick={() => {
+                onHideTxs(pickedShown);
+                setPicked(new Set());
+              }}
+            >
+              <IconEyeOff size={13} /> Hide
+            </Button>
+            <div className="w-[230px]">
+              <GroupPicker
+                compact
+                groups={groups}
+                onPick={(target) => {
+                  onGroupTxs(target, pickedShown);
+                  setPicked(new Set());
+                }}
+              />
+            </div>
+            <Button variant="ghost" className="h-7 px-2 text-xs" onClick={() => setPicked(new Set())}>Clear</Button>
+          </div>
+        )}
         {(scope || linkScope) && (
           <>
             <Tag>{linkScope ? 'scoped to selected transfer' : `scoped to ${shortAddress(scope!, 8, 6)}`}</Tag>
@@ -193,6 +238,15 @@ export function TxSheet({ model, scope, linkScope, open, height, onOpenChange, o
           <table className="w-full border-collapse text-[12.5px] [&_td]:whitespace-nowrap [&_td]:border-b [&_td]:border-hairline [&_td]:px-3 [&_td]:py-[7px] [&_th]:sticky [&_th]:top-0 [&_th]:z-1 [&_th]:whitespace-nowrap [&_th]:border-b [&_th]:border-hairline [&_th]:bg-surface-1 [&_th]:px-3 [&_th]:py-2 [&_th]:text-left [&_th]:text-[10px] [&_th]:font-semibold [&_th]:uppercase [&_th]:tracking-[0.07em] [&_th]:text-text-muted [&_tbody_tr:hover_td]:bg-[color-mix(in_srgb,var(--text-primary)_4%,transparent)]">
             <thead>
               <tr>
+                <th className="w-8">
+                  <input
+                    type="checkbox"
+                    className="accent-accent"
+                    aria-label="Select every shown transaction"
+                    checked={allPicked}
+                    onChange={() => setPicked(allPicked ? new Set() : new Set(shownHashes))}
+                  />
+                </th>
                 <th className="num">
                   <SortButton onClick={() => toggleSort('block')}>
                     Block{arrow('block')}
@@ -223,6 +277,15 @@ export function TxSheet({ model, scope, linkScope, open, height, onOpenChange, o
                     key={`${tx.tx_hash}:${index}`}
                     className={tx.succeeded ? undefined : 'text-text-muted'}
                   >
+                    <td>
+                      <input
+                        type="checkbox"
+                        className="accent-accent"
+                        aria-label={`Select ${tx.tx_hash}`}
+                        checked={picked.has(tx.tx_hash.toLowerCase())}
+                        onChange={() => togglePick(tx.tx_hash.toLowerCase())}
+                      />
+                    </td>
                     <td className="text-right tabular-nums">{formatCount(tx.block_number)}</td>
                     <td title={formatTimestamp(tx.timestamp)}>{formatRelative(tx.timestamp)}</td>
                     <td className="font-mono-ui text-[11.5px]">
@@ -254,7 +317,7 @@ export function TxSheet({ model, scope, linkScope, open, height, onOpenChange, o
                     </td>
                     <td>
                       {transfer ? (
-                        <Tag title={transfer.native ? 'ETH' : transfer.key}>
+                        <Tag title={transfer.native ? nativeSymbol() : transfer.key}>
                           <Dot tone={transfer.native ? 'focus' : 'token'} />
                           <code className="font-mono-ui">{transfer.symbol}</code>
                         </Tag>

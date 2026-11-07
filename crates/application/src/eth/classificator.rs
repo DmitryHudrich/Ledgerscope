@@ -4,7 +4,7 @@ use alloy_primitives::{B256, U256, b256};
 
 use domain::eth::{
     EthAddress, EthLog, MinedTx,
-    graph::{ContractAction, Interaction, InteractionKind, NativeTransfer},
+    graph::{AssetTransfer, ContractAction, Interaction, InteractionKind, NativeTransfer},
 };
 
 const TRANSFER_TOPIC_SIGNATURE: B256 =
@@ -80,6 +80,28 @@ impl EthTxClassificator for FulliestEthTxClassificator {
     async fn classificate(&self, mined: MinedTx) -> Result<Vec<Interaction>, ClassificateError> {
         let (tx, receipt) = mined.into_parts();
 
+        if let Some(action) = tx.action() {
+            return Ok(vec![Interaction::new(
+                receipt,
+                InteractionKind::SystemAction {
+                    action: action.to_owned(),
+                    from: *tx.from(),
+                    to: tx.to().copied(),
+                    amount: tx.amount(),
+                },
+            )]);
+        }
+
+        if tx.asset().is_some() {
+            let transfer =
+                AssetTransfer::try_from(tx).map_err(|_| ClassificateError::InvariantNarushen)?;
+
+            return Ok(vec![Interaction::new(
+                receipt,
+                InteractionKind::AssetTransfer(transfer),
+            )]);
+        }
+
         if tx.to() == Some(&EthAddress::ZERO) {
             return Ok(vec![Interaction::new(receipt, InteractionKind::Protocol)]);
         }
@@ -153,7 +175,7 @@ impl EthTxClassificator for FulliestEthTxClassificator {
 #[cfg(test)]
 mod tests {
     use alloy_primitives::{Bytes, TxHash};
-    use domain::eth::{EthLog, EthReceipt, EthTx};
+    use domain::eth::{EthLog, EthReceipt, EthTx, IssuedAsset};
 
     use super::*;
 
@@ -257,6 +279,56 @@ mod tests {
                 contract_interaction_type: ContractAction::Other,
                 ..
             }
+        ));
+    }
+
+    fn plain_tx(asset: Option<IssuedAsset>, action: Option<&str>) -> EthTx {
+        EthTx::builder()
+            .tx_hash(TxHash::with_last_byte(2))
+            .block_number(87_561_000)
+            .timestamp(1_793_356_395)
+            .amount(U256::from(4_444_u64))
+            .from(address(1))
+            .to(address(2))
+            .data(Bytes::new())
+            .maybe_asset(asset)
+            .maybe_action(action.map(str::to_owned))
+            .build()
+    }
+
+    #[tokio::test]
+    async fn an_issued_asset_moves_as_its_own_transfer() {
+        let asset = IssuedAsset::new("1005193".to_owned(), "USDD".to_owned(), 6);
+        let interactions = FulliestEthTxClassificator::new()
+            .classificate(MinedTx::new(
+                plain_tx(Some(asset.clone()), None),
+                EthReceipt::new(true, None, Vec::new()),
+            ))
+            .await
+            .unwrap();
+
+        match interactions[0].kind() {
+            InteractionKind::AssetTransfer(transfer) => {
+                assert_eq!(transfer.asset(), &asset);
+                assert_eq!(transfer.amount(), U256::from(4_444_u64));
+            }
+            other => panic!("expected an asset transfer, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_system_action_is_never_mistaken_for_a_payment() {
+        let interactions = FulliestEthTxClassificator::new()
+            .classificate(MinedTx::new(
+                plain_tx(None, Some("DelegateResourceContract")),
+                EthReceipt::new(true, None, Vec::new()),
+            ))
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            interactions[0].kind(),
+            InteractionKind::SystemAction { action, to: Some(_), .. } if action == "DelegateResourceContract"
         ));
     }
 }

@@ -1,4 +1,6 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
+
+import { isUserLabelSource } from '../api/account';
 
 import {
   formatCount,
@@ -22,6 +24,7 @@ import {
   cx,
   focusRing,
 } from './ui';
+import { displayAddress, nativeSymbol } from '../lib/chain';
 
 interface Props {
   node: GraphNode;
@@ -35,6 +38,8 @@ interface Props {
   onCenter: (id: string) => void;
   onShowTransactions: () => void;
   onClose: () => void;
+  labelsSlot?: ReactNode;
+  actionsSlot?: ReactNode;
 }
 
 const KIND_LABEL: Record<GraphNode['kind'], string> = {
@@ -67,12 +72,19 @@ export function DetailsDrawer({
   onCenter,
   onShowTransactions,
   onClose,
+  labelsSlot,
+  actionsSlot,
 }: Props) {
   const [showAllPeers, setShowAllPeers] = useState(false);
   const [showAllAssets, setShowAllAssets] = useState(false);
   const [peersOpen, setPeersOpen] = useState(false);
   const [copied, setCopied] = useState(false);
+  const serverLabels = useMemo(
+    () => node.systemLabels.filter((label) => !isUserLabelSource(label.source)),
+    [node.systemLabels],
+  );
   const primaryLabel = getPrimarySystemLabel(node.systemLabels);
+  const primaryServerLabel = getPrimarySystemLabel(serverLabels);
 
   const peers = useMemo<Peer[]>(() => {
     const byId = new Map<string, Peer>();
@@ -125,7 +137,7 @@ export function DetailsDrawer({
 
   const copy = async () => {
     try {
-      await navigator.clipboard.writeText(node.id);
+      await navigator.clipboard.writeText(displayAddress(node.id));
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1400);
     } catch {
@@ -154,7 +166,7 @@ export function DetailsDrawer({
               {primaryLabel.value}
             </div>
           )}
-          <div className={primaryLabel ? 'mt-1 break-all font-mono-ui text-[11px] leading-relaxed text-text-secondary' : 'mt-1.5 break-all font-mono-ui text-[12.5px] leading-relaxed'}>{node.id}</div>
+          <div className={primaryLabel ? 'mt-1 break-all font-mono-ui text-[11px] leading-relaxed text-text-secondary' : 'mt-1.5 break-all font-mono-ui text-[12.5px] leading-relaxed'}>{displayAddress(node.id)}</div>
         </div>
         <Button
           variant="ghost"
@@ -168,11 +180,12 @@ export function DetailsDrawer({
       </header>
 
       <div className="overflow-y-auto overscroll-contain">
-        {node.systemLabels.length > 0 && (
+        {labelsSlot}
+        {serverLabels.length > 0 && (
           <PanelSection>
             <PanelTitle>System labels</PanelTitle>
             <div className="flex flex-wrap gap-1.5">
-              {node.systemLabels.map((label, index) => (
+              {serverLabels.map((label, index) => (
                 <span
                   key={`${label.source}:${label.value}:${index}`}
                   className="inline-flex max-w-full items-center rounded-ui-sm border border-hairline bg-[color-mix(in_srgb,var(--accent)_8%,transparent)] px-2 py-1 text-[11px] text-text-primary"
@@ -182,8 +195,8 @@ export function DetailsDrawer({
                 </span>
               ))}
             </div>
-            {primaryLabel?.source && (
-              <p className="mb-0 mt-2 text-[10px] text-text-muted">Source: {primaryLabel.source}</p>
+            {primaryServerLabel?.source && (
+              <p className="mb-0 mt-2 text-[10px] text-text-muted">Source: {primaryServerLabel.source}</p>
             )}
           </PanelSection>
         )}
@@ -202,7 +215,7 @@ export function DetailsDrawer({
                 <tbody>
                   {visibleAssets.map((flow) => (
                     <tr key={flow.key}>
-                      <td title={flow.native ? 'ETH' : flow.key}>
+                      <td title={flow.native ? nativeSymbol() : flow.key}>
                         <Dot tone={flow.native ? 'focus' : 'token'} className="mr-[6px] align-middle" />
                         <span className="inline-block max-w-[92px] overflow-hidden text-ellipsis whitespace-nowrap align-middle font-mono-ui">
                           {assetLabel(flow)}
@@ -297,6 +310,7 @@ export function DetailsDrawer({
                 <IconCopy /> {copied ? 'Copied' : 'Copy'}
               </Button>
             </div>
+            {actionsSlot}
           </div>
         </PanelSection>
 
@@ -327,7 +341,7 @@ export function DetailsDrawer({
                     focusRing,
                   )}
                   onClick={() => onSelect(peer.id)}
-                  title={peer.id}
+                  title={displayAddress(peer.id)}
                 >
                   <Dot tone={peer.kind} />
                   <span className="overflow-hidden text-ellipsis font-mono-ui text-xs">
@@ -337,7 +351,7 @@ export function DetailsDrawer({
                     {peer.hasEth ? (
                       <>
                         {net >= 0n ? '+' : '−'}
-                        {formatEth(net >= 0n ? net : -net)} ETH
+                        {formatEth(net >= 0n ? net : -net)} {nativeSymbol()}
                       </>
                     ) : (
                       `${formatCount(peer.txs)} tx`
