@@ -140,6 +140,7 @@ export interface GraphQuery {
   roots: GraphRoot[];
   from_block: number;
   to_block: number;
+  ranges?: Array<{ from_block: number; to_block: number }>;
   confirm_rpc?: boolean;
 }
 

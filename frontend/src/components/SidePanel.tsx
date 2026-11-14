@@ -15,6 +15,7 @@ import {
 import {
   IconClose,
   IconFilter,
+  IconFit,
   IconGroups,
   IconLegend,
   IconOverview,
@@ -39,7 +40,7 @@ import {
 } from './ui';
 import { displayAddress, nativeSymbol } from '../lib/chain';
 
-export type WorkspacePanel = 'addresses' | 'filters' | 'legend' | 'stats' | 'groups' | 'tls';
+export type WorkspacePanel = 'advanced' | 'addresses' | 'filters' | 'legend' | 'stats' | 'groups' | 'tls';
 
 interface Props {
   model: GraphModel;
@@ -62,6 +63,7 @@ interface Props {
   onLabelModeChange: (next: LabelMode) => void;
   groupsPanel?: ReactNode;
   groupsBadge?: number;
+  advancedPanel?: ReactNode;
   ipLinks?: Map<string, IpWalletLink[]>;
 }
 
@@ -96,6 +98,7 @@ export function InvestigationPanel({
   onLabelModeChange,
   groupsPanel,
   groupsBadge = 0,
+  advancedPanel,
   ipLinks,
 }: Props) {
   const counts = { eoa: 0, contract: 0, focus: 0 };
@@ -105,7 +108,7 @@ export function InvestigationPanel({
     onPanelChange(activePanel === next ? null : next);
 
   const title = activePanel
-    ? ({ addresses: 'Addresses', filters: 'Filters', legend: 'Legend', stats: 'Graph stats', groups: 'Groups & hidden', tls: 'IP links' } as const)[activePanel]
+    ? ({ advanced: 'Block range', addresses: 'Addresses', filters: 'Filters', legend: 'Legend', stats: 'Graph stats', groups: 'Groups & hidden', tls: 'IP links' } as const)[activePanel]
     : '';
 
   return (
@@ -118,6 +121,11 @@ export function InvestigationPanel({
           className="flex flex-col items-center gap-1 py-2"
           aria-label="Investigation sections"
         >
+          {advancedPanel && (
+            <TabButton label="Block range" active={activePanel === 'advanced'} onClick={() => changePanel('advanced')}>
+              <IconFit />
+            </TabButton>
+          )}
           <TabButton label="Addresses" active={activePanel === 'addresses'} onClick={() => changePanel('addresses')}>
             <IconSearch />
           </TabButton>
@@ -144,7 +152,7 @@ export function InvestigationPanel({
       {activePanel && (
         <Panel
           as="aside"
-          className={cx("absolute bottom-[calc(var(--sheet-h)+12px)] left-[60px] top-[var(--left-flyout-top)] z-15 flex animate-drawer-in flex-col overflow-hidden shadow-pop transition-[top] duration-150", activePanel === "groups" ? "w-[300px]" : "w-[260px]")}
+          className={cx("absolute bottom-[calc(var(--sheet-h)+12px)] left-[60px] top-[var(--left-flyout-top)] z-15 flex animate-drawer-in flex-col overflow-hidden shadow-pop transition-[top] duration-150", activePanel === "groups" || activePanel === "advanced" ? "w-[300px]" : "w-[260px]")}
           aria-label={`${title} flyout`}
           data-left-flyout
         >
@@ -157,6 +165,7 @@ export function InvestigationPanel({
             </Button>
           </header>
           <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+            {activePanel === 'advanced' && advancedPanel}
             {activePanel === 'addresses' && (
               <AddressesPanel
                 model={model}

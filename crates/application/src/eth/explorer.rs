@@ -48,15 +48,19 @@ impl GraphRoot {
 #[derive(Clone, Debug)]
 pub struct ExploreRequest {
     roots: Vec<GraphRoot>,
-    span: BlockRange,
+    spans: Vec<BlockRange>,
     confirm_rpc: bool,
 }
 
 impl ExploreRequest {
     pub fn new(roots: Vec<GraphRoot>, span: BlockRange, confirm_rpc: bool) -> Self {
+        Self::with_spans(roots, vec![span], confirm_rpc)
+    }
+
+    pub fn with_spans(roots: Vec<GraphRoot>, spans: Vec<BlockRange>, confirm_rpc: bool) -> Self {
         Self {
             roots,
-            span,
+            spans,
             confirm_rpc,
         }
     }
@@ -65,8 +69,24 @@ impl ExploreRequest {
         &self.roots
     }
 
+    pub fn spans(&self) -> &[BlockRange] {
+        &self.spans
+    }
+
     pub fn span(&self) -> BlockRange {
-        self.span
+        let from = self
+            .spans
+            .iter()
+            .map(BlockRange::from_block)
+            .min()
+            .unwrap_or(0);
+        let to = self
+            .spans
+            .iter()
+            .map(BlockRange::to_block)
+            .max()
+            .unwrap_or(0);
+        BlockRange::new(from, to)
     }
 
     pub fn confirm_rpc(&self) -> bool {
@@ -289,17 +309,18 @@ impl EthExplorer {
     async fn prepare(&self, request: &ExploreRequest) -> Result<Ready, ExploreError> {
         self.weigh(request)?;
 
-        let coverage = self
-            .index
-            .coverage(request.span)
-            .await
-            .map_err(ExploreError::Io)?;
-        let missing = coverage.gaps(request.span);
+        let mut missing: Vec<BlockRange> = Vec::new();
+        let mut indexed = 0u64;
+        for span in request.spans() {
+            let coverage = self.index.coverage(*span).await.map_err(ExploreError::Io)?;
+            missing.extend(coverage.gaps(*span));
+            indexed += coverage.indexed_within(*span);
+        }
 
         if !missing.is_empty() && !request.confirm_rpc {
             return Ok(Ready::Confirm(RpcPlan::new(
                 missing.clone(),
-                coverage.indexed_within(request.span),
+                indexed,
                 missing.iter().map(BlockRange::block_count).sum(),
             )));
         }
@@ -369,7 +390,8 @@ impl EthExplorer {
             let _ = root;
             return Err(ExploreError::TooDeep(self.limits.max_depth));
         }
-        if request.span.block_count() > self.limits.max_blocks {
+        let total: u64 = request.spans.iter().map(BlockRange::block_count).sum();
+        if total > self.limits.max_blocks {
             return Err(ExploreError::SpanTooWide(self.limits.max_blocks));
         }
 
@@ -511,7 +533,11 @@ impl EthExplorer {
             let mut found: HashSet<EthAddress> = HashSet::new();
 
             for chunk in asking.chunks(ASKING_CHUNK) {
-                for mined in self.index.txs_touching(chunk, request.span).await? {
+                let mut mined_txs = Vec::new();
+                for span in request.spans() {
+                    mined_txs.extend(self.index.txs_touching(chunk, *span).await?);
+                }
+                for mined in mined_txs {
                     let Ok(interaction) = LowLevelInteraction::try_from(&mined) else {
                         continue;
                     };
@@ -613,7 +639,10 @@ impl EthExplorer {
             let mut found: HashSet<EthAddress> = HashSet::new();
 
             for chunk in asking.chunks(ASKING_CHUNK) {
-                let txs = self.index.txs_touching(chunk, request.span).await?;
+                let mut txs = Vec::new();
+                for span in request.spans() {
+                    txs.extend(self.index.txs_touching(chunk, *span).await?);
+                }
 
                 for (meta, slot, interaction) in self.classify(txs).await {
                     let Some((from, to)) = interaction.endpoints() else {

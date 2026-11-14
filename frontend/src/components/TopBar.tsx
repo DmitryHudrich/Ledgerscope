@@ -1,14 +1,13 @@
 import { useState, type FormEvent, type ReactNode } from 'react';
 
 import type { ChainInfo, GraphRoot } from '../api/types';
-import type { CoverageResponse, HistogramResponse } from '../api/types';
 import { addressHint, displayAddress, parseAddressInput } from '../lib/chain';
+import { formatCount } from '../lib/format';
 import type { Theme } from '../lib/theme';
 import type { BlockBounds } from './Timeline';
-import { IconLogo, IconMoon, IconSun } from './Icons';
+import { IconChevron, IconLogo, IconMoon, IconSun } from './Icons';
 import { ChainPicker } from './ChainPicker';
-import { BlockRangeControl } from './BlockRangeControl';
-import { Button, Dot, Input } from './ui';
+import { Button, Dot, Input, cx } from './ui';
 
 interface Props {
   chains: ChainInfo[];
@@ -18,11 +17,7 @@ interface Props {
   onChainsRefresh: () => void;
   roots: GraphRoot[];
   maxRoots: number;
-  maxBlocks: number;
   selection: BlockBounds;
-  coverage: CoverageResponse | null;
-  histogram: HistogramResponse | null;
-  onSelectionChange: (next: BlockBounds) => void;
   onSubmit: (address: string | null) => void;
   loading: boolean;
   demo: boolean;
@@ -43,11 +38,7 @@ export function TopBar({
   onChainsRefresh,
   roots,
   maxRoots,
-  maxBlocks,
   selection,
-  coverage,
-  histogram,
-  onSelectionChange,
   onSubmit,
   loading,
   demo,
@@ -108,16 +99,16 @@ export function TopBar({
         <Button className="h-9 px-4" variant="primary" type="submit" disabled={!canBuild || invalid || full || loading}>
           {loading ? 'Building…' : 'Build graph'}
         </Button>
-        <BlockRangeControl
-          from={selection.from}
-          to={selection.to}
-          coverage={coverage}
-          histogram={histogram}
-          limits={{ head: coverage?.chain_head ?? null, maxBlocks }}
-          open={advancedOpen}
-          onOpenChange={onAdvancedOpenChange}
-          onRangeChange={onSelectionChange}
-        />
+        <Button
+          variant="ghost"
+          className={cx('h-9 flex-none gap-1.5 px-2.5 text-xs font-medium text-text-muted', advancedOpen && 'text-text-primary')}
+          onClick={() => onAdvancedOpenChange(!advancedOpen)}
+          aria-pressed={advancedOpen}
+          title="Block range & scan ranges"
+        >
+          <span className="tabular-nums">{formatCount(selection.from)}–{formatCount(selection.to)}</span>
+          <IconChevron className={cx('transition-transform', advancedOpen && 'rotate-180')} />
+        </Button>
       </form>
 
       <div className="flex-1" />

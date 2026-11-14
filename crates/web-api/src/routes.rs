@@ -240,10 +240,10 @@ async fn explore_graph(
 }
 
 async fn ensure_mined(chain: &ChainState, request: &GraphRequest) -> Result<(), ApiError> {
+    let highest = highest_wanted(request);
     match chain.head_block().await {
-        Some(head) if request.to_block > head => Err(ApiError::bad_request(format!(
-            "to_block {} is past the head of {} ({head})",
-            request.to_block,
+        Some(head) if highest > head => Err(ApiError::bad_request(format!(
+            "to_block {highest} is past the head of {} ({head})",
             chain.meta().name
         ))),
         _ => Ok(()),
@@ -251,11 +251,7 @@ async fn ensure_mined(chain: &ChainState, request: &GraphRequest) -> Result<(), 
 }
 
 fn explore_request(request: &GraphRequest) -> Result<ExploreRequest, ApiError> {
-    if request.from_block > request.to_block {
-        return Err(ApiError::bad_request(
-            "from_block must not be above to_block",
-        ));
-    }
+    let spans = request_spans(request)?;
 
     let mut roots = Vec::with_capacity(request.roots.len());
     for root in &request.roots {
@@ -265,11 +261,38 @@ fn explore_request(request: &GraphRequest) -> Result<ExploreRequest, ApiError> {
         ));
     }
 
-    Ok(ExploreRequest::new(
-        roots,
-        BlockRange::new(request.from_block, request.to_block),
-        request.confirm_rpc,
-    ))
+    Ok(ExploreRequest::with_spans(roots, spans, request.confirm_rpc))
+}
+
+fn request_spans(request: &GraphRequest) -> Result<Vec<BlockRange>, ApiError> {
+    if request.ranges.is_empty() {
+        if request.from_block > request.to_block {
+            return Err(ApiError::bad_request(
+                "from_block must not be above to_block",
+            ));
+        }
+        return Ok(vec![BlockRange::new(request.from_block, request.to_block)]);
+    }
+
+    let mut spans = Vec::with_capacity(request.ranges.len());
+    for range in &request.ranges {
+        if range.from_block > range.to_block {
+            return Err(ApiError::bad_request(
+                "each range's from_block must not be above its to_block",
+            ));
+        }
+        spans.push(BlockRange::new(range.from_block, range.to_block));
+    }
+    Ok(spans)
+}
+
+fn highest_wanted(request: &GraphRequest) -> u64 {
+    request
+        .ranges
+        .iter()
+        .map(|range| range.to_block)
+        .max()
+        .unwrap_or(request.to_block)
 }
 
 #[utoipa::path(

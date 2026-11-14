@@ -69,6 +69,7 @@ export async function fetchGraph(
         roots: query.roots,
         from_block: query.from_block,
         to_block: query.to_block,
+        ranges: query.ranges ?? [],
         confirm_rpc: query.confirm_rpc ?? false,
       }),
     },

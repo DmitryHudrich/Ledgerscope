@@ -16,6 +16,7 @@ import { DetailsDrawer } from './components/DetailsDrawer';
 import { EdgeInspector, MultiSelectionInspector } from './components/ContextInspector';
 import { IconFilter } from './components/Icons';
 import { InvestigationPanel, type WorkspacePanel } from './components/SidePanel';
+import { BlockRangePanel } from './components/BlockRangePanel';
 import type { BlockBounds } from './components/Timeline';
 import { ToolRail } from './components/ToolRail';
 import { TopBar } from './components/TopBar';
@@ -174,7 +175,9 @@ export default function App() {
   const [theme, setTheme] = useTheme();
   const [palette, setPalette] = useState<VizPalette>(() => readPalette());
   const [roots, setRoots] = useState<GraphRoot[]>(INITIAL_ROOTS);
-  const [selection, setSelection] = useState<BlockBounds>(INITIAL_SELECTION);
+  const [ranges, setRanges] = useState<BlockBounds[]>([INITIAL_SELECTION]);
+  const [activeRange, setActiveRange] = useState(0);
+  const selection = ranges[activeRange] ?? ranges[0] ?? INITIAL_SELECTION;
   const [demo, setDemo] = useState(true);
   const [chains, setChains] = useState<ChainInfo[]>([]);
   const [chainId, setChainId] = useState<number | null>(null);
@@ -292,10 +295,6 @@ export default function App() {
     [coverage?.chain_head, limits.maxBlocks],
   );
 
-  const changeSelection = useCallback(
-    (next: BlockBounds) => setSelection(clampRange(next, blockLimits)),
-    [blockLimits],
-  );
 
   useEffect(() => {
     setPalette(readPalette());
@@ -414,6 +413,7 @@ export default function App() {
         roots: requestedRoots,
         from_block: selection.from,
         to_block: selection.to,
+        ranges: ranges.length > 1 ? ranges.map((range) => ({ from_block: range.from, to_block: range.to })) : undefined,
         confirm_rpc: confirmRpc,
       };
       try {
@@ -434,7 +434,7 @@ export default function App() {
         if (requestId.current === id) setLoading(false);
       }
     },
-    [chainId, demo, roots, selection],
+    [chainId, demo, roots, ranges, activeRange],
   );
 
   const refreshCoverage = useCallback(async () => {
@@ -490,15 +490,20 @@ export default function App() {
     if (!coverageLoaded || snapped.current) return;
     snapped.current = true;
     const next = coverage ? storedSelection(coverage, coverage.limits.max_blocks) : null;
-    if (next) setSelection(next);
+    if (next) {
+      setRanges([next]);
+      setActiveRange(0);
+    }
     setPrimed(true);
   }, [coverageLoaded, coverage]);
 
   useEffect(() => {
-    setSelection((current) => {
-      const next = clampRange(current, blockLimits);
-      return sameRange(current, next) ? current : next;
-    });
+    setRanges((current) =>
+      current.map((range) => {
+        const next = clampRange(range, blockLimits);
+        return sameRange(range, next) ? range : next;
+      }),
+    );
   }, [blockLimits]);
 
   useEffect(() => {
@@ -713,7 +718,8 @@ export default function App() {
     setSelectedIds(new Set());
     setSelectedLinkId(null);
     setRoots(document.roots);
-    setSelection(document.selection);
+    setRanges([document.selection]);
+    setActiveRange(0);
     setFilterState(document.filters);
     setLabelMode(document.label_mode);
     setShowFlow(document.show_flow);
@@ -982,11 +988,7 @@ export default function App() {
         onChainsRefresh={() => void refreshChains()}
         roots={roots}
         maxRoots={limits.maxRoots}
-        maxBlocks={limits.maxBlocks}
         selection={selection}
-        coverage={coverage}
-        histogram={histogram}
-        onSelectionChange={changeSelection}
         onSubmit={submitFromTopBar}
         loading={loading || buildingFromId !== null}
         demo={demo}
@@ -1037,7 +1039,7 @@ export default function App() {
             '--inspector-w': selectedNode || selectedIds.size > 1 || selectedLink ? '320px' : '0px',
             '--left-flyout-top': demo ? '68px' : '12px',
             '--filter-indicator-left':
-              temporaryPanel === 'groups' ? '372px' : temporaryPanel !== null && temporaryPanel !== 'advanced' ? '332px' : '60px',
+              temporaryPanel === 'groups' || temporaryPanel === 'advanced' ? '372px' : temporaryPanel !== null ? '332px' : '60px',
           } as CSSProperties
         }
       >
@@ -1083,7 +1085,7 @@ export default function App() {
           search={search}
           onSearchChange={setSearch}
           matchCount={searchMatches.size}
-          activePanel={temporaryPanel === 'advanced' ? null : temporaryPanel}
+          activePanel={temporaryPanel}
           onPanelChange={setTemporaryPanel}
           activeFilterCount={filterActivity.activeFilterCount}
           onResetFilters={resetFilters}
@@ -1097,6 +1099,19 @@ export default function App() {
           labelMode={labelMode}
           onLabelModeChange={setLabelMode}
           groupsBadge={groups.length + (removedNodeIds.size > 0 || hiddenTxs.size > 0 ? 1 : 0)}
+          advancedPanel={(
+            <BlockRangePanel
+              ranges={ranges}
+              activeIndex={activeRange}
+              coverage={coverage}
+              histogram={histogram}
+              limits={blockLimits}
+              onActiveChange={setActiveRange}
+              onRangesChange={setRanges}
+              onApply={() => void run()}
+              applyDisabled={loading}
+            />
+          )}
           ipLinks={tlsLinks.byAddress}
           groupsPanel={(
             <GroupsPanel
@@ -1141,6 +1156,7 @@ export default function App() {
             </Button>
           </Panel>
         )}
+
 
         {filterActivity.hasActiveFilters && temporaryPanel !== 'filters' && (
           <Panel
@@ -1433,7 +1449,7 @@ export default function App() {
         <TlsDeanonDialog
           chains={chains}
           chainId={chainId}
-          canvasRange={hasGraph ? { from: selection.from, to: selection.to } : undefined}
+          canvasRange={hasGraph ? { from: Math.min(...ranges.map((range) => range.from)), to: Math.max(...ranges.map((range) => range.to)) } : undefined}
           onChange={() => void tlsLinks.refresh()}
           onClose={() => setDialog(null)}
         />

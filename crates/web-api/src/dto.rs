@@ -71,7 +71,16 @@ pub struct GraphRequest {
     pub to_block: u64,
 
     #[serde(default)]
+    pub ranges: Vec<RangeRequest>,
+
+    #[serde(default)]
     pub confirm_rpc: bool,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct RangeRequest {
+    pub from_block: u64,
+    pub to_block: u64,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
