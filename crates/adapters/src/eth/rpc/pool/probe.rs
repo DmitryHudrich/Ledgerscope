@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 use tokio::sync::Semaphore;
 
 use super::Dialect;
+use crate::eth::tron;
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(4);
 const PROBES_IN_FLIGHT: usize = 32;
@@ -35,11 +36,7 @@ pub async fn all(
                 .acquire()
                 .await
                 .expect("the semaphore is never closed");
-            let probed = match dialect {
-                Dialect::EvmJsonRpc => evm(http, &candidate.url, chain_id).await,
-                Dialect::TronHttp => tron(http, &candidate.url).await,
-            };
-            match probed {
+            match one(http, &candidate.url, chain_id, dialect).await {
                 Ok((latency, head)) => Some(Probed {
                     url: candidate.url,
                     own: candidate.own,
@@ -61,6 +58,49 @@ pub async fn all(
         .filter_map(std::future::ready)
         .collect()
         .await
+}
+
+pub async fn one(
+    http: &Client,
+    url: &Url,
+    chain_id: u64,
+    dialect: Dialect,
+) -> Result<(Duration, u64), String> {
+    match dialect {
+        Dialect::EvmJsonRpc => evm(http, url, chain_id).await,
+        Dialect::TronHttp => tron_node(http, url, chain_id).await,
+    }
+}
+
+pub async fn served_chain(http: &Client, url: &Url, dialect: Dialect) -> Result<u64, String> {
+    match dialect {
+        Dialect::EvmJsonRpc => {
+            let answer = post(
+                http,
+                url.as_str(),
+                json!({"jsonrpc": "2.0", "id": 1, "method": "eth_chainId", "params": []}),
+            )
+            .await?;
+            answer["result"]
+                .as_str()
+                .and_then(|hex| u64::from_str_radix(hex.trim_start_matches("0x"), 16).ok())
+                .ok_or_else(|| "no eth_chainId in the answer".to_owned())
+        }
+        Dialect::TronHttp => tron_chain(http, url.as_str().trim_end_matches('/')).await,
+    }
+}
+
+async fn tron_chain(http: &Client, base: &str) -> Result<u64, String> {
+    let genesis = post(
+        http,
+        &format!("{base}/wallet/getblockbynum"),
+        json!({ "num": 0 }),
+    )
+    .await?;
+    genesis["blockID"]
+        .as_str()
+        .and_then(tron::chain_id_of_genesis)
+        .ok_or_else(|| "no genesis block id in getblockbynum".to_owned())
 }
 
 async fn evm(http: &Client, url: &Url, chain_id: u64) -> Result<(Duration, u64), String> {
@@ -101,11 +141,16 @@ async fn evm(http: &Client, url: &Url, chain_id: u64) -> Result<(Duration, u64),
     Ok((latency, head))
 }
 
-async fn tron(http: &Client, url: &Url) -> Result<(Duration, u64), String> {
+async fn tron_node(http: &Client, url: &Url, chain_id: u64) -> Result<(Duration, u64), String> {
     let base = url.as_str().trim_end_matches('/');
 
+    let served = tron_chain(http, base).await?;
+    if served != chain_id {
+        return Err(format!("serves chain {served}, not {chain_id}"));
+    }
+
     let started = Instant::now();
-    let now = tron_post(
+    let now = post(
         http,
         &format!("{base}/wallet/getblock"),
         json!({ "detail": false }),
@@ -120,7 +165,7 @@ async fn tron(http: &Client, url: &Url) -> Result<(Duration, u64), String> {
     Ok((latency, head))
 }
 
-async fn tron_post(http: &Client, url: &str, body: Value) -> Result<Value, String> {
+async fn post(http: &Client, url: &str, body: Value) -> Result<Value, String> {
     http.post(url)
         .timeout(PROBE_TIMEOUT)
         .json(&body)
@@ -130,5 +175,5 @@ async fn tron_post(http: &Client, url: &str, body: Value) -> Result<Value, Strin
         .map_err(|error| error.to_string())?
         .json()
         .await
-        .map_err(|error| format!("not a tron node: {error}"))
+        .map_err(|error| format!("not a node: {error}"))
 }

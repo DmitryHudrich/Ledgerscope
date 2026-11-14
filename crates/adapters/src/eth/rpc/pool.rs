@@ -1,4 +1,4 @@
-mod probe;
+pub(crate) mod probe;
 mod retry;
 
 use std::{
@@ -25,6 +25,7 @@ use crate::eth::{
     chainlist::Chainlist,
     rate_limiter::RateLimiter,
     rpc::monitor::{CallOutcome, CallRecord, RpcMonitor, redact},
+    rpc::personal::{self, PERSONAL_LABEL},
     rpc::pool::{
         probe::{Candidate, Probed},
         retry::{
@@ -46,7 +47,7 @@ pub enum Dialect {
 }
 
 impl Dialect {
-    fn node_url(self, url: Url) -> Url {
+    pub fn node_url(self, url: Url) -> Url {
         match self {
             Self::EvmJsonRpc => url,
             Self::TronHttp => {
@@ -91,6 +92,7 @@ struct Node {
     http: Http<Client>,
     latency: Duration,
     state: Arc<NodeState>,
+    personal: bool,
 }
 
 impl Node {
@@ -99,7 +101,11 @@ impl Node {
     }
 
     fn label(&self) -> String {
-        node_label(&self.url)
+        if self.personal {
+            PERSONAL_LABEL.to_owned()
+        } else {
+            node_label(&self.url)
+        }
     }
 
     fn supports(&self, method: &str) -> bool {
@@ -117,6 +123,7 @@ pub struct RpcPool {
     config: RpcPoolConfig,
     chainlist: Option<Arc<Chainlist>>,
     nodes: RwLock<Arc<Vec<Arc<Node>>>>,
+    personal: Mutex<HashMap<String, Arc<NodeState>>>,
     monitor: OnceLock<Arc<RpcMonitor>>,
 }
 
@@ -141,6 +148,7 @@ impl RpcPool {
             config,
             chainlist,
             nodes: RwLock::new(Arc::new(Vec::new())),
+            personal: Mutex::new(HashMap::new()),
             monitor: OnceLock::new(),
         })
     }
@@ -226,6 +234,10 @@ impl RpcPool {
 
     pub fn chain_id(&self) -> u64 {
         self.config.chain_id
+    }
+
+    pub fn dialect(&self) -> Dialect {
+        self.config.dialect
     }
 
     pub fn len(&self) -> usize {
@@ -384,20 +396,51 @@ impl RpcPool {
         latency: Duration,
         existing: &HashMap<String, Arc<NodeState>>,
     ) -> Arc<Node> {
-        let state = existing.get(&key(&url)).cloned().unwrap_or_else(|| {
-            Arc::new(NodeState {
-                limiter: RateLimiter::new(self.config.rps),
-                unsupported: Mutex::new(HashSet::new()),
-                shallow: AtomicBool::new(false),
-            })
-        });
+        let state = existing
+            .get(&key(&url))
+            .cloned()
+            .unwrap_or_else(|| self.fresh_state());
 
         Arc::new(Node {
             http: Http::with_client(self.http.clone(), url.clone()),
             url,
             latency,
             state,
+            personal: false,
         })
+    }
+
+    fn fresh_state(&self) -> Arc<NodeState> {
+        Arc::new(NodeState {
+            limiter: RateLimiter::new(self.config.rps),
+            unsupported: Mutex::new(HashSet::new()),
+            shallow: AtomicBool::new(false),
+        })
+    }
+
+    fn personal_nodes(&self) -> Vec<Arc<Node>> {
+        let urls = personal::current(self.config.chain_id);
+        if urls.is_empty() {
+            return Vec::new();
+        }
+
+        let mut states = self.personal.lock().expect("the lock is never poisoned");
+        urls.into_iter()
+            .map(|url| {
+                let url = self.config.dialect.node_url(url);
+                let state = states
+                    .entry(key(&url))
+                    .or_insert_with(|| self.fresh_state())
+                    .clone();
+                Arc::new(Node {
+                    http: Http::with_client(self.http.clone(), url.clone()),
+                    url,
+                    latency: Duration::ZERO,
+                    state,
+                    personal: true,
+                })
+            })
+            .collect()
     }
 
     fn snapshot(&self) -> Arc<Vec<Arc<Node>>> {
@@ -412,9 +455,13 @@ impl RpcPool {
     }
 
     async fn pick(&self, method: &str, tried: &[Url]) -> Option<Arc<Node>> {
+        let personal = self.personal_nodes();
         let nodes = self.snapshot();
-        let supporting: Vec<&Arc<Node>> =
-            nodes.iter().filter(|node| node.supports(method)).collect();
+        let supporting: Vec<&Arc<Node>> = personal
+            .iter()
+            .chain(nodes.iter())
+            .filter(|node| node.supports(method))
+            .collect();
         let fresh: Vec<&Arc<Node>> = supporting
             .iter()
             .copied()
@@ -756,5 +803,36 @@ mod tests {
             .map(|probed| probed.url.host_str().unwrap())
             .collect();
         assert_eq!(hosts, ["fast.example", "mid.example", "mine.example"]);
+    }
+
+    #[tokio::test]
+    async fn a_personal_node_goes_first_only_for_its_owner() {
+        let pool = RpcPool::fixed(
+            Client::new(),
+            vec![Url::parse("https://shared.example").unwrap()],
+            10,
+        );
+        let mine = || {
+            personal::PersonalNodes::new(std::collections::BTreeMap::from([(
+                0,
+                vec!["https://mine.example/key".to_owned()],
+            )]))
+        };
+
+        let picked = mine()
+            .scope(pool.pick("eth_blockNumber", &[]))
+            .await
+            .unwrap();
+        assert!(picked.personal);
+        assert_eq!(picked.label(), PERSONAL_LABEL);
+
+        let fallback = mine()
+            .scope(pool.pick("eth_blockNumber", std::slice::from_ref(&picked.url)))
+            .await
+            .unwrap();
+        assert_eq!(fallback.host(), "shared.example");
+
+        let anonymous = pool.pick("eth_blockNumber", &[]).await.unwrap();
+        assert_eq!(anonymous.host(), "shared.example");
     }
 }

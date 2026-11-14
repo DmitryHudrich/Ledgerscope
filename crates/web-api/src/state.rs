@@ -1,20 +1,32 @@
+mod networks;
+
 use std::{collections::BTreeMap, path::Path, sync::Arc, time::Duration};
 
 use anyhow::Context;
 
 use adapters::account::{Argon2Hasher, PgAccounts, RandomTokens};
 use adapters::eth::{
-    Chainlist, ClickhouseTxRepository, Dialect, ETHEREUM, FleetChain, RedisTxCache, RpcFleet,
-    RpcMonitor, RpcPool, RpcPoolConfig, RpcTxSource, TronTxSource, tron,
+    Chainlist, ClickhouseTxRepository, Dialect, FleetChain, PersonalNodes, PersonalProbe,
+    RedisTxCache, RpcFleet, RpcMonitor, RpcPool, RpcPoolConfig, RpcTxSource, TronTxSource,
+    networks::known_name, tron,
 };
-use application::account::{AuthService, CanvasService, LabelService, TeamService};
+use adapters::observe::PgObservations;
+use application::account::{
+    AuthService, CanvasService, LabelService, RpcNodeService, TeamService, User,
+};
+use application::observe::{ObservationStore, TlsCorrelationConfig};
 use application::eth::{
     CachingActorResolver, EthExplorer, ExploreLimits, FetchingTxIndex, JsonLabelProvider,
     ScanBoard, StoringEthTxSource,
     classificator::FulliestEthTxClassificator,
-    ports::{ActorRepository, EthRpcSource, EthTxCache, EthTxIndex, EthTxSource, LabelProvider},
+    ports::{
+        ActorRepository, EthRpcSource, EthTxCache, EthTxIndex, EthTxRepository, EthTxSource,
+        LabelProvider,
+    },
 };
-use reqwest::{Proxy, Url};
+use reqwest::{NoProxy, Proxy, Url};
+
+pub use networks::Network;
 
 use crate::{
     auth::LoginThrottle,
@@ -25,11 +37,13 @@ const DEFAULT_NATIVE_SYMBOL: &str = "ETH";
 const DEFAULT_NATIVE_DECIMALS: u8 = 18;
 const TRON_NATIVE_SYMBOL: &str = "TRX";
 const TRON_NATIVE_DECIMALS: u8 = 6;
+const LOCAL_HOSTS: &str = "localhost,127.0.0.1,::1";
 
 struct Storage {
     source: Arc<dyn EthTxSource>,
     index: Option<Arc<dyn EthTxIndex>>,
     actors: Option<Arc<dyn ActorRepository>>,
+    repository: Option<Arc<dyn EthTxRepository>>,
 }
 
 struct SharedStorage {
@@ -37,10 +51,20 @@ struct SharedStorage {
     cache: Option<RedisTxCache>,
 }
 
+impl SharedStorage {
+    fn none() -> Self {
+        Self {
+            repository: None,
+            cache: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ChainMeta {
     pub chain_id: u64,
     pub family: Family,
+    pub network: Network,
     pub name: String,
     pub slug: String,
     pub native_symbol: String,
@@ -82,6 +106,7 @@ pub struct ChainState {
     meta: ChainMeta,
     explorer: Arc<EthExplorer>,
     rpc: Arc<dyn EthRpcSource>,
+    index_repo: Option<Arc<dyn EthTxRepository>>,
     pool: Arc<RpcPool>,
 }
 
@@ -92,6 +117,10 @@ impl ChainState {
 
     pub fn explorer(&self) -> &EthExplorer {
         &self.explorer
+    }
+
+    pub fn index_repo(&self) -> Option<&Arc<dyn EthTxRepository>> {
+        self.index_repo.as_ref()
     }
 
     pub fn rpc_nodes(&self) -> usize {
@@ -130,6 +159,10 @@ pub struct Accounts {
     pub teams: TeamService,
     pub canvases: CanvasService,
     pub labels: LabelService,
+    pub rpc_nodes: Option<RpcNodeService>,
+    pub observations: Option<Arc<dyn ObservationStore>>,
+    pub observer_token: Option<String>,
+    pub correlation: TlsCorrelationConfig,
     pub cookie_secure: bool,
     pub throttle: LoginThrottle,
 }
@@ -141,27 +174,25 @@ impl AppState {
         let http_client = get_http_client(proxy_url)?;
 
         let chainlist = chainlist(config, &http_client).await?;
-        let mut discovered = discovered_l2s(config, chainlist.as_deref());
-        if config.chains.tron {
-            discovered.push(tron::TRON_MAINNET);
-        }
+        let plans = networks::plan(config, chainlist.as_deref(), &http_client).await;
 
         let mut fleet_chains = Vec::new();
         let mut metas = Vec::new();
-        for chain_id in config.chain_ids(discovered) {
-            let Some(pool) = pool_config(config, chainlist.as_deref(), chain_id)? else {
+        for (chain_id, plan) in &plans {
+            let chain_id = *chain_id;
+            let Some(pool) = pool_config(config, chainlist.as_deref(), chain_id, plan)? else {
                 continue;
             };
 
             fleet_chains.push(FleetChain {
                 pool,
-                eager: config.configured(chain_id),
+                eager: config.configured(chain_id) || plan.network == Network::Devnet,
             });
-            metas.push(meta(config, chainlist.as_deref(), chain_id));
+            metas.push(meta(config, chainlist.as_deref(), chain_id, plan));
         }
 
         let fleet = RpcFleet::start(
-            http_client,
+            http_client.clone(),
             chainlist,
             fleet_chains,
             Duration::from_secs(config.rpc.rescan_interval_secs()),
@@ -191,7 +222,11 @@ impl AppState {
                 .expect("every chain got a pool in the fleet");
             pool.watch(monitor.clone());
             let (tx_source, rpc_source) = sources(meta.family, pool.clone());
-            let storage = storage(&shared, chain_id, tx_source);
+            let storage = if meta.network == Network::Devnet {
+                storage(&SharedStorage::none(), chain_id, tx_source)
+            } else {
+                storage(&shared, chain_id, tx_source)
+            };
             let label_provider = Arc::new(
                 labels
                     .remove(&chain_id)
@@ -204,6 +239,7 @@ impl AppState {
                 label_provider.clone(),
             ));
 
+            let index_repo = storage.repository.clone();
             let index = storage.index.unwrap_or_else(|| {
                 Arc::new(FetchingTxIndex::new(storage.source.clone())) as Arc<dyn EthTxIndex>
             });
@@ -226,6 +262,7 @@ impl AppState {
                     meta,
                     explorer,
                     rpc: rpc_source,
+                    index_repo,
                     pool,
                 },
             );
@@ -239,7 +276,7 @@ impl AppState {
         Ok(Self {
             chains: Arc::new(chains),
             default_chain,
-            accounts: accounts(&config.accounts).await,
+            accounts: accounts(&config.accounts, &fleet, &http_client).await,
             monitor,
             scans,
         })
@@ -247,6 +284,24 @@ impl AppState {
 
     pub fn accounts(&self) -> Option<&Arc<Accounts>> {
         self.accounts.as_ref()
+    }
+
+    pub async fn personal_rpc(&self, user: Option<&User>) -> PersonalNodes {
+        let (Some(service), Some(user)) = (
+            self.accounts
+                .as_ref()
+                .and_then(|accounts| accounts.rpc_nodes.as_ref()),
+            user,
+        ) else {
+            return PersonalNodes::default();
+        };
+        match service.by_chain(user).await {
+            Ok(urls) => PersonalNodes::new(urls),
+            Err(error) => {
+                tracing::warn!("going on without the personal rpc nodes: {error}");
+                PersonalNodes::default()
+            }
+        }
     }
 
     pub fn monitor(&self) -> &RpcMonitor {
@@ -306,21 +361,6 @@ async fn chainlist(
     }
 }
 
-fn discovered_l2s(config: &Config, chainlist: Option<&Chainlist>) -> Vec<u64> {
-    if !config.chains.ethereum_l2 {
-        return Vec::new();
-    }
-
-    let Some(chainlist) = chainlist else {
-        tracing::warn!("chains.ethereum_l2 is on, but chainlist is not there to name them");
-        return Vec::new();
-    };
-
-    let l2s = chainlist.l2s_of(ETHEREUM);
-    tracing::info!("chainlist names {} ethereum l2s", l2s.len());
-    l2s.into_iter().map(|chain| chain.chain_id).collect()
-}
-
 fn sources(family: Family, pool: Arc<RpcPool>) -> (Arc<dyn EthTxSource>, Arc<dyn EthRpcSource>) {
     match family {
         Family::Evm => {
@@ -338,17 +378,22 @@ fn pool_config(
     config: &Config,
     chainlist: Option<&Chainlist>,
     chain_id: u64,
+    plan: &networks::Plan,
 ) -> anyhow::Result<Option<RpcPoolConfig>> {
     let rpc = config.chain_rpc(chain_id);
-    let family = Family::of(chain_id);
-    let seeds = match family {
-        Family::Evm => Vec::new(),
-        Family::Tron => tron::public_nodes(chain_id),
+    let family = plan.family;
+    let devnet = plan.network == Network::Devnet;
+    let seeds = match (devnet, family) {
+        (true, _) => Vec::new(),
+        (false, Family::Evm) => adapters::eth::networks::public_nodes(chain_id),
+        (false, Family::Tron) => tron::public_nodes(chain_id),
     };
-    let listed = chainlist.map_or(0, |chainlist| chainlist.rpc_urls(chain_id).len());
-    let public = rpc.chainlist && listed + seeds.len() > 0;
+    let listed = chainlist
+        .filter(|_| !devnet)
+        .map_or(0, |chainlist| chainlist.rpc_urls(chain_id).len());
+    let public = rpc.chainlist && !devnet && listed + seeds.len() > 0;
 
-    if rpc.own.is_empty() && !public {
+    if rpc.own.is_empty() && plan.own.is_empty() && !public {
         anyhow::ensure!(
             chain_id != config.chains.default,
             "the default chain {chain_id} has no rpc to talk to"
@@ -364,6 +409,7 @@ fn pool_config(
             Url::parse(url)
                 .with_context(|| format!("chain {chain_id} has an invalid rpc URL: {url}"))
         })
+        .chain(plan.own.iter().cloned().map(Ok))
         .collect::<anyhow::Result<Vec<_>>>()?;
 
     Ok(Some(RpcPoolConfig {
@@ -373,17 +419,24 @@ fn pool_config(
         own,
         seeds,
         exclude: rpc.exclude,
-        max_public: if rpc.chainlist {
-            rpc.chainlist_max_nodes
-        } else {
-            0
-        },
+        max_public: if public { rpc.chainlist_max_nodes } else { 0 },
     }))
 }
 
-fn meta(config: &Config, chainlist: Option<&Chainlist>, chain_id: u64) -> ChainMeta {
+fn meta(
+    config: &Config,
+    chainlist: Option<&Chainlist>,
+    chain_id: u64,
+    plan: &networks::Plan,
+) -> ChainMeta {
     let network = config.network(chain_id);
-    let listed = chainlist.and_then(|chainlist| chainlist.chain(chain_id));
+    let listed = chainlist
+        .filter(|_| plan.network != Network::Devnet)
+        .and_then(|chainlist| chainlist.chain(chain_id));
+    let fallback_name = plan
+        .name
+        .clone()
+        .or_else(|| known_name(chain_id).map(str::to_owned));
     let pick = |own: Option<&String>, listed: Option<&String>| {
         own.or(listed)
             .filter(|value| !value.trim().is_empty())
@@ -394,16 +447,18 @@ fn meta(config: &Config, chainlist: Option<&Chainlist>, chain_id: u64) -> ChainM
         network.and_then(|network| network.name.as_ref()),
         listed.as_ref().map(|chain| &chain.name),
     )
+    .or_else(|| fallback_name.clone())
     .unwrap_or_else(|| format!("Chain {chain_id}"));
 
     let slug = pick(
         network.and_then(|network| network.slug.as_ref()),
         listed.as_ref().map(|chain| &chain.slug),
     )
+    .or(fallback_name)
     .map(|slug| adapters::eth::chainlist::slugify(&slug))
     .unwrap_or_else(|| chain_id.to_string());
 
-    let family = Family::of(chain_id);
+    let family = plan.family;
     let (fallback_symbol, fallback_decimals) = match family {
         Family::Evm => (DEFAULT_NATIVE_SYMBOL, DEFAULT_NATIVE_DECIMALS),
         Family::Tron => (TRON_NATIVE_SYMBOL, TRON_NATIVE_DECIMALS),
@@ -425,6 +480,7 @@ fn meta(config: &Config, chainlist: Option<&Chainlist>, chain_id: u64) -> ChainM
     ChainMeta {
         chain_id,
         family,
+        network: plan.network,
         name,
         slug,
         native_symbol,
@@ -448,7 +504,11 @@ fn labels(
         .with_context(|| format!("failed to read the labels from {path}"))
 }
 
-async fn accounts(config: &AccountsConfig) -> Option<Arc<Accounts>> {
+async fn accounts(
+    config: &AccountsConfig,
+    fleet: &Arc<RpcFleet>,
+    http_client: &reqwest::Client,
+) -> Option<Arc<Accounts>> {
     if !config.enabled {
         tracing::info!("accounts.enabled is off, running without accounts");
         return None;
@@ -464,6 +524,18 @@ async fn accounts(config: &AccountsConfig) -> Option<Arc<Accounts>> {
     if let Err(error) = store.migrate().await {
         tracing::warn!("running without accounts: {error}");
         return None;
+    }
+
+    let observer = &config.observer;
+    let observations = observer.enabled.then(|| {
+        Arc::new(PgObservations::new(store.pool().clone())) as Arc<dyn ObservationStore>
+    });
+    let observer_token = observer
+        .enabled
+        .then(|| observer.token.trim().to_owned())
+        .filter(|token| !token.is_empty());
+    if observer.enabled && observer_token.is_none() {
+        tracing::warn!("accounts.observer.enabled is on but the token is empty, ingest is closed");
     }
 
     let tokens = Arc::new(RandomTokens);
@@ -484,7 +556,24 @@ async fn accounts(config: &AccountsConfig) -> Option<Arc<Accounts>> {
             tokens,
             config.max_canvas_bytes,
         ),
-        labels: LabelService::new(store.clone(), store),
+        labels: LabelService::new(store.clone(), store.clone()),
+        rpc_nodes: config.personal_rpc.enabled.then(|| {
+            RpcNodeService::new(
+                store,
+                Arc::new(PersonalProbe::new(
+                    fleet.clone(),
+                    http_client.clone(),
+                    config.personal_rpc.allow_private_hosts,
+                )),
+                config.personal_rpc.max_nodes_per_chain,
+            )
+        }),
+        observations,
+        observer_token,
+        correlation: TlsCorrelationConfig {
+            window_secs: observer.window_secs,
+            skew_secs: observer.skew_secs,
+        },
         cookie_secure: config.cookie_secure,
         throttle: LoginThrottle::default(),
     });
@@ -526,10 +615,7 @@ fn limits(graph: &GraphConfig) -> ExploreLimits {
 async fn shared_storage(storage: &StorageConfig) -> anyhow::Result<SharedStorage> {
     if !storage.persist_txs {
         tracing::info!("storage.persist_txs is off, every request goes to the rpc");
-        return Ok(SharedStorage {
-            repository: None,
-            cache: None,
-        });
+        return Ok(SharedStorage::none());
     }
 
     let clickhouse = &storage.clickhouse;
@@ -565,6 +651,7 @@ fn storage(shared: &SharedStorage, chain_id: u64, upstream: Arc<dyn EthTxSource>
             source: upstream,
             index: None,
             actors: None,
+            repository: None,
         };
     };
 
@@ -577,6 +664,7 @@ fn storage(shared: &SharedStorage, chain_id: u64, upstream: Arc<dyn EthTxSource>
     Storage {
         source: Arc::new(StoringEthTxSource::new(upstream, repository.clone(), cache)),
         index: Some(repository.clone() as Arc<dyn EthTxIndex>),
+        repository: Some(repository.clone() as Arc<dyn EthTxRepository>),
         actors: Some(repository as Arc<dyn ActorRepository>),
     }
 }
@@ -602,7 +690,8 @@ fn get_http_client(proxy_url: Option<String>) -> anyhow::Result<reqwest::Client>
     if let Some(proxy_url) = proxy_url {
         client = client.proxy(
             Proxy::all(&proxy_url)
-                .with_context(|| format!("proxy is not a valid proxy URL: {}", proxy_url))?,
+                .with_context(|| format!("proxy is not a valid proxy URL: {}", proxy_url))?
+                .no_proxy(NoProxy::from_string(LOCAL_HOSTS)),
         );
     }
 

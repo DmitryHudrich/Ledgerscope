@@ -116,10 +116,12 @@ export interface GraphRoot {
 }
 
 export type ChainFamily = 'evm' | 'tron';
+export type ChainNetwork = 'mainnet' | 'testnet' | 'devnet';
 
 export interface ChainInfo {
   chain_id: number;
   family: ChainFamily;
+  network: ChainNetwork;
   name: string;
   slug: string;
   native_symbol: string;

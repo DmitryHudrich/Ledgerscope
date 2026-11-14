@@ -3,6 +3,7 @@ import type { ChainFamily } from '../api/types';
 const DEFAULT_NATIVE_SYMBOL = 'ETH';
 const DEFAULT_NATIVE_DECIMALS = 18;
 const CHAIN_KEY = 'ledgerscope:chain:v1';
+const ADDRESS_FORM_KEY = 'ledgerscope:address-form:v1';
 const TRON_PREFIX = 0x41;
 const BASE58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 const EVM_ADDRESS_RE = /^0x[0-9a-f]{40}$/;
@@ -12,6 +13,40 @@ const TRON_BASE58_RE = /^T[1-9A-HJ-NP-Za-km-z]{33}$/;
 let native = DEFAULT_NATIVE_SYMBOL;
 let decimals = DEFAULT_NATIVE_DECIMALS;
 let family: ChainFamily = 'evm';
+
+export type AddressForm = 'auto' | 'hex';
+let addressForm: AddressForm = readStoredAddressForm();
+const addressFormListeners = new Set<() => void>();
+
+function readStoredAddressForm(): AddressForm {
+  try {
+    return localStorage.getItem(ADDRESS_FORM_KEY) === 'hex' ? 'hex' : 'auto';
+  } catch {
+    return 'auto';
+  }
+}
+
+export function getAddressForm(): AddressForm {
+  return addressForm;
+}
+
+export function setAddressForm(next: AddressForm): void {
+  if (next === addressForm) return;
+  addressForm = next;
+  try {
+    localStorage.setItem(ADDRESS_FORM_KEY, next);
+  } catch {
+    /* ignore */
+  }
+  for (const listener of addressFormListeners) listener();
+}
+
+export function subscribeAddressForm(listener: () => void): () => void {
+  addressFormListeners.add(listener);
+  return () => {
+    addressFormListeners.delete(listener);
+  };
+}
 
 export function nativeSymbol(): string {
   return native;
@@ -32,6 +67,7 @@ export function setActiveChain(chain: { native_symbol?: string; native_decimals?
 }
 
 export function displayAddress(address: string): string {
+  if (addressForm === 'hex') return address;
   if (family !== 'tron' || !EVM_ADDRESS_RE.test(address)) return address;
   return toTronBase58(address);
 }

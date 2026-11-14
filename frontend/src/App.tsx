@@ -27,6 +27,8 @@ import { AuthDialog } from './components/account/AuthDialog';
 import { CanvasControls, type SaveState } from './components/account/CanvasControls';
 import { CanvasesDialog } from './components/account/CanvasesDialog';
 import { LabelsDialog } from './components/account/LabelsDialog';
+import { RpcNodesDialog } from './components/account/RpcNodesDialog';
+import { TlsDeanonDialog } from './components/account/TlsDeanonDialog';
 import { NodeLabels } from './components/account/NodeLabels';
 import { ProfileDialog } from './components/account/ProfileDialog';
 import { SaveCanvasDialog } from './components/account/SaveCanvasDialog';
@@ -62,6 +64,8 @@ import {
   type CanvasState,
 } from './lib/canvasDocument';
 import { useAccount } from './lib/useAccount';
+import { useAddressForm } from './lib/useAddressForm';
+import { useTlsLinks } from './lib/useTlsLinks';
 import { addToGroup, hiddenSets, withoutTxs, type GraphGroup } from './lib/groups';
 import { downloadJson, graphExport } from './lib/exportGraph';
 import { focusSets, readFocus, writeFocus, type FocusSettings } from './lib/focus';
@@ -84,7 +88,7 @@ function readAnnotations(): Annotation[] {
 }
 
 type TemporaryPanel = WorkspacePanel | 'advanced';
-type Dialog = 'auth' | 'profile' | 'teams' | 'canvases' | 'labels' | 'save' | 'share';
+type Dialog = 'auth' | 'profile' | 'teams' | 'canvases' | 'labels' | 'rpc' | 'tls' | 'save' | 'share';
 
 const SNAPSHOT_BUDGET = 7 * 1024 * 1024;
 
@@ -217,6 +221,8 @@ export default function App() {
   const [temporaryPanel, setTemporaryPanel] = useState<TemporaryPanel | null>(null);
 
   const account = useAccount();
+  useAddressForm();
+  const tlsLinks = useTlsLinks(chainId, !!account.me);
   const monitor = useMonitor(chainsLoaded && chains.length > 0);
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [canvas, setCanvas] = useState<CanvasInfo | null>(null);
@@ -685,11 +691,13 @@ export default function App() {
 
   const applyDocument = useCallback((document: CanvasDocument) => {
     const picked = chains.find((candidate) => candidate.chain_id === document.chain_id);
-    if (!picked) throw new Error(`Chain ${document.chain_id} of this canvas is not served by this server.`);
+    if (!picked) {
+      setNotice(`Chain ${document.chain_id} is not served here — opening the saved graph read-only; scans and RPC stay off until the server serves that chain.`);
+    }
 
     requestId.current += 1;
     snapped.current = true;
-    if (picked.chain_id !== chainId) {
+    if (picked && picked.chain_id !== chainId) {
       storeChain(picked.chain_id);
       setActiveChain(picked);
       setChainId(picked.chain_id);
@@ -1016,7 +1024,7 @@ export default function App() {
           ) : null}
         </>}
         accountSlot={account.config?.enabled ? (
-          <AccountMenu me={account.me} onSignIn={() => setDialog('auth')} onAction={accountAction} />
+          <AccountMenu me={account.me} personalRpc={account.config?.personal_rpc ?? false} onSignIn={() => setDialog('auth')} onAction={accountAction} />
         ) : null}
       />
 
@@ -1045,6 +1053,8 @@ export default function App() {
           onAnnotationsChange={changeAnnotations}
           annotationStyle={annotationStyle}
           searchMatches={searchMatches}
+          deanon={tlsLinks.score}
+          ipLinks={tlsLinks.byAddress}
           labelMode={labelMode}
           showGrid
           showFlow={showFlow}
@@ -1087,6 +1097,7 @@ export default function App() {
           labelMode={labelMode}
           onLabelModeChange={setLabelMode}
           groupsBadge={groups.length + (removedNodeIds.size > 0 || hiddenTxs.size > 0 ? 1 : 0)}
+          ipLinks={tlsLinks.byAddress}
           groupsPanel={(
             <GroupsPanel
               groups={groups}
@@ -1412,6 +1423,18 @@ export default function App() {
             }
           }}
           onChanged={(address) => void refreshUserLabels([address]).catch(() => undefined)}
+          onClose={() => setDialog(null)}
+        />
+      )}
+      {dialog === 'rpc' && account.me && (
+        <RpcNodesDialog chains={chains} chainId={chainId} onClose={() => setDialog(null)} />
+      )}
+      {dialog === 'tls' && account.me && (
+        <TlsDeanonDialog
+          chains={chains}
+          chainId={chainId}
+          canvasRange={hasGraph ? { from: selection.from, to: selection.to } : undefined}
+          onChange={() => void tlsLinks.refresh()}
           onClose={() => setDialog(null)}
         />
       )}

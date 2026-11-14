@@ -39,6 +39,11 @@ const SORT_STORAGE_KEY = 'ledgerscope.chain-sort';
 const ECOSYSTEM_STORAGE_KEY = 'ledgerscope.chain-ecosystems';
 const OTHER_EVM = 'evm:other';
 
+const NETWORK_TITLES: Record<string, string> = {
+  testnet: 'Testnets',
+  devnet: 'Devnets',
+};
+
 const FAMILY_TITLES: Record<string, string> = {
   tron: 'Tron',
   ton: 'TON',
@@ -140,7 +145,10 @@ function classify(chains: ChainInfo[], defaultChain: number | null) {
     const layer = tone === 'l2' ? 'l2' : 'l1';
     let key: string;
     let title: string;
-    if (chain.family !== 'evm') {
+    if (chain.network !== 'mainnet') {
+      key = chain.network;
+      title = NETWORK_TITLES[chain.network];
+    } else if (chain.family !== 'evm') {
       key = chain.family;
       title = familyTitle(chain.family);
     } else {
@@ -165,12 +173,17 @@ function classify(chains: ChainInfo[], defaultChain: number | null) {
   const ordered = [...ecosystems.values()].sort(
     (a, b) =>
       Number(b.key === defaultEcosystem) - Number(a.key === defaultEcosystem)
-      || Number(a.key === OTHER_EVM) - Number(b.key === OTHER_EVM)
+      || rank(a.key) - rank(b.key)
       || b.total - a.total
       || a.title.localeCompare(b.title),
   );
 
   return { placements, ecosystems: ordered };
+}
+
+function rank(key: string): number {
+  if (key in NETWORK_TITLES) return 2;
+  return key === OTHER_EVM ? 1 : 0;
 }
 
 function groupsOf(
@@ -345,6 +358,11 @@ export function ChainPicker({ chains, chain, defaultChain, disabled, onChange, o
           {chainGlyph(chain)}
         </span>
         <span className="max-w-[16ch] overflow-hidden text-ellipsis whitespace-nowrap">{chain?.name ?? 'Ethereum'}</span>
+        {chain && chain.network !== 'mainnet' && (
+          <span className="rounded-full bg-[color-mix(in_srgb,var(--series-focus)_16%,transparent)] px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide text-series-focus">
+            {chain.network}
+          </span>
+        )}
         {chains.length > 1 && (
           <IconChevron className={cx('text-text-muted [transition:transform_120ms_ease]', open && 'rotate-180')} size={13} />
         )}

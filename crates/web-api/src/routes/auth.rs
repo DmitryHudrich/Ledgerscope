@@ -59,6 +59,9 @@ pub(crate) async fn auth_config(State(state): State<AppState>) -> Json<AuthConfi
         registration_open: state
             .accounts()
             .is_some_and(|accounts| accounts.auth.registration_open()),
+        personal_rpc: state
+            .accounts()
+            .is_some_and(|accounts| accounts.rpc_nodes.is_some()),
     })
 }
 

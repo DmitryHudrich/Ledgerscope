@@ -2,7 +2,9 @@ pub(crate) mod auth;
 pub(crate) mod canvases;
 pub(crate) mod labels;
 pub(crate) mod monitor;
+pub(crate) mod rpc_nodes;
 pub(crate) mod teams;
+pub(crate) mod tls;
 
 use axum::{
     Json, Router,
@@ -15,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, OpenApi, ToSchema};
 use utoipa_scalar::{Scalar, Servable};
 
-use application::account::AccountError;
+use application::account::{AccountError, User};
 use application::eth::{Exploration, ExploreError, ExploreRequest, GraphRoot};
 use domain::eth::BlockRange;
 
@@ -43,6 +45,8 @@ pub fn router(state: AppState) -> Router {
         .merge(canvases::router(max_document_bytes))
         .merge(labels::router())
         .merge(monitor::router())
+        .merge(rpc_nodes::router())
+        .merge(tls::router())
         .merge(Scalar::with_url("/scalar", ApiDoc::openapi()))
         .route("/", get(index))
         .route("/openapi.json", get(openapi))
@@ -198,8 +202,19 @@ pub(crate) async fn graph(
     MaybeUser(user): MaybeUser,
     Json(request): Json<GraphRequest>,
 ) -> Result<Response, ApiError> {
+    let personal = state.personal_rpc(user.as_ref()).await;
+    personal
+        .scope(explore_graph(&state, user.as_ref(), request))
+        .await
+}
+
+async fn explore_graph(
+    state: &AppState,
+    user: Option<&User>,
+    request: GraphRequest,
+) -> Result<Response, ApiError> {
     let chain = chain(
-        &state,
+        state,
         request
             .chain
             .as_ref()
@@ -213,8 +228,7 @@ pub(crate) async fn graph(
     match chain.explorer().explore(asked).await? {
         Exploration::Graph(graph) => {
             let addresses = graph.nodes().iter().map(|node| *node.address()).collect();
-            let mine =
-                labels::graph_labels(&state, user.as_ref(), chain.meta().chain_id, addresses).await;
+            let mine = labels::graph_labels(state, user, chain.meta().chain_id, addresses).await;
             Ok(Json(GraphResponse::new(&graph, span, &mine)).into_response())
         }
         Exploration::RpcNeeded(plan) => Ok((
@@ -276,8 +290,19 @@ pub(crate) async fn low_level_graph(
     MaybeUser(user): MaybeUser,
     Json(request): Json<GraphRequest>,
 ) -> Result<Response, ApiError> {
+    let personal = state.personal_rpc(user.as_ref()).await;
+    personal
+        .scope(explore_low_level(&state, user.as_ref(), request))
+        .await
+}
+
+async fn explore_low_level(
+    state: &AppState,
+    user: Option<&User>,
+    request: GraphRequest,
+) -> Result<Response, ApiError> {
     let chain = chain(
-        &state,
+        state,
         request
             .chain
             .as_ref()
@@ -291,8 +316,7 @@ pub(crate) async fn low_level_graph(
     match chain.explorer().explore_low_level(asked).await? {
         Exploration::Graph(graph) => {
             let addresses = graph.actors().iter().map(|node| *node.address()).collect();
-            let mine =
-                labels::graph_labels(&state, user.as_ref(), chain.meta().chain_id, addresses).await;
+            let mine = labels::graph_labels(state, user, chain.meta().chain_id, addresses).await;
             Ok(Json(LowLevelGraphResponse::new(&graph, span, &mine)).into_response())
         }
         Exploration::RpcNeeded(plan) => Ok((

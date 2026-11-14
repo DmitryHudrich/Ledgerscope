@@ -48,3 +48,6 @@ id!(TeamId);
 id!(CanvasId);
 id!(LabelId);
 id!(LinkId);
+id!(RpcNodeId);
+id!(ObservationId);
+id!(IpLinkId);

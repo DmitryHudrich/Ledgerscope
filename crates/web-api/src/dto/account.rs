@@ -3,7 +3,7 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use utoipa::ToSchema;
 
 use application::account::{
-    CanvasShare, Member, Membership, PublicLink, User, VisibleCanvas, VisibleLabel,
+    CanvasShare, Member, Membership, PublicLink, RpcNode, User, VisibleCanvas, VisibleLabel,
 };
 use domain::account::{LabelAccess, Owner, ShareAccess, TeamId, TeamRole};
 
@@ -122,6 +122,7 @@ impl OwnerResponse {
 pub struct AuthConfigResponse {
     pub enabled: bool,
     pub registration_open: bool,
+    pub personal_rpc: bool,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -430,6 +431,33 @@ impl From<&VisibleLabel> for UserLabelResponse {
             created_by: label.created_by.to_string(),
             created_at: stamp(label.created_at),
             updated_at: stamp(label.updated_at),
+        }
+    }
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct AddRpcNodeRequest {
+    pub chain_id: u64,
+    pub url: String,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct RpcNodeResponse {
+    id: String,
+    chain_id: u64,
+    label: String,
+    created_at: String,
+}
+
+impl From<&RpcNode> for RpcNodeResponse {
+    fn from(node: &RpcNode) -> Self {
+        Self {
+            id: node.id.to_string(),
+            chain_id: node.chain_id,
+            label: reqwest::Url::parse(&node.url)
+                .map(|url| adapters::eth::node_label(&url))
+                .unwrap_or_else(|_| "?".to_owned()),
+            created_at: stamp(node.created_at),
         }
     }
 }

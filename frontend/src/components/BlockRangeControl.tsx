@@ -75,7 +75,7 @@ export function BlockRangeControl({
     const high = Math.max(to + padding, storedTo, head ?? to);
     return {
       from: low,
-      to: head === null ? high : Math.min(high, head),
+      to: high,
     };
   }, [coverage, from, limits.head, to]);
 

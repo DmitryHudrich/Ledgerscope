@@ -2,6 +2,8 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 
 import type { LabelMode } from '../graph/draw';
 import type { AnnotationStyle, AnnotationTool } from '../graph/annotations';
+import { chainFamily, setAddressForm } from '../lib/chain';
+import { useAddressForm } from '../lib/useAddressForm';
 import {
   IconDownload,
   IconJson,
@@ -98,6 +100,8 @@ export function ToolRail({
     };
   }, [styleOpen]);
 
+  const addressForm = useAddressForm();
+
   return (
     <div ref={root} className="absolute right-[calc(var(--inspector-w)+16px)] top-4 z-10 transition-[right] duration-200 ease-[cubic-bezier(0.22,0.61,0.36,1)]">
     <Panel className="flex flex-col gap-0.5 p-[5px]" role="toolbar" aria-label="Graph controls">
@@ -139,6 +143,15 @@ export function ToolRail({
       >
         <IconLabels />
       </Tool>
+      {chainFamily() === 'tron' && (
+        <Tool
+          label={addressForm === 'hex' ? 'Addresses: hex — switch to base58' : 'Addresses: base58 — switch to hex'}
+          onClick={() => setAddressForm(addressForm === 'hex' ? 'auto' : 'hex')}
+          pressed={addressForm === 'hex'}
+        >
+          <span className="font-mono-ui text-[11px] font-semibold">{addressForm === 'hex' ? '0x' : 'T'}</span>
+        </Tool>
+      )}
       {focusControl}
       <hr className="mx-0.5 my-1 w-[calc(100%-4px)] border-0 border-t border-hairline" />
       <Tool label="Export PNG" onClick={onExport} disabled={disabled}>

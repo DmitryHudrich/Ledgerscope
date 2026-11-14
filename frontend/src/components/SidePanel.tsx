@@ -1,6 +1,7 @@
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 
 import type { GraphRoot } from '../api/types';
+import type { IpWalletLink } from '../api/tls';
 import type { LabelMode } from '../graph/draw';
 import { assetLabel, type GraphFilters, type GraphModel } from '../graph/model';
 import {
@@ -18,6 +19,7 @@ import {
   IconLegend,
   IconOverview,
   IconSearch,
+  IconTarget,
 } from './Icons';
 import {
   Badge,
@@ -37,7 +39,7 @@ import {
 } from './ui';
 import { displayAddress, nativeSymbol } from '../lib/chain';
 
-export type WorkspacePanel = 'addresses' | 'filters' | 'legend' | 'stats' | 'groups';
+export type WorkspacePanel = 'addresses' | 'filters' | 'legend' | 'stats' | 'groups' | 'tls';
 
 interface Props {
   model: GraphModel;
@@ -60,6 +62,7 @@ interface Props {
   onLabelModeChange: (next: LabelMode) => void;
   groupsPanel?: ReactNode;
   groupsBadge?: number;
+  ipLinks?: Map<string, IpWalletLink[]>;
 }
 
 export function sliderToEth(position: number): number {
@@ -93,6 +96,7 @@ export function InvestigationPanel({
   onLabelModeChange,
   groupsPanel,
   groupsBadge = 0,
+  ipLinks,
 }: Props) {
   const counts = { eoa: 0, contract: 0, focus: 0 };
   for (const node of model.nodes) counts[node.kind] += 1;
@@ -101,7 +105,7 @@ export function InvestigationPanel({
     onPanelChange(activePanel === next ? null : next);
 
   const title = activePanel
-    ? ({ addresses: 'Addresses', filters: 'Filters', legend: 'Legend', stats: 'Graph stats', groups: 'Groups & hidden' } as const)[activePanel]
+    ? ({ addresses: 'Addresses', filters: 'Filters', legend: 'Legend', stats: 'Graph stats', groups: 'Groups & hidden', tls: 'IP links' } as const)[activePanel]
     : '';
 
   return (
@@ -125,6 +129,9 @@ export function InvestigationPanel({
           </TabButton>
           <TabButton label="Stats" active={activePanel === 'stats'} onClick={() => changePanel('stats')}>
             <IconOverview />
+          </TabButton>
+          <TabButton label="IP links" active={activePanel === 'tls'} onClick={() => changePanel('tls')}>
+            <IconTarget />
           </TabButton>
           {groupsPanel && (
             <TabButton label="Groups & hidden" active={activePanel === 'groups'} badge={groupsBadge} onClick={() => changePanel('groups')}>
@@ -182,6 +189,17 @@ export function InvestigationPanel({
               />
             )}
             {activePanel === 'stats' && <StatsPanel model={model} />}
+            {activePanel === 'tls' && (
+              <TlsPanel
+                model={model}
+                ipLinks={ipLinks}
+                onSelect={(id) => {
+                  onSelect(id);
+                  onPanelChange(null);
+                }}
+                onCenter={onCenter}
+              />
+            )}
             {activePanel === 'groups' && groupsPanel}
           </div>
         </Panel>
@@ -270,6 +288,67 @@ function AddressesPanel({ model, roots, maxDepth, onSelect, onCenter, onRemove, 
               </div>
             );
           })}
+        </div>
+      )}
+    </PanelSection>
+  );
+}
+
+function TlsPanel({ model, ipLinks, onSelect, onCenter }: {
+  model: GraphModel;
+  ipLinks?: Map<string, IpWalletLink[]>;
+  onSelect: (id: string) => void;
+  onCenter: (id: string) => void;
+}) {
+  const [query, setQuery] = useState('');
+  const needle = query.trim().toLowerCase();
+  const rows = [...(ipLinks?.entries() ?? [])]
+    .filter(([address]) => model.byId.has(address))
+    .filter(
+      ([address, links]) =>
+        !needle || address.includes(needle) || links.some((link) => link.src_ip.toLowerCase().includes(needle)),
+    )
+    .map(([address, links]) => ({ address, links, top: Math.max(...links.map((link) => link.score)) }))
+    .sort((a, b) => b.top - a.top);
+
+  return (
+    <PanelSection className="border-b-0 px-3 py-4">
+      <div className="mb-3 flex items-center justify-between">
+        <PanelTitle className="mb-0">IP ↔ wallet</PanelTitle>
+        <Badge>{formatCount(rows.length)}</Badge>
+      </div>
+      <Input
+        className="mb-3 w-full font-mono-ui text-xs"
+        placeholder="filter ip or address"
+        value={query}
+        spellCheck={false}
+        autoComplete="off"
+        onChange={(event) => setQuery(event.target.value)}
+      />
+      {rows.length === 0 ? (
+        <p className="m-0 text-xs leading-relaxed text-text-muted">
+          No ip links among the nodes on this canvas yet. Run correlation from the account menu → TLS deanon.
+        </p>
+      ) : (
+        <div className="grid gap-1.5">
+          {rows.map(({ address, links }) => (
+            <button
+              key={address}
+              type="button"
+              className="grid gap-1 rounded-ui-sm px-2 py-2 text-left hover:bg-[color-mix(in_srgb,var(--text-primary)_5%,transparent)] focus-visible:outline-2 focus-visible:outline-accent"
+              onClick={() => { onSelect(address); onCenter(address); }}
+            >
+              <span className="overflow-hidden text-ellipsis whitespace-nowrap font-mono-ui text-[11px] font-medium">
+                {shortAddress(address, 8, 6)}
+              </span>
+              {links.slice(0, 4).map((link) => (
+                <span key={link.src_ip} className="flex items-center justify-between gap-2 pl-2 font-mono-ui text-[11px] text-text-secondary">
+                  <span className="truncate">{link.src_ip}</span>
+                  <span className="tabular-nums text-text-muted" title={`${link.hits}/${link.address_txs} tx in window`}>{Math.round(link.score * 100)}%</span>
+                </span>
+              ))}
+            </button>
+          ))}
         </div>
       )}
     </PanelSection>

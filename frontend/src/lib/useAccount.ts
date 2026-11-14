@@ -34,7 +34,7 @@ export function useAccount(): AccountState {
         setConfig(next);
         if (next.enabled) await refresh();
       } catch {
-        if (!cancelled) setConfig({ enabled: false, registration_open: false });
+        if (!cancelled) setConfig({ enabled: false, registration_open: false, personal_rpc: false });
       } finally {
         if (!cancelled) setReady(true);
       }

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use adapters::account::{Argon2Hasher, PgAccounts, RandomTokens};
 use application::account::{
     AccountError, AuthService, CanvasPatch, CanvasService, LabelService, NewCanvas, NewLabel,
-    TeamService,
+    RpcNodeProbe, RpcNodeService, TeamService,
 };
 use domain::{
     account::{CanvasAccess, LabelAccess, Owner, ShareAccess, TeamRole},
@@ -14,11 +14,23 @@ use sqlx::{AssertSqlSafe, Connection, PgConnection};
 
 const POSTGRES_URL: &str = "LEDGERSCOPE_TEST_POSTGRES_URL";
 
+struct HttpsOnly;
+
+#[async_trait::async_trait]
+impl RpcNodeProbe for HttpsOnly {
+    async fn probe(&self, _chain_id: u64, url: &str) -> Result<String, String> {
+        url.starts_with("https://")
+            .then(|| url.trim_end_matches('/').to_owned())
+            .ok_or_else(|| "the node did not pass the check".to_owned())
+    }
+}
+
 struct Harness {
     auth: AuthService,
     teams: TeamService,
     canvases: CanvasService,
     labels: LabelService,
+    rpc_nodes: RpcNodeService,
     admin_url: String,
     database: String,
 }
@@ -68,7 +80,8 @@ impl Harness {
                 tokens,
                 64 * 1024,
             ),
-            labels: LabelService::new(store.clone(), store),
+            labels: LabelService::new(store.clone(), store.clone()),
+            rpc_nodes: RpcNodeService::new(store, Arc::new(HttpsOnly), 2),
             admin_url,
             database,
         })
@@ -79,6 +92,7 @@ impl Harness {
         drop(self.teams);
         drop(self.canvases);
         drop(self.labels);
+        drop(self.rpc_nodes);
         let mut admin = PgConnection::connect(&self.admin_url).await.unwrap();
         sqlx::query(AssertSqlSafe(format!(
             "drop database if exists {} with (force)",
@@ -440,4 +454,60 @@ async fn accounts_teams_canvases_and_labels_hold_together() {
     );
 
     h.stop().await;
+}
+
+#[tokio::test]
+async fn personal_rpc_nodes_stay_with_their_owner() {
+    let Some(harness) = Harness::start().await else {
+        return;
+    };
+
+    let alice = harness
+        .auth
+        .register("rpc-alice@example.com", "Alice", "correct horse battery")
+        .await
+        .unwrap()
+        .user;
+    let bob = harness
+        .auth
+        .register("rpc-bob@example.com", "Bob", "correct horse battery")
+        .await
+        .unwrap()
+        .user;
+    let nodes = &harness.rpc_nodes;
+
+    let first = nodes
+        .add(&alice, 1, " https://one.example/key/ ")
+        .await
+        .unwrap();
+    assert_eq!(first.url, "https://one.example/key");
+    nodes.add(&alice, 1, "https://two.example").await.unwrap();
+    nodes.add(&alice, 10, "https://op.example").await.unwrap();
+
+    assert!(matches!(
+        nodes.add(&alice, 1, "https://three.example").await,
+        Err(AccountError::Invalid(_))
+    ));
+    assert!(matches!(
+        nodes.add(&alice, 10, "https://op.example/").await,
+        Err(AccountError::Conflict(_))
+    ));
+    assert!(matches!(
+        nodes.add(&alice, 10, "http://plain.example").await,
+        Err(AccountError::Invalid(_))
+    ));
+
+    let by_chain = nodes.by_chain(&alice).await.unwrap();
+    assert_eq!(by_chain[&1].len(), 2);
+    assert_eq!(by_chain[&10], ["https://op.example"]);
+    assert!(nodes.by_chain(&bob).await.unwrap().is_empty());
+
+    assert!(matches!(
+        nodes.delete(&bob, first.id).await,
+        Err(AccountError::NotFound(_))
+    ));
+    nodes.delete(&alice, first.id).await.unwrap();
+    assert_eq!(nodes.list(&alice, Some(1)).await.unwrap().len(), 1);
+
+    harness.stop().await;
 }

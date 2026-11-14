@@ -1,0 +1,157 @@
+# mode: sni   — client connects to the observer by the node hostname, routed by SNI
+#       proxy — client uses the observer as its HTTP CONNECT and/or SOCKS5 proxy
+#       sniff — passive libpcap capture on an interface (build: --features pcap)
+mode: proxy
+listen: 0.0.0.0:8443
+api: http://127.0.0.1:3000
+token: test-agent-token
+default_port: 443
+min_confidence: 0.0
+
+sniff:
+  interface: eth0
+  filter: tcp port 443
+
+groups:
+  - family: eth
+    chain_id: 1
+    hosts:
+      - "*.infura.io"
+      - mainnet.infura.io
+      - sepolia.infura.io
+      - polygon-mainnet.infura.io
+      - arbitrum-mainnet.infura.io
+      - optimism-mainnet.infura.io
+      - linea-mainnet.infura.io
+      - "*.g.alchemy.com"
+      - eth-mainnet.g.alchemy.com
+      - eth-sepolia.g.alchemy.com
+      - polygon-mainnet.g.alchemy.com
+      - arb-mainnet.g.alchemy.com
+      - opt-mainnet.g.alchemy.com
+      - base-mainnet.g.alchemy.com
+      - solana-mainnet.g.alchemy.com
+      - "*.quiknode.pro"
+      - "*.quicknode.com"
+      - "*.blastapi.io"
+      - eth-mainnet.public.blastapi.io
+      - "*.chainstack.com"
+      - "*.nodereal.io"
+      - "*.getblock.io"
+      - go.getblock.io
+      - "*.drpc.org"
+      - eth.drpc.org
+      - lb.drpc.org
+      - rpc.ankr.com
+      - "*.ankr.com"
+      - rpc.flashbots.net
+      - rpc.mevblocker.io
+      - "*.moralis.io"
+      - "*.tenderly.co"
+      - mainnet.gateway.tenderly.co
+      - gateway.tenderly.co
+      - "*.bwarelabs.com"
+      - "*.nownodes.io"
+      - "*.pokt.network"
+      - "*.poktscan.cloud"
+      - "*.grove.city"
+      - "*.thirdweb.com"
+      - "*.rpc.thirdweb.com"
+      - cloudflare-eth.com
+      - eth.llamarpc.com
+      - ethereum.publicnode.com
+      - ethereum-rpc.publicnode.com
+      - "*.publicnode.com"
+      - eth.merkle.io
+      - rpc.payload.de
+      - 1rpc.io
+      - eth.1rpc.io
+      - "*.1rpc.io"
+      - rpc.builder0x69.io
+      - virginia.rpc.blxrbdn.com
+      - uk.rpc.blxrbdn.com
+      - singapore.rpc.blxrbdn.com
+      - rpc.lokibuilder.xyz
+      - eth.api.onfinality.io
+      - "*.api.onfinality.io"
+      - endpoints.omniatech.io
+      - "*.omniatech.io"
+      - eth-mainnet.nodereal.io
+      - mainnet.optimism.io
+      - arb1.arbitrum.io
+      - mainnet.base.org
+      - sepolia.base.org
+      - rpc.linea.build
+      - rpc.scroll.io
+      - mainnet.era.zksync.io
+      - zksync-era.rpc.thirdweb.com
+      - rpc.zkevm.polygon.technology
+      - polygon-rpc.com
+      - rpc-mainnet.matic.network
+      - rpc-mainnet.maticvigil.com
+      - polygon-bor.publicnode.com
+      - bsc-dataseed.binance.org
+      - bsc-dataseed1.binance.org
+      - bsc-dataseed1.defibit.io
+      - bsc-dataseed1.ninicoin.io
+      - bsc.publicnode.com
+      - api.avax.network
+      - avalanche-c-chain-rpc.publicnode.com
+      - rpc.ftm.tools
+      - rpcapi.fantom.network
+      - mainnet.sonic.fantom.network
+      - rpc.sonic.network
+      - forno.celo.org
+      - rpc.gnosischain.com
+      - rpc.mantle.xyz
+      - rpc.blast.io
+      - rpc.mode.network
+      - mainnet.mode.network
+      - rpc.zora.energy
+      - rpc.taiko.xyz
+      - rpc.cronos.org
+      - evm.cronos.org
+      - evm-cronos.crypto.org
+      - mainnet.aurora.dev
+      - mainnet.hashio.io
+      - rpc.pulsechain.com
+      - rpc.apechain.com
+      - rpc.berachain.com
+      - rpc.hyperliquid.xyz
+      - rpc.ethpandaops.io
+
+  # Tron Nile testnet. Exact hosts come before the mainnet *.trongrid.io wildcard
+  # so exact matches win (the matcher checks exact hosts before suffixes).
+  - family: tron
+    chain_id: 3448148188
+    hosts:
+      - api.nile.trongrid.io
+      - nile.trongrid.io
+      - api.nileex.io
+
+  # Tron Shasta testnet.
+  - family: tron
+    chain_id: 2494104990
+    hosts:
+      - api.shasta.trongrid.io
+
+  # Tron mainnet.
+  - family: tron
+    chain_id: 728126428
+    hosts:
+      - api.trongrid.io
+      - "*.trongrid.io"
+      - grpc.trongrid.io
+      - api.tronstack.io
+      - tron-rpc.publicnode.com
+      - tron-evm-rpc.publicnode.com
+      - tron.publicnode.com
+      - tron.drpc.org
+      - tron-mainnet.g.alchemy.com
+      - trx.nownodes.io
+      - tron.nownodes.io
+      - tron.blockpi.network
+      - apilist.tronscanapi.com
+      - apilist.tronscan.org
+      - tronscan.org
+      - list.tronlink.org

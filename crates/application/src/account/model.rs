@@ -3,7 +3,7 @@ use time::OffsetDateTime;
 use domain::{
     account::{
         CanvasAccess, CanvasId, CanvasTitle, DisplayName, Email, LabelAccess, LabelId, LabelValue,
-        LinkId, Owner, ShareAccess, TeamId, TeamName, TeamRole, UserId,
+        LinkId, Owner, RpcNodeId, ShareAccess, TeamId, TeamName, TeamRole, UserId,
     },
     eth::EthAddress,
 };
@@ -112,4 +112,13 @@ impl UserLabel {
     pub fn access(&self, viewer: UserId) -> Option<LabelAccess> {
         domain::account::label_access(viewer, self.owner, self.team_role)
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct RpcNode {
+    pub id: RpcNodeId,
+    pub user_id: UserId,
+    pub chain_id: u64,
+    pub url: String,
+    pub created_at: OffsetDateTime,
 }

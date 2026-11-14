@@ -28,6 +28,8 @@ import { assetLabel, netFlow, type GraphLink, type GraphModel, type GraphNode } 
 import type { Annotation, AnnotationKind, AnnotationStyle, AnnotationTool } from './annotations';
 import { getPrimarySystemLabel } from './labels';
 import { nativeSymbol } from '../lib/chain';
+import { useAddressForm } from '../lib/useAddressForm';
+import type { IpWalletLink } from '../api/tls';
 
 export interface GraphHandle {
   fit(): void;
@@ -52,6 +54,8 @@ interface Props {
   onAnnotationsChange: (next: Annotation[]) => void;
   annotationStyle: AnnotationStyle;
   searchMatches: Set<string>;
+  deanon?: Map<string, number>;
+  ipLinks?: Map<string, IpWalletLink[]>;
   labelMode: LabelMode;
   showGrid: boolean;
   showFlow: boolean;
@@ -186,6 +190,8 @@ export function GraphCanvas({
   onAnnotationsChange,
   annotationStyle,
   searchMatches,
+  deanon,
+  ipLinks,
   labelMode,
   showGrid,
   showFlow,
@@ -243,11 +249,16 @@ export function GraphCanvas({
     })
     .filter((group) => group.nodes.length > 0 || group.links.length > 0), [groups, model]);
 
-  const live = useRef({ model, palette, selectedId, selectedIds, selectedLinkId, nodeLabels, annotationTool, annotations, annotationStyle, selectedAnnotationIds, searchMatches, labelMode, showGrid, showFlow, sceneGroups, fade });
-  live.current = { model, palette, selectedId, selectedIds, selectedLinkId, nodeLabels, annotationTool, annotations, annotationStyle, selectedAnnotationIds, searchMatches, labelMode, showGrid, showFlow, sceneGroups, fade };
+  const live = useRef({ model, palette, selectedId, selectedIds, selectedLinkId, nodeLabels, annotationTool, annotations, annotationStyle, selectedAnnotationIds, searchMatches, deanon, labelMode, showGrid, showFlow, sceneGroups, fade });
+  live.current = { model, palette, selectedId, selectedIds, selectedLinkId, nodeLabels, annotationTool, annotations, annotationStyle, selectedAnnotationIds, searchMatches, deanon, labelMode, showGrid, showFlow, sceneGroups, fade };
   useEffect(() => {
     dirty.current = true;
-  }, [fade, sceneGroups, palette, selectedId, selectedIds, selectedLinkId, nodeLabels, annotationTool, annotations, annotationStyle, selectedAnnotationIds, searchMatches, labelMode, showGrid, showFlow]);
+  }, [fade, sceneGroups, palette, selectedId, selectedIds, selectedLinkId, nodeLabels, annotationTool, annotations, annotationStyle, selectedAnnotationIds, searchMatches, deanon, labelMode, showGrid, showFlow]);
+
+  const addressForm = useAddressForm();
+  useEffect(() => {
+    dirty.current = true;
+  }, [addressForm]);
 
   useEffect(() => {
     const nodes = model.nodes;
@@ -465,6 +476,7 @@ export function GraphCanvas({
         highlightNodes: sets ? sets.nodes : null,
         highlightLinks: sets ? sets.links : null,
         searchMatches: state.searchMatches,
+        deanon: state.deanon,
         focusMix: focusMix.current,
         labelMode: state.labelMode,
         time,
@@ -547,7 +559,7 @@ export function GraphCanvas({
     };
 
     const onPointerDown = (event: PointerEvent) => {
-      if (event.button !== 0 && event.button !== 1) return;
+      if (event.button !== 0 && event.button !== 1 && event.button !== 2) return;
       fitMode.current = 'off';
       canvas.setPointerCapture(event.pointerId);
       const point = localPoint(event);
@@ -624,15 +636,17 @@ export function GraphCanvas({
           candidate.fy = candidate.y;
         }
         if (!frozen) simulation.current?.alphaTarget(0.28).restart();
-      } else if (event.button === 0) {
+        canvas.style.cursor = 'grabbing';
+      } else if (event.button === 2) {
         selecting = true;
         selectionStart = point;
         selectionRect = { x: point.x, y: point.y, width: 0, height: 0 };
         marquee.current = selectionRect;
+        canvas.style.cursor = 'crosshair';
       } else {
         panning = true;
+        canvas.style.cursor = 'grabbing';
       }
-      canvas.style.cursor = 'grabbing';
     };
 
     const onPointerMove = (event: PointerEvent) => {
@@ -883,7 +897,10 @@ export function GraphCanvas({
       dirty.current = true;
     };
 
+    const onContextMenu = (event: MouseEvent) => event.preventDefault();
+
     canvas.addEventListener('wheel', onWheel, { passive: false });
+    canvas.addEventListener('contextmenu', onContextMenu);
     canvas.addEventListener('pointerdown', onPointerDown);
     canvas.addEventListener('pointermove', onPointerMove);
     canvas.addEventListener('pointerup', onPointerUp);
@@ -892,6 +909,7 @@ export function GraphCanvas({
     canvas.addEventListener('dblclick', onDoubleClick);
     return () => {
       canvas.removeEventListener('wheel', onWheel);
+      canvas.removeEventListener('contextmenu', onContextMenu);
       canvas.removeEventListener('pointerdown', onPointerDown);
       canvas.removeEventListener('pointermove', onPointerMove);
       canvas.removeEventListener('pointerup', onPointerUp);
@@ -981,7 +999,7 @@ export function GraphCanvas({
         aria-hidden={hover === null}
         data-visible={hover !== null}
       >
-        {hover?.type === 'node' && <NodeTip node={hover.node} />}
+        {hover?.type === 'node' && <NodeTip node={hover.node} ips={ipLinks?.get(hover.node.id)} />}
         {hover?.type === 'link' && <LinkTip link={hover.link} />}
       </div>
     </div>
@@ -1009,7 +1027,7 @@ function toneLabel(tone: GraphLink['tone']): string {
 
 const TIP_ASSETS = 4;
 
-function NodeTip({ node }: { node: GraphNode }) {
+function NodeTip({ node, ips }: { node: GraphNode; ips?: IpWalletLink[] }) {
   const tokens = netFlow(node).filter((flow) => !flow.native && flow.amount !== 0n);
   const systemLabel = getPrimarySystemLabel(node.systemLabels);
 
@@ -1047,6 +1065,19 @@ function NodeTip({ node }: { node: GraphNode }) {
           <dd>{formatCount(node.degree)}</dd>
         </div>
       </dl>
+      {ips && ips.length > 0 && (
+        <div className="mt-[7px] border-t border-hairline pt-[7px]">
+          <div className="mb-[3px] text-[10px] uppercase tracking-[0.07em] text-series-focus">IP (TLS)</div>
+          <dl className="m-0 grid gap-[3px] text-xs [&>div]:flex [&>div]:justify-between [&>div]:gap-3 [&_dd]:m-0 [&_dd]:tabular-nums [&_dt]:font-mono-ui">
+            {ips.slice(0, 3).map((link) => (
+              <div key={link.src_ip}>
+                <dt>{link.src_ip}</dt>
+                <dd className="text-text-muted">{Math.round(link.score * 100)}%</dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+      )}
       {tokens.length > 0 && (
         <dl className="m-0 mt-[7px] grid gap-[3px] border-t border-hairline pt-[7px] text-xs [&>div]:flex [&>div]:justify-between [&>div]:gap-3 [&_dd]:m-0 [&_dd]:tabular-nums [&_dt]:font-mono-ui [&_dt]:text-series-token">
           {tokens.slice(0, TIP_ASSETS).map((flow) => (

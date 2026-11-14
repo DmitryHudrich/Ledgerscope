@@ -28,7 +28,14 @@ pub struct ChainInfo {
     pub native_decimals: u8,
     pub rpc: Vec<Url>,
     pub l2_of: Option<u64>,
-    live: bool,
+    testnet: bool,
+    deprecated: bool,
+}
+
+impl ChainInfo {
+    pub fn testnet(&self) -> bool {
+        self.testnet
+    }
 }
 
 #[derive(Deserialize)]
@@ -123,10 +130,18 @@ impl Chainlist {
     }
 
     pub fn l2s_of(&self, parent: u64) -> Vec<ChainInfo> {
+        self.l2s(|chain| !chain.testnet && chain.l2_of == Some(parent))
+    }
+
+    pub fn testnet_l2s_of(&self, parents: &[u64]) -> Vec<ChainInfo> {
+        self.l2s(|chain| chain.testnet && chain.l2_of.is_some_and(|of| parents.contains(&of)))
+    }
+
+    fn l2s(&self, wanted: impl Fn(&ChainInfo) -> bool) -> Vec<ChainInfo> {
         let mut l2s: Vec<ChainInfo> = self
             .snapshot()
             .values()
-            .filter(|chain| chain.live && chain.l2_of == Some(parent) && !chain.rpc.is_empty())
+            .filter(|chain| !chain.deprecated && !chain.rpc.is_empty() && wanted(chain))
             .cloned()
             .collect();
         l2s.sort_by_key(|chain| chain.chain_id);
@@ -190,7 +205,8 @@ fn info(chain: RawChain) -> ChainInfo {
             })
             .collect(),
         l2_of,
-        live: !chain.is_testnet && chain.status.as_deref() != Some(DEPRECATED),
+        testnet: chain.is_testnet,
+        deprecated: chain.status.as_deref() == Some(DEPRECATED),
         name: chain.name,
     }
 }
@@ -237,6 +253,10 @@ mod tests {
             json!({"chainId": 8453, "name": "Base", "shortName": "base", "rpc": ["https://base.example"]}),
             json!({"chainId": 421614, "name": "Arbitrum Sepolia", "shortName": "arb-sep", "isTestnet": true,
                    "rpc": ["https://sep.example"], "parent": {"type": "L2", "chain": "eip155-1"}}),
+            json!({"chainId": 84532, "name": "Base Sepolia", "shortName": "basesep", "isTestnet": true,
+                   "rpc": ["https://base-sep.example"], "parent": {"type": "L2", "chain": "eip155-11155111"}}),
+            json!({"chainId": 999999, "name": "Old Sepolia L2", "shortName": "old", "isTestnet": true, "status": "deprecated",
+                   "rpc": ["https://old.example"], "parent": {"type": "L2", "chain": "eip155-11155111"}}),
             json!({"chainId": "broken"}),
         ]);
         let chainlist = Chainlist {
@@ -251,6 +271,13 @@ mod tests {
             .map(|chain| chain.slug)
             .collect();
         assert_eq!(l2s, ["base", "arbitrum"]);
+
+        let testnet_l2s: Vec<_> = chainlist
+            .testnet_l2s_of(&[ETHEREUM, 11_155_111])
+            .into_iter()
+            .map(|chain| chain.chain_id)
+            .collect();
+        assert_eq!(testnet_l2s, [84532, 421614]);
         assert_eq!(chainlist.rpc_urls(42161).len(), 1);
     }
 

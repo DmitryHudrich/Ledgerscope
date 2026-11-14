@@ -46,6 +46,7 @@ export interface TeamDetail {
 export interface AuthConfig {
   enabled: boolean;
   registration_open: boolean;
+  personal_rpc: boolean;
 }
 
 export interface CanvasInfo {
@@ -97,6 +98,13 @@ export interface UserLabel {
   created_by: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface PersonalRpcNode {
+  id: string;
+  chain_id: number;
+  label: string;
+  created_at: string;
 }
 
 export const ROLE_TITLE: Record<TeamRole, string> = {
@@ -176,6 +184,12 @@ export const labelApi = {
     post<UserLabel>('/labels', { chain_id: chainId, address, value, note, owner }),
   update: (id: string, value: string, note: string) => patch<UserLabel>(`/labels/${id}`, { value, note }),
   delete: (id: string) => remove(`/labels/${id}`),
+};
+
+export const rpcNodeApi = {
+  list: (chainId?: number) => get<PersonalRpcNode[]>(`/rpc-nodes${chainId === undefined ? '' : `?chain_id=${chainId}`}`),
+  add: (chainId: number, url: string) => post<PersonalRpcNode>('/rpc-nodes', { chain_id: chainId, url }),
+  delete: (id: string) => remove(`/rpc-nodes/${id}`),
 };
 
 export function ownerName(owner: Owner): string {

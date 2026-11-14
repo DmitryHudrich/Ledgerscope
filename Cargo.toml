@@ -6,6 +6,7 @@ members = ["crates/*"]
 ledgerscope-domain = { path = "crates/domain" }
 ledgerscope-application = { path = "crates/application" }
 ledgerscope-adapters = { path = "crates/adapters" }
+ledgerscope-deeptls = { path = "crates/deeptls" }
 
 tokio = { version = "1", features = [
   "macros",

@@ -27,6 +27,7 @@ export interface Scene {
   highlightNodes: Set<string> | null;
   highlightLinks: Set<string> | null;
   searchMatches: Set<string>;
+  deanon?: Map<string, number>;
 
   focusMix: number;
   labelMode: LabelMode;
@@ -444,6 +445,26 @@ function drawNode(
     ctx.arc(node.x, node.y, node.r + 6 / t.k, 0, Math.PI * 2);
     ctx.stroke();
   }
+
+  const deanon = scene.deanon?.get(node.id);
+  if (deanon !== undefined) {
+    const bx = node.x + node.r * 0.72;
+    const by = node.y - node.r * 0.72;
+    const br = Math.max(node.r * 0.34, 3 / t.k);
+    ctx.beginPath();
+    ctx.arc(bx, by, br, 0, Math.PI * 2);
+    ctx.fillStyle = withAlpha(deanonColor(deanon), alpha);
+    ctx.fill();
+    ctx.lineWidth = 1.5 / t.k;
+    ctx.strokeStyle = withAlpha(palette.plane, alpha * 0.95);
+    ctx.stroke();
+  }
+}
+
+export function deanonColor(confidence: number): string {
+  if (confidence >= 0.75) return '#ef4444';
+  if (confidence >= 0.4) return '#f59e0b';
+  return '#9ca3af';
 }
 
 function traceNodeShape(ctx: CanvasRenderingContext2D, node: GraphNode): void {

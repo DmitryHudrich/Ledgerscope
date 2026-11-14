@@ -2,13 +2,13 @@ use std::{io, str::FromStr, time::Duration};
 
 use application::account::{
     Canvas, CanvasRecord, CanvasShare, CanvasStore, CanvasSummary, Credentials, LabelStore, Member,
-    Membership, PublicLink, SessionStore, StoreError, Team, TeamStore, User, UserLabel, UserStore,
-    ports::CanvasChange,
+    Membership, PublicLink, RpcNode, RpcNodeStore, SessionStore, StoreError, Team, TeamStore, User,
+    UserLabel, UserStore, ports::CanvasChange,
 };
 use domain::{
     account::{
-        CanvasId, CanvasTitle, DisplayName, Email, LabelId, LabelValue, LinkId, Owner, ShareAccess,
-        TeamId, TeamName, TeamRole, UserId,
+        CanvasId, CanvasTitle, DisplayName, Email, LabelId, LabelValue, LinkId, Owner, RpcNodeId,
+        ShareAccess, TeamId, TeamName, TeamRole, UserId,
     },
     eth::EthAddress,
 };
@@ -877,5 +877,61 @@ impl LabelStore for PgAccounts {
             .await
             .map_err(failed)?;
         Ok(())
+    }
+}
+
+fn rpc_node_of(row: &PgRow) -> Result<RpcNode, io::Error> {
+    Ok(RpcNode {
+        id: RpcNodeId::from_uuid(row.try_get("id").map_err(failed)?),
+        user_id: UserId::from_uuid(row.try_get("user_id").map_err(failed)?),
+        chain_id: chain_of(row, "chain_id")?,
+        url: row.try_get("url").map_err(failed)?,
+        created_at: row.try_get("created_at").map_err(failed)?,
+    })
+}
+
+#[async_trait::async_trait]
+impl RpcNodeStore for PgAccounts {
+    async fn list(&self, user: UserId, chain_id: Option<u64>) -> Result<Vec<RpcNode>, io::Error> {
+        let chain = chain_id.map(chain_param).transpose()?;
+        sqlx::query(
+            "select id, user_id, chain_id, url, created_at from rpc_nodes \
+             where user_id = $1 and ($2::bigint is null or chain_id = $2) \
+             order by chain_id, created_at",
+        )
+        .bind(user.uuid())
+        .bind(chain)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(failed)?
+        .iter()
+        .map(rpc_node_of)
+        .collect()
+    }
+
+    async fn insert(&self, node: &RpcNode) -> Result<(), StoreError> {
+        sqlx::query(
+            "insert into rpc_nodes (id, user_id, chain_id, url, created_at) \
+             values ($1, $2, $3, $4, $5)",
+        )
+        .bind(node.id.uuid())
+        .bind(node.user_id.uuid())
+        .bind(chain_param(node.chain_id)?)
+        .bind(&node.url)
+        .bind(node.created_at)
+        .execute(&self.pool)
+        .await
+        .map_err(|error| stored(error, "you already have this node on that chain"))?;
+        Ok(())
+    }
+
+    async fn delete(&self, id: RpcNodeId, user: UserId) -> Result<bool, io::Error> {
+        let deleted = sqlx::query("delete from rpc_nodes where id = $1 and user_id = $2")
+            .bind(id.uuid())
+            .bind(user.uuid())
+            .execute(&self.pool)
+            .await
+            .map_err(failed)?;
+        Ok(deleted.rows_affected() > 0)
     }
 }

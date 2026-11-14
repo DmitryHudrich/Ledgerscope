@@ -12,18 +12,14 @@ export interface BlockLimits {
 
 export type RangeEdge = 'from' | 'to';
 
-function ceiling(limits: BlockLimits): number {
-  return limits.head ?? Number.MAX_SAFE_INTEGER;
-}
-
-function within(value: number, limits: BlockLimits): number {
-  return Math.min(Math.max(Math.trunc(value), 0), ceiling(limits));
+function within(value: number): number {
+  return Math.max(Math.trunc(value), 0);
 }
 
 export function clampRange(next: BlockSpan, limits: BlockLimits, edited: RangeEdge = 'to'): BlockSpan {
   const span = Math.max(limits.maxBlocks, 1);
-  let from = within(next.from, limits);
-  let to = within(next.to, limits);
+  let from = within(next.from);
+  let to = within(next.to);
 
   if (from > to) {
     if (edited === 'from') to = from;
@@ -31,7 +27,7 @@ export function clampRange(next: BlockSpan, limits: BlockLimits, edited: RangeEd
   }
 
   if (to - from + 1 > span) {
-    if (edited === 'from') to = Math.min(from + span - 1, ceiling(limits));
+    if (edited === 'from') to = from + span - 1;
     else from = Math.max(to - span + 1, 0);
   }
 
@@ -45,9 +41,6 @@ export function sameRange(a: BlockSpan, b: BlockSpan): boolean {
 export function rangeProblem(next: BlockSpan, limits: BlockLimits): string | null {
   if (!Number.isFinite(next.from) || !Number.isFinite(next.to) || next.from < 0 || next.to < 0) {
     return 'Enter a non-negative block number.';
-  }
-  if (limits.head !== null && (next.from > limits.head || next.to > limits.head)) {
-    return `The chain head is ${formatCount(limits.head)}, blocks past it do not exist yet.`;
   }
   if (next.from > next.to) {
     return 'From block cannot be greater than To block.';

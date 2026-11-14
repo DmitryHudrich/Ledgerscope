@@ -1,5 +1,6 @@
 pub mod account;
 pub mod monitor;
+pub mod tls;
 
 use std::collections::HashMap;
 
@@ -337,6 +338,7 @@ impl ChainsResponse {
 pub struct ChainResponse {
     chain_id: u64,
     family: String,
+    network: String,
     name: String,
     slug: String,
     native_symbol: String,
@@ -352,6 +354,7 @@ impl ChainResponse {
         Self {
             chain_id: meta.chain_id,
             family: meta.family.name().to_owned(),
+            network: meta.network.name().to_owned(),
             name: meta.name.clone(),
             slug: meta.slug.clone(),
             native_symbol: meta.native_symbol.clone(),

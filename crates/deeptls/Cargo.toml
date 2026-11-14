@@ -1,0 +1,11 @@
+[package]
+name = "ledgerscope-deeptls"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "deeptls"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true

@@ -20,6 +20,7 @@ use crate::eth::rpc::RpcPool;
 pub const TRON_MAINNET: u64 = 728_126_428;
 pub const TRON_SHASTA: u64 = 2_494_104_990;
 pub const TRON_NILE: u64 = 3_448_148_188;
+pub const TRON_TESTNETS: [u64; 2] = [TRON_NILE, TRON_SHASTA];
 
 const BLOCKS_IN_FLIGHT: usize = 4;
 const SUCCESS: &str = "SUCCESS";
@@ -54,6 +55,14 @@ const AMOUNT_FIELDS: [&str; 5] = [
 
 pub fn is_tron(chain_id: u64) -> bool {
     matches!(chain_id, TRON_MAINNET | TRON_SHASTA | TRON_NILE)
+}
+
+pub fn chain_id_of_genesis(block_id: &str) -> Option<u64> {
+    let hex = block_id.trim().trim_start_matches("0x");
+    if hex.len() != 64 {
+        return None;
+    }
+    u64::from_str_radix(hex.get(56..)?, 16).ok()
 }
 
 pub fn public_nodes(chain_id: u64) -> Vec<Url> {
@@ -93,7 +102,9 @@ impl TronTxSource {
             self.pool.post_json(
                 "wallet/gettransactioninfobyblocknum",
                 &body,
-                Value::is_array,
+                |answer| {
+                    answer.is_array() || answer.as_object().is_some_and(|map| map.is_empty())
+                },
             ),
         )
         .await?;
@@ -468,6 +479,11 @@ mod tests {
     #[test]
     fn only_tron_chains_are_tron() {
         assert!(is_tron(TRON_MAINNET));
+        assert_eq!(
+            chain_id_of_genesis("00000000000000001ebf88508a03865c71d452e25f4d51194196a1d22b6653dc"),
+            Some(TRON_MAINNET)
+        );
+        assert_eq!(chain_id_of_genesis("2b6653dc"), None);
         assert!(!is_tron(1));
         assert_eq!(public_nodes(TRON_MAINNET).len(), MAINNET_NODES.len());
     }

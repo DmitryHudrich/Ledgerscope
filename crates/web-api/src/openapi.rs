@@ -1,9 +1,30 @@
 use utoipa::OpenApi;
+use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 
 use crate::routes;
 
+struct ObserverAuth;
+
+impl utoipa::Modify for ObserverAuth {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        if let Some(components) = openapi.components.as_mut() {
+            components.add_security_scheme(
+                "observer_token",
+                SecurityScheme::Http(
+                    HttpBuilder::new()
+                        .scheme(HttpAuthScheme::Bearer)
+                        .bearer_format("token")
+                        .description(Some("The accounts.observer.token the agent posts with"))
+                        .build(),
+                ),
+            );
+        }
+    }
+}
+
 #[derive(OpenApi)]
 #[openapi(
+    modifiers(&ObserverAuth),
     info(
         title = "Ledgerscope API",
         description = "Address graphs and index coverage over indexed transactions of ethereum and its l2s.",
@@ -46,6 +67,13 @@ use crate::routes;
         routes::labels::create_label,
         routes::labels::update_label,
         routes::labels::delete_label,
+        routes::rpc_nodes::rpc_nodes,
+        routes::rpc_nodes::add_rpc_node,
+        routes::rpc_nodes::delete_rpc_node,
+        routes::tls::ingest,
+        routes::tls::links,
+        routes::tls::correlate,
+        routes::tls::reset,
         routes::monitor::calls,
         routes::monitor::nodes,
         routes::monitor::scans,
@@ -59,7 +87,9 @@ use crate::routes;
         (name = "teams", description = "Teams, members and roles"),
         (name = "canvases", description = "Saved canvases, sharing and public links"),
         (name = "labels", description = "Your own and your teams' address labels"),
+        (name = "rpc-nodes", description = "Your own rpc nodes, asked first on your requests"),
         (name = "monitor", description = "Live rpc calls, node health and block scans"),
+        (name = "tls", description = "Passive tls traffic analysis of rpc clients and ip to wallet links"),
     ),
 )]
 pub struct ApiDoc;
@@ -83,6 +113,7 @@ mod tests {
         assert!(spec["paths"]["/public/canvases/{token}"]["get"].is_object());
         assert!(spec["paths"]["/labels"]["get"].is_object());
         assert!(spec["paths"]["/monitor/stream"]["get"].is_object());
+        assert!(spec["paths"]["/rpc-nodes/{node_id}"]["delete"].is_object());
         assert!(spec["components"]["schemas"]["GraphResponse"].is_object());
         assert_eq!(
             spec["paths"]["/coverage/histogram"]["get"]["parameters"][2]["name"],

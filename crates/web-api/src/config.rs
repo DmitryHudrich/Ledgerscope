@@ -28,6 +28,11 @@ const DEFAULT_POSTGRES_URL: &str = "postgres://ledgerscope:ledgerscope@127.0.0.1
 const DEFAULT_POSTGRES_MAX_CONNECTIONS: u32 = 10;
 const DEFAULT_SESSION_TTL_DAYS: u32 = 30;
 const DEFAULT_MAX_CANVAS_BYTES: usize = 8 * 1024 * 1024;
+const DEFAULT_PERSONAL_RPC_MAX_NODES: usize = 8;
+const DEFAULT_OBSERVER_WINDOW_SECS: u64 = 60;
+const DEFAULT_OBSERVER_SKEW_SECS: u64 = 5;
+const DEFAULT_EVM_DEVNET_RPC: &str = "http://127.0.0.1:8545";
+const DEFAULT_TRON_DEVNET_RPC: &str = "http://127.0.0.1:9090";
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -69,6 +74,46 @@ pub struct AccountsConfig {
     pub registration: bool,
     pub cookie_secure: bool,
     pub max_canvas_bytes: usize,
+    pub personal_rpc: PersonalRpcConfig,
+    pub observer: ObserverConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ObserverConfig {
+    pub enabled: bool,
+    pub token: String,
+    pub window_secs: u64,
+    pub skew_secs: u64,
+}
+
+impl Default for ObserverConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            token: String::new(),
+            window_secs: DEFAULT_OBSERVER_WINDOW_SECS,
+            skew_secs: DEFAULT_OBSERVER_SKEW_SECS,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PersonalRpcConfig {
+    pub enabled: bool,
+    pub max_nodes_per_chain: usize,
+    pub allow_private_hosts: bool,
+}
+
+impl Default for PersonalRpcConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_nodes_per_chain: DEFAULT_PERSONAL_RPC_MAX_NODES,
+            allow_private_hosts: false,
+        }
+    }
 }
 
 impl Default for AccountsConfig {
@@ -81,6 +126,8 @@ impl Default for AccountsConfig {
             registration: true,
             cookie_secure: false,
             max_canvas_bytes: DEFAULT_MAX_CANVAS_BYTES,
+            personal_rpc: PersonalRpcConfig::default(),
+            observer: ObserverConfig::default(),
         }
     }
 }
@@ -143,13 +190,49 @@ pub struct ChainsConfig {
     pub default: u64,
     pub ethereum_l2: bool,
     pub tron: bool,
+    pub testnets: bool,
+    pub devnets: bool,
+    pub devnet: DevnetConfig,
     pub skip: Vec<u64>,
     pub networks: BTreeMap<u64, NetworkConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DevnetConfig {
+    pub evm_rpc: Vec<String>,
+    pub tron_rpc: Vec<String>,
+}
+
+impl Default for DevnetConfig {
+    fn default() -> Self {
+        Self {
+            evm_rpc: vec![DEFAULT_EVM_DEVNET_RPC.to_owned()],
+            tron_rpc: vec![DEFAULT_TRON_DEVNET_RPC.to_owned()],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FamilyConfig {
+    Evm,
+    Tron,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NetworkKind {
+    Mainnet,
+    Testnet,
+    Devnet,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct NetworkConfig {
+    pub family: Option<FamilyConfig>,
+    pub kind: Option<NetworkKind>,
     pub name: Option<String>,
     pub slug: Option<String>,
     pub native_symbol: Option<String>,
@@ -172,6 +255,9 @@ impl Default for ChainsConfig {
             default: ETHEREUM,
             ethereum_l2: false,
             tron: false,
+            testnets: false,
+            devnets: false,
+            devnet: DevnetConfig::default(),
             skip: Vec::new(),
             networks: BTreeMap::new(),
         }
@@ -273,6 +359,7 @@ impl Config {
 
     pub fn needs_chainlist(&self) -> bool {
         self.chains.ethereum_l2
+            || (self.chains.testnets && self.rpc.chainlist.unwrap_or(false))
             || self
                 .chain_ids([])
                 .into_iter()
@@ -410,6 +497,14 @@ impl Config {
             self.chains.tron = parse_bool(&tron)
                 .with_context(|| format!("CHAINS_TRON must be a boolean, got {tron}"))?;
         }
+        if let Some(testnets) = env_set("CHAINS_TESTNETS") {
+            self.chains.testnets = parse_bool(&testnets)
+                .with_context(|| format!("CHAINS_TESTNETS must be a boolean, got {testnets}"))?;
+        }
+        if let Some(devnets) = env_set("CHAINS_DEVNETS") {
+            self.chains.devnets = parse_bool(&devnets)
+                .with_context(|| format!("CHAINS_DEVNETS must be a boolean, got {devnets}"))?;
+        }
         if let Some(default) = env_set("CHAINS_DEFAULT") {
             self.chains.default = default
                 .parse()
@@ -449,9 +544,26 @@ impl Config {
                 format!("AUTH_REGISTRATION must be a boolean, got {registration}")
             })?;
         }
+        if let Some(personal) = env_set("PERSONAL_RPC") {
+            self.accounts.personal_rpc.enabled = parse_bool(&personal)
+                .with_context(|| format!("PERSONAL_RPC must be a boolean, got {personal}"))?;
+        }
         if let Some(secure) = env_set("AUTH_COOKIE_SECURE") {
             self.accounts.cookie_secure = parse_bool(&secure)
                 .with_context(|| format!("AUTH_COOKIE_SECURE must be a boolean, got {secure}"))?;
+        }
+        if let Some(enabled) = env_set("OBSERVER_ENABLED") {
+            self.accounts.observer.enabled = parse_bool(&enabled)
+                .with_context(|| format!("OBSERVER_ENABLED must be a boolean, got {enabled}"))?;
+        }
+        if let Some(token) = env_set("OBSERVER_TOKEN") {
+            self.accounts.observer.token = token;
+        }
+        if let Some(urls) = env_set("DEVNET_EVM_RPC") {
+            self.chains.devnet.evm_rpc = split_urls(&urls);
+        }
+        if let Some(urls) = env_set("DEVNET_TRON_RPC") {
+            self.chains.devnet.tron_rpc = split_urls(&urls);
         }
         if let Some(roots) = env_set("GRAPH_MAX_ROOTS") {
             self.graph.max_roots = roots.parse().context("GRAPH_MAX_ROOTS must be a number")?;
@@ -542,6 +654,11 @@ impl Config {
                 self.accounts.max_canvas_bytes >= 1024,
                 "accounts.max_canvas_bytes must be at least 1024"
             );
+            anyhow::ensure!(
+                !self.accounts.personal_rpc.enabled
+                    || self.accounts.personal_rpc.max_nodes_per_chain > 0,
+                "accounts.personal_rpc.max_nodes_per_chain must be at least 1"
+            );
         }
 
         if self.storage.persist_txs {
@@ -576,6 +693,15 @@ fn config_path(explicit: Option<&Path>) -> Option<PathBuf> {
 
 fn env_set(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|value| !value.is_empty())
+}
+
+fn split_urls(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+        .map(str::to_owned)
+        .collect()
 }
 
 #[cfg(test)]

@@ -4,8 +4,8 @@ use time::OffsetDateTime;
 
 use domain::{
     account::{
-        CanvasId, CanvasTitle, DisplayName, Email, LabelId, LabelValue, LinkId, ShareAccess,
-        TeamId, TeamName, TeamRole, UserId,
+        CanvasId, CanvasTitle, DisplayName, Email, LabelId, LabelValue, LinkId, RpcNodeId,
+        ShareAccess, TeamId, TeamName, TeamRole, UserId,
     },
     eth::EthAddress,
 };
@@ -14,7 +14,7 @@ use crate::account::{
     StoreError,
     model::{
         Canvas, CanvasRecord, CanvasShare, CanvasSummary, Credentials, Member, Membership,
-        PublicLink, Team, User, UserLabel,
+        PublicLink, RpcNode, Team, User, UserLabel,
     },
 };
 
@@ -153,6 +153,20 @@ pub trait LabelStore: Send + Sync {
     ) -> Result<(), StoreError>;
 
     async fn delete(&self, id: LabelId) -> Result<(), io::Error>;
+}
+
+#[async_trait::async_trait]
+pub trait RpcNodeStore: Send + Sync {
+    async fn list(&self, user: UserId, chain_id: Option<u64>) -> Result<Vec<RpcNode>, io::Error>;
+
+    async fn insert(&self, node: &RpcNode) -> Result<(), StoreError>;
+
+    async fn delete(&self, id: RpcNodeId, user: UserId) -> Result<bool, io::Error>;
+}
+
+#[async_trait::async_trait]
+pub trait RpcNodeProbe: Send + Sync {
+    async fn probe(&self, chain_id: u64, url: &str) -> Result<String, String>;
 }
 
 pub trait PasswordHasher: Send + Sync {

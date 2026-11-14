@@ -3,10 +3,11 @@ import { useEffect, useRef, useState } from 'react';
 import type { Me } from '../../api/account';
 import { Button, Panel, cx, focusRing } from '../ui';
 
-export type AccountAction = 'canvases' | 'teams' | 'labels' | 'profile' | 'logout';
+export type AccountAction = 'canvases' | 'teams' | 'labels' | 'rpc' | 'tls' | 'profile' | 'logout';
 
 interface Props {
   me: Me | null;
+  personalRpc: boolean;
   onSignIn: () => void;
   onAction: (action: AccountAction) => void;
 }
@@ -21,10 +22,12 @@ const ITEMS: Array<{ action: AccountAction; label: string; hint?: string }> = [
   { action: 'canvases', label: 'Canvases', hint: 'Open, rename, share' },
   { action: 'teams', label: 'Teams', hint: 'Members and roles' },
   { action: 'labels', label: 'My labels', hint: 'Yours and your teams’' },
+  { action: 'rpc', label: 'My RPC nodes', hint: 'Asked first on your requests' },
+  { action: 'tls', label: 'TLS deanon', hint: 'IP to wallet from rpc traffic' },
   { action: 'profile', label: 'Profile', hint: 'Name, password, sessions' },
 ];
 
-export function AccountMenu({ me, onSignIn, onAction }: Props) {
+export function AccountMenu({ me, personalRpc, onSignIn, onAction }: Props) {
   const root = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
 
@@ -80,7 +83,7 @@ export function AccountMenu({ me, onSignIn, onAction }: Props) {
             )}
           </div>
           <div className="p-1">
-            {ITEMS.map((item) => (
+            {ITEMS.filter((item) => item.action !== 'rpc' || personalRpc).map((item) => (
               <button
                 key={item.action}
                 type="button"
