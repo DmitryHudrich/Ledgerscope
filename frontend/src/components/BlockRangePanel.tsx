@@ -1,10 +1,10 @@
 import { useMemo, type CSSProperties } from 'react';
 
 import type { CoverageResponse, HistogramResponse } from '../api/types';
-import { clampRange, type BlockLimits, type RangeEdge } from '../lib/blockRange';
+import type { BlockLimits } from '../lib/blockRange';
 import { formatCount } from '../lib/format';
 import { IconClose } from './Icons';
-import { Button, Input, PanelSection, PanelTitle, RangeInput, cx } from './ui';
+import { Button, Input, PanelSection, PanelTitle, cx } from './ui';
 
 export interface BlockSpan {
   from: number;
@@ -38,7 +38,6 @@ export function BlockRangePanel({
   activeIndex,
   coverage,
   histogram,
-  limits,
   onActiveChange,
   onRangesChange,
   onApply,
@@ -46,16 +45,6 @@ export function BlockRangePanel({
 }: Props) {
   const active = ranges[activeIndex] ?? ranges[0] ?? { from: 0, to: 0 };
   const { from, to } = active;
-
-  const sliderBounds = useMemo(() => {
-    const padding = Math.max(100, (to - from + 1) * 10);
-    const storedFrom = coverage?.lowest_block ?? from - padding;
-    const storedTo = coverage?.highest_block ?? to + padding;
-    const head = limits.head;
-    const low = Math.max(0, Math.min(from - padding, storedFrom, head === null ? from : head - 100));
-    const high = Math.max(to + padding, storedTo, head ?? to);
-    return { from: low, to: high };
-  }, [coverage, from, limits.head, to]);
 
   const histogramSpan = histogram?.span;
   const histogramPeak = useMemo(
@@ -69,25 +58,9 @@ export function BlockRangePanel({
     const right = ((to - histogramSpan.from_block + 1) / span) * 100;
     return { left: clamp(left, 0, 100), right: clamp(right, 0, 100) };
   }, [from, histogramSpan, to]);
-  const sliderWindow = useMemo(() => {
-    const span = Math.max(sliderBounds.to - sliderBounds.from, 1);
-    return {
-      left: ((from - sliderBounds.from) / span) * 100,
-      right: ((to - sliderBounds.from) / span) * 100,
-    };
-  }, [from, sliderBounds, to]);
 
   const patchRange = (index: number, patch: Partial<BlockSpan>) =>
     onRangesChange(ranges.map((item, idx) => (idx === index ? { ...item, ...patch } : item)));
-
-  const slide = (key: RangeEdge, value: number) =>
-    onRangesChange(
-      ranges.map((item, idx) =>
-        idx === activeIndex
-          ? clampRange(key === 'from' ? { from: value, to } : { from, to: value }, limits, key)
-          : item,
-      ),
-    );
 
   const removeRange = (index: number) => {
     if (ranges.length <= 1) return;
@@ -191,36 +164,6 @@ export function BlockRangePanel({
               aria-hidden="true"
             />
           )}
-        </div>
-        <div className="mt-2 grid gap-1">
-          <div className="flex justify-between text-[11px] text-text-secondary">
-            <span>From <span className="tabular-nums">{formatCount(from)}</span></span>
-            <span>To <span className="tabular-nums">{formatCount(to)}</span></span>
-          </div>
-          <div className="relative h-6">
-            <div className="absolute left-0 right-0 top-1/2 h-1.5 -translate-y-1/2 rounded-full bg-hairline-strong" aria-hidden="true" />
-            <div
-              className="pointer-events-none absolute top-1/2 h-1.5 -translate-y-1/2 rounded-full bg-accent"
-              style={{ left: `${sliderWindow.left}%`, width: `${Math.max(sliderWindow.right - sliderWindow.left, 0)}%` }}
-              aria-hidden="true"
-            />
-            <RangeInput
-              aria-label="From block"
-              className="pointer-events-none absolute inset-0 z-[2] h-6 appearance-none bg-transparent [&::-moz-range-thumb]:pointer-events-auto [&::-moz-range-track]:bg-transparent [&::-webkit-slider-runnable-track]:bg-transparent [&::-webkit-slider-thumb]:pointer-events-auto"
-              min={sliderBounds.from}
-              max={sliderBounds.to}
-              value={clamp(from, sliderBounds.from, sliderBounds.to)}
-              onChange={(event) => slide('from', Number(event.target.value))}
-            />
-            <RangeInput
-              aria-label="To block"
-              className="pointer-events-none absolute inset-0 z-[3] h-6 appearance-none bg-transparent [&::-moz-range-thumb]:pointer-events-auto [&::-moz-range-track]:bg-transparent [&::-webkit-slider-runnable-track]:bg-transparent [&::-webkit-slider-thumb]:pointer-events-auto"
-              min={sliderBounds.from}
-              max={sliderBounds.to}
-              value={clamp(to, sliderBounds.from, sliderBounds.to)}
-              onChange={(event) => slide('to', Number(event.target.value))}
-            />
-          </div>
         </div>
       </section>
 
