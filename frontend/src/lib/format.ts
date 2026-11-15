@@ -66,6 +66,24 @@ export function formatCount(value: number): string {
   return value.toLocaleString('en-US');
 }
 
+const BYTE_UNITS = ['B', 'KB', 'MB', 'GB', 'TB'];
+
+export function splitBytes(bytes: number): { value: string; unit: string } {
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < BYTE_UNITS.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  const digits = unit === 0 || value >= 100 ? 0 : 1;
+  return { value: value.toFixed(digits), unit: BYTE_UNITS[unit] };
+}
+
+export function formatBytes(bytes: number): string {
+  const { value, unit } = splitBytes(bytes);
+  return `${value} ${unit}`;
+}
+
 export function formatCompact(value: number): string {
   if (value < 1000) return Number.isInteger(value) ? String(value) : value.toFixed(1);
   return value.toLocaleString('en-US', { notation: 'compact', maximumFractionDigits: 1 });

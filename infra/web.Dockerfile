@@ -3,7 +3,7 @@
 # Build context is the repo root.
 
 ARG NODE_VERSION=26
-ARG NGINX_VERSION=1.29
+ARG CADDY_VERSION=2
 
 FROM node:${NODE_VERSION}-alpine AS build
 WORKDIR /app
@@ -14,12 +14,7 @@ COPY frontend/ ./
 # `npm run build` typechecks before bundling, so a type error fails the image.
 RUN npm run build
 
-# Unprivileged variant runs as nginx:nginx and cannot bind ports below 1024.
-FROM nginxinc/nginx-unprivileged:${NGINX_VERSION}-alpine AS runtime
-# The entrypoint renders /etc/nginx/templates/*.template into conf.d at startup.
-COPY infra/nginx.conf.template /etc/nginx/templates/default.conf.template
-COPY --from=build /app/dist /usr/share/nginx/html
-ENV WEB_PORT=8080 \
-    API_PORT=3000 \
-    NGINX_ENVSUBST_FILTER='^(WEB_PORT|API_PORT)$'
-EXPOSE 8080
+FROM caddy:${CADDY_VERSION}-alpine AS runtime
+COPY infra/Caddyfile /etc/caddy/Caddyfile
+COPY --from=build /app/dist /srv
+EXPOSE 80 443 443/udp

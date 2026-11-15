@@ -1,5 +1,6 @@
 pub(crate) mod auth;
 pub(crate) mod canvases;
+pub(crate) mod info;
 pub(crate) mod labels;
 pub(crate) mod monitor;
 pub(crate) mod rpc_nodes;
@@ -43,6 +44,7 @@ pub fn router(state: AppState) -> Router {
         .merge(auth::router())
         .merge(teams::router())
         .merge(canvases::router(max_document_bytes))
+        .merge(info::router())
         .merge(labels::router())
         .merge(monitor::router())
         .merge(rpc_nodes::router())

@@ -1,57 +1,79 @@
 # infra
 
 Docker Compose stack for Ledgerscope: the Rust API and the frontend behind
-nginx.
+Caddy, which also terminates TLS.
 
 ```bash
-cp .env.example .env      # set ETH_RPC_URL
+cp .env.example .env      # set DOMAIN and the secrets
 docker compose up --build
 ```
 
-Then open <http://localhost:8080>. The API is on `127.0.0.1:3000` for direct
+Two env files, both gitignored: `.env` for local development (read by default)
+and `.env.prod` for production. Pick the production one explicitly, or copy it
+to `.env` on the server:
+
+```bash
+docker compose --env-file .env.prod up -d --build
+```
+
+Then open `https://$DOMAIN` (<https://localhost> by default). The API is on `127.0.0.1:3000` for direct
 pokes (`curl 'http://127.0.0.1:3000/graph?wallet=0x…&from=21000000&to=21000010'`).
 
-| Service | Image stage | Listens on |
+| Service | Image stage | Published on the host |
 |---|---|---|
 | `api` | `debian:trixie-slim` + the `web-api` binary | `127.0.0.1:${API_PORT}`, default 3000 |
-| `web` | `nginx-unprivileged` serving `frontend/dist` | `0.0.0.0:${WEB_PORT}`, default 8080 |
-| `clickhouse` | `clickhouse/clickhouse-server` | `127.0.0.1:8123` (HTTP) and `:9000` (native) |
+| `web` | `caddy` serving `frontend/dist` | `80`, `443`, `443/udp` on all interfaces |
+| `anvil` | `foundry`, profile `devnet` | `127.0.0.1:${DEVNET_PORT}`, default 8545 |
+| `tron-devnet` | `trontools/quickstart`, profile `tron-devnet` | `127.0.0.1:${DEVNET_TRON_PORT}`, default 9090 |
+| `clickhouse`, `postgres`, `redis` | upstream images | not published |
 
-nginx proxies `/api/<path>` to the API's `/<path>`, the same rewrite the Vite dev
-server does, so the frontend bundle needs no build-time API URL.
+Caddy proxies `/api/<path>` to the API's `/<path>`, the same rewrite the Vite dev
+server does, so the frontend bundle needs no build-time API URL. Everything else
+is the SPA: `/assets/*` is cached for a year, other paths fall back to
+`index.html` with `Cache-Control: no-cache`.
 
-## Networking: why `network_mode: host`
+## Devnets
 
-Both services share the host network namespace, so `127.0.0.1` inside the
-containers is your host's loopback.
+The local devnets are off by default and start only with their profile:
 
-That exists for the RPC proxy. `ETH_RPC_PROXY` typically points at a SOCKS proxy
-running on the host and bound to `127.0.0.1` — and a bridged container cannot
-reach that. On Linux `host.docker.internal` maps to the bridge gateway
-(`172.17.0.1`), which a loopback-only listener never answers on. Host networking
-is the only way to use such a proxy without reconfiguring it.
+```bash
+docker compose --profile devnet up -d                          # anvil, EVM chain 31337
+docker compose --profile tron-devnet up -d                     # local tron node
+docker compose --profile devnet --profile tron-devnet up -d    # both
+```
 
-The trade: no network isolation, and host networking behaves differently on
-macOS/Windows. The API is bound to loopback, so it stays off the LAN either way;
-only `web` is externally reachable.
+The API also needs `CHAINS_DEVNETS=true`. It probes the devnets once at startup
+and leaves out any that does not answer, so a devnet started after the API is
+only picked up after `docker compose restart api`. Started together, the API
+waits for anvil to become healthy first.
 
-### Going back to an isolated bridge network
+## TLS
 
-Worth doing if the proxy is not needed, or if it can listen on `0.0.0.0`
-(or `172.17.0.1`) instead:
+The site address is `DOMAIN` from `infra/.env`. For a public hostname Caddy gets
+and renews a Let's Encrypt certificate on its own: the hostname's DNS has to
+point at this host, and ports 80 and 443 have to be reachable from the
+internet. Certificates live in the `caddy-data` volume; keep it, or every
+restart asks Let's Encrypt again and runs into its rate limits.
 
-1. Drop `network_mode: host` from both services in `docker-compose.yml`.
-2. Give `api` back its published port and host alias:
-   ```yaml
-   ports:
-     - "127.0.0.1:${API_PORT:-3000}:3000"
-   extra_hosts:
-     - "host.docker.internal:host-gateway"
-   ```
-   and set `BIND_ADDR: 0.0.0.0:3000` so `web` can reach it.
-3. Add `ports: ["${WEB_PORT:-8080}:8080"]` to `web`.
-4. In `nginx.conf.template`, point `proxy_pass` at `http://api:3000/`.
-5. In `.env`, use `ETH_RPC_PROXY=socks5h://host.docker.internal:2080`.
+`DOMAIN=localhost` gets a certificate from Caddy's local CA instead, which the
+browser will not trust until that CA is installed.
+
+## Networking
+
+The stack runs on the compose bridge network. Services talk to each other by
+name (`clickhouse:8123`, `postgres:5432`, `redis:6379`, `anvil:8545`,
+`tron-devnet:9090`, `api:3000`), and compose builds those URLs itself, so
+`infra/.env` holds no service addresses. The databases have no host ports at
+all; only `web` is reachable from outside, everything else that is published
+binds host loopback.
+
+Caddy resolves `api` through Docker's DNS on every new connection, so
+recreating the API container does not leave it pointing at a stale address.
+
+An RPC proxy running on the host is reachable as `host.docker.internal`, e.g.
+`ETH_RPC_PROXY=socks5h://host.docker.internal:2080`. The proxy has to listen on
+`0.0.0.0` or the bridge gateway (`172.17.0.1`): a loopback-only listener never
+answers a container.
 
 ## Build caching
 
@@ -84,11 +106,12 @@ file; see [Config file](#config-file) below.
 
 | Variable | Default | Notes |
 |---|---|---|
-| `ETH_RPC_URL` | — | Required; compose refuses to start without it. |
-| `ETH_RPC_PROXY` | `socks5h://127.0.0.1:2080` | Host loopback, since the namespace is shared. Empty value = direct connection. |
+| `ETH_RPC_URL` | — | Optional with `RPC_CHAINLIST=true`. |
+| `ETH_RPC_PROXY` | empty | Direct connection. A host proxy is `host.docker.internal`. |
 | `ETH_RPC_RPS` | `15` | Client-side rate limit for the JSON-RPC calls. |
-| `BIND_ADDR` | `127.0.0.1:${API_PORT}` | Set by compose; the binary's own default is the same. |
-| `WEB_PORT` / `API_PORT` | 8080 / 3000 | Host ports. `WEB_PORT` must stay above 1024 — nginx runs unprivileged. |
+| `BIND_ADDR` | `0.0.0.0:3000` | Fixed by compose inside the container; the binary's own default is `127.0.0.1:3000`. |
+| `DOMAIN` | `localhost` | Caddy's site address; see [TLS](#tls). |
+| `API_PORT` | 3000 | Host loopback port of the API, for the observer agent and direct pokes. Inside the container the API is always on 3000. |
 | `RUST_LOG` | `info` | Filter for `tracing`, e.g. `info,adapters=debug`. |
 | `CLICKHOUSE_DB` / `CLICKHOUSE_USER` / `CLICKHOUSE_PASSWORD` | `ledgerscope` | The image drops the `default` user once `CLICKHOUSE_USER` is set. |
 
@@ -143,16 +166,12 @@ around the placeholder is a string.
 The compose stack passes configuration as environment variables only; the API
 container is deliberately file-free.
 
-`WEB_PORT` and `API_PORT` are substituted into `nginx.conf.template` by the nginx
-entrypoint at container start; `NGINX_ENVSUBST_FILTER` limits envsubst to those
-two names so nginx's own `$uri`/`$host` survive.
-
 ## Caveats
 
 - The API keeps one accumulating graph in process memory. Restarting the
   container drops it — nothing in the API reads ClickHouse yet; the service is
   up for the storage work, with its data in the `clickhouse-data` volume.
-- `/graph` blocks while it seeds the range over JSON-RPC. nginx allows 900s for
-  it; widen `proxy_read_timeout` in `nginx.conf.template` for huge ranges.
-- Host networking means the ports are real host ports: `up` fails if something
-  already holds `WEB_PORT` or `API_PORT`.
+- `/graph` blocks while it seeds the range over JSON-RPC. Caddy sets no
+  response timeout on the proxy, so a wide range is only bounded by the client.
+- `up` fails if something on the host already holds 80, 443, `API_PORT` or
+  `DEVNET_PORT`.

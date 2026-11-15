@@ -78,6 +78,26 @@ pub struct ClickhouseTxRepository {
     chain_id: u64,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+pub struct TableUsage {
+    pub table: String,
+    pub rows: u64,
+    pub bytes_on_disk: u64,
+    pub uncompressed_bytes: u64,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ChainTxCount {
+    pub chain_id: u64,
+    pub txs: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct StorageUsage {
+    pub tables: Vec<TableUsage>,
+    pub chains: Vec<ChainTxCount>,
+}
+
 #[derive(Serialize)]
 struct OnChain<'a, T> {
     chain_id: u64,
@@ -171,6 +191,26 @@ impl ClickhouseTxRepository {
         .await?;
 
         Ok(())
+    }
+
+    pub async fn usage(&self) -> Result<StorageUsage, io::Error> {
+        let tables = self
+            .rows(&format!(
+                "SELECT table, sum(rows) AS rows, sum(bytes_on_disk) AS bytes_on_disk, \
+                        sum(data_uncompressed_bytes) AS uncompressed_bytes \
+                 FROM system.parts \
+                 WHERE active AND database = currentDatabase() \
+                   AND table IN ('{TXS_TABLE}', '{BLOCKS_TABLE}', '{ACTORS_TABLE}') \
+                 GROUP BY table ORDER BY bytes_on_disk DESC"
+            ))
+            .await?;
+        let chains = self
+            .rows(&format!(
+                "SELECT chain_id, count() AS txs FROM {TXS_TABLE} GROUP BY chain_id ORDER BY txs DESC"
+            ))
+            .await?;
+
+        Ok(StorageUsage { tables, chains })
     }
 
     async fn execute(&self, query: &str, body: String) -> Result<String, io::Error> {

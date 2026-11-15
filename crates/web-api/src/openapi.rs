@@ -78,6 +78,7 @@ impl utoipa::Modify for ObserverAuth {
         routes::monitor::nodes,
         routes::monitor::scans,
         routes::monitor::stream,
+        routes::info::usage,
     ),
     tags(
         (name = "chains", description = "Chains the server explores"),
@@ -89,6 +90,7 @@ impl utoipa::Modify for ObserverAuth {
         (name = "labels", description = "Your own and your teams' address labels"),
         (name = "rpc-nodes", description = "Your own rpc nodes, asked first on your requests"),
         (name = "monitor", description = "Live rpc calls, node health and block scans"),
+        (name = "info", description = "Disk and rpc traffic the server takes"),
         (name = "tls", description = "Passive tls traffic analysis of rpc clients and ip to wallet links"),
     ),
 )]
@@ -114,6 +116,7 @@ mod tests {
         assert!(spec["paths"]["/labels"]["get"].is_object());
         assert!(spec["paths"]["/monitor/stream"]["get"].is_object());
         assert!(spec["paths"]["/rpc-nodes/{node_id}"]["delete"].is_object());
+        assert!(spec["paths"]["/info/usage"]["get"].is_object());
         assert!(spec["components"]["schemas"]["GraphResponse"].is_object());
         assert_eq!(
             spec["paths"]["/coverage/histogram"]["get"]["parameters"][2]["name"],

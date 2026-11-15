@@ -6,7 +6,7 @@ use std::{
     io,
     sync::{
         Arc, Mutex, OnceLock, RwLock,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     task::{Context, Poll},
     time::Duration,
@@ -14,9 +14,9 @@ use std::{
 
 use alloy::{
     rpc::json_rpc::{RequestPacket, ResponsePacket},
-    transports::{TransportError, TransportErrorKind, TransportFut, http::Http},
+    transports::{TransportError, TransportErrorKind, TransportFut},
 };
-use reqwest::{Client, Url};
+use reqwest::{Client, Url, header::CONTENT_TYPE};
 use serde_json::Value;
 use tokio::{sync::Semaphore, time::Instant};
 use tower::Service;
@@ -89,7 +89,6 @@ struct NodeState {
 
 struct Node {
     url: Url,
-    http: Http<Client>,
     latency: Duration,
     state: Arc<NodeState>,
     personal: bool,
@@ -118,6 +117,28 @@ impl Node {
     }
 }
 
+#[derive(Default)]
+struct Traffic {
+    calls: AtomicU64,
+    sent: AtomicU64,
+    received: AtomicU64,
+}
+
+impl Traffic {
+    fn record(&self, sent: usize, received: usize) {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        self.sent.fetch_add(sent as u64, Ordering::Relaxed);
+        self.received.fetch_add(received as u64, Ordering::Relaxed);
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PoolTraffic {
+    pub calls: u64,
+    pub sent_bytes: u64,
+    pub received_bytes: u64,
+}
+
 pub struct RpcPool {
     http: Client,
     config: RpcPoolConfig,
@@ -125,6 +146,7 @@ pub struct RpcPool {
     nodes: RwLock<Arc<Vec<Arc<Node>>>>,
     personal: Mutex<HashMap<String, Arc<NodeState>>>,
     monitor: OnceLock<Arc<RpcMonitor>>,
+    traffic: Traffic,
 }
 
 #[derive(Clone, Debug)]
@@ -150,11 +172,20 @@ impl RpcPool {
             nodes: RwLock::new(Arc::new(Vec::new())),
             personal: Mutex::new(HashMap::new()),
             monitor: OnceLock::new(),
+            traffic: Traffic::default(),
         })
     }
 
     pub fn watch(&self, monitor: Arc<RpcMonitor>) {
         let _ = self.monitor.set(monitor);
+    }
+
+    pub fn traffic(&self) -> PoolTraffic {
+        PoolTraffic {
+            calls: self.traffic.calls.load(Ordering::Relaxed),
+            sent_bytes: self.traffic.sent.load(Ordering::Relaxed),
+            received_bytes: self.traffic.received.load(Ordering::Relaxed),
+        }
     }
 
     pub fn nodes(&self) -> Vec<PoolNode> {
@@ -402,7 +433,6 @@ impl RpcPool {
             .unwrap_or_else(|| self.fresh_state());
 
         Arc::new(Node {
-            http: Http::with_client(self.http.clone(), url.clone()),
             url,
             latency,
             state,
@@ -433,7 +463,6 @@ impl RpcPool {
                     .or_insert_with(|| self.fresh_state())
                     .clone();
                 Arc::new(Node {
-                    http: Http::with_client(self.http.clone(), url.clone()),
                     url,
                     latency: Duration::ZERO,
                     state,
@@ -509,11 +538,15 @@ impl RpcPool {
             1,
             |node| async move {
                 let url = format!("{}/{path}", node.url.as_str().trim_end_matches('/'));
+                let payload =
+                    serde_json::to_vec(body).map_err(|error| Failure::Fatal(error.into()))?;
+                let sent = payload.len();
                 let answer = self
                     .http
                     .post(url)
                     .timeout(HTTP_TIMEOUT)
-                    .json(body)
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(payload)
                     .send()
                     .await;
 
@@ -521,9 +554,13 @@ impl RpcPool {
                     Ok(response) => {
                         let status = response.status();
                         let text = response.text().await.unwrap_or_default();
+                        self.traffic.record(sent, text.len());
                         http_answer(status, &text, useful)
                     }
-                    Err(error) => Err(Failure::Retry(http_unreachable(&error))),
+                    Err(error) => {
+                        self.traffic.record(sent, 0);
+                        Err(Failure::Retry(http_unreachable(&error)))
+                    }
                 }
             },
             io::Error::other,
@@ -546,7 +583,7 @@ impl RpcPool {
                 let request = request.clone();
                 let method = method.clone();
                 async move {
-                    match node.http.clone().call(request).await {
+                    match self.exchange(&node, &request).await {
                         Ok(response) => match failed_response(&response, requests, &method) {
                             Some(retry) => Err(Failure::Retry(retry)),
                             None => Ok(response),
@@ -561,6 +598,44 @@ impl RpcPool {
             |message| TransportErrorKind::custom_str(&message),
         )
         .await
+    }
+
+    async fn exchange(
+        &self,
+        node: &Node,
+        request: &RequestPacket,
+    ) -> Result<ResponsePacket, TransportError> {
+        let payload = serde_json::to_vec(request).map_err(TransportError::ser_err)?;
+        let sent = payload.len();
+        let answer = self
+            .http
+            .post(node.url.clone())
+            .header(CONTENT_TYPE, "application/json")
+            .body(payload)
+            .send()
+            .await;
+        let response = match answer {
+            Ok(response) => response,
+            Err(error) => {
+                self.traffic.record(sent, 0);
+                return Err(TransportErrorKind::custom(error));
+            }
+        };
+
+        let status = response.status();
+        let body = response.bytes().await;
+        self.traffic
+            .record(sent, body.as_ref().map_or(0, |body| body.len()));
+        let body = body.map_err(TransportErrorKind::custom)?;
+
+        if !status.is_success() {
+            return Err(TransportErrorKind::http_error(
+                status.as_u16(),
+                String::from_utf8_lossy(&body).into_owned(),
+            ));
+        }
+        serde_json::from_slice(&body)
+            .map_err(|error| TransportError::deser_err(error, String::from_utf8_lossy(&body)))
     }
 
     async fn attempt<T, E, F, Fut>(

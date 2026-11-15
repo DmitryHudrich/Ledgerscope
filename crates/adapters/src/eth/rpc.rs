@@ -10,4 +10,4 @@ pub use fleet::{FleetChain, RpcFleet};
 pub use monitor::{CallOutcome, NodeStats, RpcCall, RpcMonitor};
 pub use personal::{PersonalNodes, PersonalProbe};
 pub use pool::probe::served_chain;
-pub use pool::{Dialect, PoolNode, RpcPool, RpcPoolConfig, node_label};
+pub use pool::{Dialect, PoolNode, PoolTraffic, RpcPool, RpcPoolConfig, node_label};

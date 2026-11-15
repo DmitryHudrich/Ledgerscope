@@ -27,6 +27,7 @@ import { AccountMenu, type AccountAction } from './components/account/AccountMen
 import { AuthDialog } from './components/account/AuthDialog';
 import { CanvasControls, type SaveState } from './components/account/CanvasControls';
 import { CanvasesDialog } from './components/account/CanvasesDialog';
+import { InfoDialog } from './components/account/InfoDialog';
 import { LabelsDialog } from './components/account/LabelsDialog';
 import { RpcNodesDialog } from './components/account/RpcNodesDialog';
 import { TlsDeanonDialog } from './components/account/TlsDeanonDialog';
@@ -89,7 +90,7 @@ function readAnnotations(): Annotation[] {
 }
 
 type TemporaryPanel = WorkspacePanel | 'advanced';
-type Dialog = 'auth' | 'profile' | 'teams' | 'canvases' | 'labels' | 'rpc' | 'tls' | 'save' | 'share';
+type Dialog = 'auth' | 'profile' | 'teams' | 'canvases' | 'labels' | 'rpc' | 'tls' | 'info' | 'save' | 'share';
 
 const SNAPSHOT_BUDGET = 7 * 1024 * 1024;
 
@@ -1441,6 +1442,9 @@ export default function App() {
           onChanged={(address) => void refreshUserLabels([address]).catch(() => undefined)}
           onClose={() => setDialog(null)}
         />
+      )}
+      {dialog === 'info' && account.me && (
+        <InfoDialog onClose={() => setDialog(null)} />
       )}
       {dialog === 'rpc' && account.me && (
         <RpcNodesDialog chains={chains} chainId={chainId} onClose={() => setDialog(null)} />

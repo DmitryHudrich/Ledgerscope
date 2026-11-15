@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { Me } from '../../api/account';
 import { Button, Panel, cx, focusRing } from '../ui';
 
-export type AccountAction = 'canvases' | 'teams' | 'labels' | 'rpc' | 'tls' | 'profile' | 'logout';
+export type AccountAction = 'canvases' | 'teams' | 'labels' | 'rpc' | 'tls' | 'profile' | 'info' | 'logout';
 
 interface Props {
   me: Me | null;
@@ -25,6 +25,7 @@ const ITEMS: Array<{ action: AccountAction; label: string; hint?: string }> = [
   { action: 'rpc', label: 'My RPC nodes', hint: 'Asked first on your requests' },
   { action: 'tls', label: 'TLS deanon', hint: 'IP to wallet from rpc traffic' },
   { action: 'profile', label: 'Profile', hint: 'Name, password, sessions' },
+  { action: 'info', label: 'Info', hint: 'Stored transactions, rpc traffic' },
 ];
 
 export function AccountMenu({ me, personalRpc, onSignIn, onAction }: Props) {

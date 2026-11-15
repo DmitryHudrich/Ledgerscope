@@ -25,6 +25,7 @@ use application::eth::{
     },
 };
 use reqwest::{NoProxy, Proxy, Url};
+use time::OffsetDateTime;
 
 pub use networks::Network;
 
@@ -152,6 +153,8 @@ pub struct AppState {
     accounts: Option<Arc<Accounts>>,
     monitor: Arc<RpcMonitor>,
     scans: Arc<ScanBoard>,
+    storage: Option<ClickhouseTxRepository>,
+    started_at: OffsetDateTime,
 }
 
 pub struct Accounts {
@@ -279,6 +282,8 @@ impl AppState {
             accounts: accounts(&config.accounts, &fleet, &http_client).await,
             monitor,
             scans,
+            storage: shared.repository.clone(),
+            started_at: OffsetDateTime::now_utc(),
         })
     }
 
@@ -310,6 +315,14 @@ impl AppState {
 
     pub fn scans(&self) -> &ScanBoard {
         &self.scans
+    }
+
+    pub fn storage(&self) -> Option<&ClickhouseTxRepository> {
+        self.storage.as_ref()
+    }
+
+    pub fn started_at(&self) -> OffsetDateTime {
+        self.started_at
     }
 
     pub fn default_chain(&self) -> u64 {
