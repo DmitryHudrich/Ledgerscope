@@ -8,13 +8,34 @@ cp .env.example .env      # set DOMAIN and the secrets
 docker compose up --build
 ```
 
-Two env files, both gitignored: `.env` for local development (read by default)
-and `.env.prod` for production. Pick the production one explicitly, or copy it
-to `.env` on the server:
+Three env files, all gitignored:
+
+| File | For |
+|---|---|
+| `.env` | local development, read by default; starts anvil through `COMPOSE_PROFILES` |
+| `.env.prod` | a public server: Caddy on 80/443 with a Let's Encrypt certificate for `DOMAIN` |
+| `.env.tunnel` | a server in a closed network reached over ssh: plain http on host loopback only |
+
+Pick one explicitly, or copy it to `.env` on the server:
 
 ```bash
 docker compose --env-file .env.prod up -d --build
 ```
+
+### Over an ssh tunnel
+
+`.env.tunnel` sets `DOMAIN=:80`, so Caddy serves plain http for any host name
+and asks no certificate authority, and `WEB_BIND=127.0.0.1` with
+`HTTP_PORT=8080`, so nothing listens beyond the server's loopback. From your
+machine:
+
+```bash
+ssh -N -L 8080:127.0.0.1:8080 user@server
+```
+
+then open <http://localhost:8080>. The tunnel already encrypts the traffic, and
+the session cookie goes without the `Secure` flag (`AUTH_COOKIE_SECURE=false`)
+since the browser talks plain http to localhost.
 
 Then open `https://$DOMAIN` (<https://localhost> by default). The API is on `127.0.0.1:3000` for direct
 pokes (`curl 'http://127.0.0.1:3000/graph?wallet=0x…&from=21000000&to=21000010'`).
@@ -25,7 +46,9 @@ pokes (`curl 'http://127.0.0.1:3000/graph?wallet=0x…&from=21000000&to=21000010
 | `web` | `caddy` serving `frontend/dist` | `80`, `443`, `443/udp` on all interfaces |
 | `anvil` | `foundry`, profile `devnet` | `127.0.0.1:${DEVNET_PORT}`, default 8545 |
 | `tron-devnet` | `trontools/quickstart`, profile `tron-devnet` | `127.0.0.1:${DEVNET_TRON_PORT}`, default 9090 |
-| `clickhouse`, `postgres`, `redis` | upstream images | not published |
+| `clickhouse` | `clickhouse/clickhouse-server` | `127.0.0.1:${CLICKHOUSE_PORT}`, default 8123 |
+| `postgres` | `postgres` | `127.0.0.1:${POSTGRES_PORT}`, default 5432 |
+| `redis` | `redis` | `127.0.0.1:${REDIS_PORT}`, default 6379 |
 
 Caddy proxies `/api/<path>` to the API's `/<path>`, the same rewrite the Vite dev
 server does, so the frontend bundle needs no build-time API URL. Everything else
@@ -63,15 +86,20 @@ browser will not trust until that CA is installed.
 The stack runs on the compose bridge network. Services talk to each other by
 name (`clickhouse:8123`, `postgres:5432`, `redis:6379`, `anvil:8545`,
 `tron-devnet:9090`, `api:3000`), and compose builds those URLs itself, so
-`infra/.env` holds no service addresses. The databases have no host ports at
-all; only `web` is reachable from outside, everything else that is published
-binds host loopback.
+`infra/.env` holds no service addresses. Only `web` is reachable from outside;
+everything else that is published binds host loopback, so the databases also
+serve an API started on the host with `cargo run`:
+
+```bash
+docker compose up -d clickhouse postgres redis anvil
+cargo run -p ledgerscope-web-api
+```
 
 Caddy resolves `api` through Docker's DNS on every new connection, so
 recreating the API container does not leave it pointing at a stale address.
 
 An RPC proxy running on the host is reachable as `host.docker.internal`, e.g.
-`ETH_RPC_PROXY=socks5h://host.docker.internal:2080`. The proxy has to listen on
+`PROXY=socks5h://host.docker.internal:2080`. The proxy has to listen on
 `0.0.0.0` or the bridge gateway (`172.17.0.1`): a loopback-only listener never
 answers a container.
 
@@ -107,7 +135,7 @@ file; see [Config file](#config-file) below.
 | Variable | Default | Notes |
 |---|---|---|
 | `ETH_RPC_URL` | — | Optional with `RPC_CHAINLIST=true`. |
-| `ETH_RPC_PROXY` | empty | Direct connection. A host proxy is `host.docker.internal`. |
+| `PROXY` | empty | Every outgoing request of the API: rpc nodes of all chains, chainlist, node probes. Empty = direct. A host proxy is `host.docker.internal`. Internal services (`anvil`, `tron-devnet`, `clickhouse`, `redis`, `postgres`) and loopback are always direct. |
 | `ETH_RPC_RPS` | `15` | Client-side rate limit for the JSON-RPC calls. |
 | `BIND_ADDR` | `0.0.0.0:3000` | Fixed by compose inside the container; the binary's own default is `127.0.0.1:3000`. |
 | `DOMAIN` | `localhost` | Caddy's site address; see [TLS](#tls). |
@@ -130,7 +158,7 @@ log:
 eth:
   rpc:
     url: ${ETH_RPC_URL:?set it in infra/.env or export it}
-    proxy: ${ETH_RPC_PROXY-socks5h://127.0.0.1:2080}
+    proxy: ${PROXY-}
     rps: ${ETH_RPC_RPS:-15}
 ```
 

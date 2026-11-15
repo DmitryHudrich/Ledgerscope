@@ -1,4 +1,4 @@
-proxy: ${ETH_RPC_PROXY-socks5h://127.0.0.1:2080}
+proxy: ${PROXY-}
 
 server:
   bind_addr: ${BIND_ADDR:-127.0.0.1:3000}

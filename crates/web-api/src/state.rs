@@ -174,7 +174,7 @@ impl AppState {
     pub async fn from_config(config: &Config) -> anyhow::Result<Self> {
         let proxy = config.proxy.trim();
         let proxy_url = (!proxy.is_empty()).then(|| proxy.to_owned());
-        let http_client = get_http_client(proxy_url)?;
+        let http_client = get_http_client(proxy_url, &config.no_proxy)?;
 
         let chainlist = chainlist(config, &http_client).await?;
         let plans = networks::plan(config, chainlist.as_deref(), &http_client).await;
@@ -697,14 +697,17 @@ async fn tx_cache(url: &str) -> Option<RedisTxCache> {
     }
 }
 
-fn get_http_client(proxy_url: Option<String>) -> anyhow::Result<reqwest::Client> {
+fn get_http_client(proxy_url: Option<String>, no_proxy: &str) -> anyhow::Result<reqwest::Client> {
     let mut client = reqwest::ClientBuilder::new();
 
     if let Some(proxy_url) = proxy_url {
+        tracing::info!(
+            "every outgoing request goes through the proxy, except {LOCAL_HOSTS},{no_proxy}"
+        );
         client = client.proxy(
             Proxy::all(&proxy_url)
                 .with_context(|| format!("proxy is not a valid proxy URL: {}", proxy_url))?
-                .no_proxy(NoProxy::from_string(LOCAL_HOSTS)),
+                .no_proxy(NoProxy::from_string(&format!("{LOCAL_HOSTS},{no_proxy}"))),
         );
     }
 

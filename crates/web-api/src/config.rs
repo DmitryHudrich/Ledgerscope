@@ -12,7 +12,6 @@ use serde::Deserialize;
 const DEFAULT_CONFIG_PATH: &str = "config.yaml";
 const DEFAULT_BIND_ADDR: &str = "127.0.0.1:3000";
 const DEFAULT_LOG_FILTER: &str = "info";
-const DEFAULT_RPC_PROXY: &str = "socks5h://127.0.0.1:2080";
 const DEFAULT_CLICKHOUSE_URL: &str = "http://127.0.0.1:8123";
 const DEFAULT_CLICKHOUSE_DATABASE: &str = "ledgerscope";
 const DEFAULT_CLICKHOUSE_USER: &str = "ledgerscope";
@@ -38,6 +37,7 @@ const DEFAULT_TRON_DEVNET_RPC: &str = "http://127.0.0.1:9090";
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub proxy: String,
+    pub no_proxy: String,
     pub server: ServerConfig,
     pub log: LogConfig,
     pub labels: LabelsConfig,
@@ -51,7 +51,8 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            proxy: DEFAULT_RPC_PROXY.to_owned(),
+            proxy: String::new(),
+            no_proxy: String::new(),
             server: ServerConfig::default(),
             log: LogConfig::default(),
             labels: LabelsConfig::default(),
@@ -465,8 +466,14 @@ impl Config {
         if let Some(filter) = env_set("RUST_LOG") {
             self.log.filter = filter;
         }
-        if let Ok(proxy) = std::env::var("RPC_PROXY") {
+        if let Some(proxy) = ["PROXY", "RPC_PROXY"]
+            .into_iter()
+            .find_map(|name| std::env::var(name).ok())
+        {
             self.proxy = proxy;
+        }
+        if let Ok(no_proxy) = std::env::var("NO_PROXY") {
+            self.no_proxy = no_proxy;
         }
         if let Some(url) = env_set("ETH_RPC_URL") {
             let own = &mut self
