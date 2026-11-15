@@ -1,0 +1,61 @@
+use alloy_primitives::{B256, Bytes};
+
+use crate::eth::EthAddress;
+
+#[derive(Debug, Clone)]
+pub struct EthLog {
+    address: EthAddress,
+    topics: Vec<B256>,
+    data: Bytes,
+}
+
+impl EthLog {
+    pub fn new(address: EthAddress, topics: Vec<B256>, data: Bytes) -> Self {
+        Self {
+            address,
+            topics,
+            data,
+        }
+    }
+
+    pub fn address(&self) -> &EthAddress {
+        &self.address
+    }
+
+    pub fn topics(&self) -> &[B256] {
+        &self.topics
+    }
+
+    pub fn data(&self) -> &Bytes {
+        &self.data
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct EthReceipt {
+    succeeded: bool,
+    contract_address: Option<EthAddress>,
+    logs: Vec<EthLog>,
+}
+
+impl EthReceipt {
+    pub fn new(succeeded: bool, contract_address: Option<EthAddress>, logs: Vec<EthLog>) -> Self {
+        Self {
+            succeeded,
+            contract_address,
+            logs,
+        }
+    }
+
+    pub fn succeeded(&self) -> bool {
+        self.succeeded
+    }
+
+    pub fn contract_address(&self) -> Option<&EthAddress> {
+        self.contract_address.as_ref()
+    }
+
+    pub fn logs(&self) -> &[EthLog] {
+        &self.logs
+    }
+}

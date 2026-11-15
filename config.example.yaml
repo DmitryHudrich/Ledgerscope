@@ -1,0 +1,76 @@
+proxy: ${ETH_RPC_PROXY-socks5h://127.0.0.1:2080}
+
+server:
+  bind_addr: ${BIND_ADDR:-127.0.0.1:3000}
+
+log:
+  filter: ${RUST_LOG:-info}
+
+labels:
+  etherscan_json_path: ${ETHERSCAN_JSON_PATH:-labels.json}
+
+rpc:
+  rps: ${ETH_RPC_RPS:-15}
+  chainlist: ${RPC_CHAINLIST:-true}
+  chainlist_url: https://chainlist.org/rpcs.json
+  chainlist_max_nodes: 16
+  rescan_interval_secs: 1800
+  exclude_rpc: []
+
+chains:
+  default: 1
+  ethereum_l2: ${CHAINS_ETHEREUM_L2:-true}
+  tron: ${CHAINS_TRON:-true}
+  testnets: ${CHAINS_TESTNETS:-false}
+  devnets: ${CHAINS_DEVNETS:-false}
+  devnet:
+    evm_rpc: [http://127.0.0.1:8545]
+    tron_rpc: [http://127.0.0.1:9090]
+  skip: []
+  networks:
+    1:
+      name: Ethereum
+      rpc:
+        additionally_rpc: []
+        exclude_rpc: []
+    42161:
+      rpc:
+        additionally_rpc: []
+    8453:
+      rpc:
+        additionally_rpc: []
+
+storage:
+  persist_txs: ${STORAGE_PERSIST_TXS:-true}
+  clickhouse:
+    url: ${CLICKHOUSE_URL:-http://127.0.0.1:8123}
+    database: ${CLICKHOUSE_DB:-ledgerscope}
+    user: ${CLICKHOUSE_USER:-ledgerscope}
+    password: ${CLICKHOUSE_PASSWORD:-ledgerscope}
+  redis:
+    url: ${REDIS_URL:-redis://127.0.0.1:6379}
+
+graph:
+  max_roots: ${GRAPH_MAX_ROOTS:-64}
+  max_depth: ${GRAPH_MAX_DEPTH:-5}
+  max_nodes: ${GRAPH_MAX_NODES:-5000}
+  max_edges: ${GRAPH_MAX_EDGES:-20000}
+  max_blocks: ${GRAPH_MAX_BLOCKS:-100000}
+
+accounts:
+  enabled: ${ACCOUNTS_ENABLED:-true}
+  postgres_url: ${POSTGRES_URL:-postgres://ledgerscope:ledgerscope@127.0.0.1:5432/ledgerscope}
+  max_connections: 10
+  session_ttl_days: 30
+  registration: ${AUTH_REGISTRATION:-true}
+  cookie_secure: ${AUTH_COOKIE_SECURE:-false}
+  max_canvas_bytes: 8388608
+  personal_rpc:
+    enabled: ${PERSONAL_RPC:-true}
+    max_nodes_per_chain: 8
+    allow_private_hosts: false
+  observer:
+    enabled: ${OBSERVER_ENABLED:-false}
+    token: ${OBSERVER_TOKEN:-}
+    window_secs: 60
+    skew_secs: 5

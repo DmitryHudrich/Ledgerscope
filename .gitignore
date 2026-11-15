@@ -20,3 +20,9 @@ appsettings.*.local.json
 
 # Docker Compose secrets (API keys, JWT/engine signing keys).
 infrastructure/.env
+infra/.env
+infra/.env.prod
+
+# Local runtime config (may hold the RPC key); config.example.yaml is the template.
+/config.yaml
+

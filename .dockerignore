@@ -1,0 +1,20 @@
+# Build contexts are the repo root; keep the heavy local artefacts out of them.
+target/
+**/target/
+frontend/node_modules/
+frontend/dist/
+
+.git/
+.idea/
+.claude/
+
+infra/.env
+config.yaml
+config.example.yaml
+moralis_cache
+etherscan_cache
+trongrid_cache
+
+**/bin/
+**/obj/
+**/.DS_Store

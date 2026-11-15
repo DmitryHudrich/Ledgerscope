@@ -1,0 +1,130 @@
+@import "tailwindcss";
+
+@font-face {
+  font-family: "Inter";
+  src: url("/fonts/Inter-Variable.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Inter";
+  src: url("/fonts/Inter-Italic-Variable.ttf") format("truetype");
+  font-style: italic;
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+:root {
+  color-scheme: light;
+
+  --plane: #f9f9f7;
+  --surface-1: #fcfcfb;
+  --surface-2: #ffffff;
+  --text-primary: #0b0b0b;
+  --text-secondary: #52514e;
+  --text-muted: #898781;
+  --gridline: rgba(11, 11, 11, 0.2);
+  --hairline: rgba(11, 11, 11, 0.1);
+  --hairline-strong: rgba(11, 11, 11, 0.18);
+
+  --series-eoa: #2a78d6;
+  --series-focus: #eb6834;
+  --series-contract: #1baf7a;
+  --series-token: #8b5cf6;
+  --edge: #9a9992;
+
+  --accent: #2a78d6;
+  --accent-ink: #ffffff;
+  --critical: #d03b3b;
+  --good: #0ca30c;
+
+  --glass: rgba(252, 252, 251, 0.82);
+  --shadow-panel: 0 1px 2px rgba(11, 11, 11, 0.06), 0 12px 32px rgba(11, 11, 11, 0.1);
+  --shadow-pop: 0 2px 6px rgba(11, 11, 11, 0.08), 0 18px 48px rgba(11, 11, 11, 0.16);
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  --plane: #0d0d0d;
+  --surface-1: #1a1a19;
+  --surface-2: #212120;
+  --text-primary: #ffffff;
+  --text-secondary: #c3c2b7;
+  --text-muted: #898781;
+  --gridline: rgba(255, 255, 255, 0.11);
+  --hairline: rgba(255, 255, 255, 0.1);
+  --hairline-strong: rgba(255, 255, 255, 0.18);
+
+  --series-eoa: #3987e5;
+  --series-focus: #d95926;
+  --series-contract: #199e70;
+  --series-token: #a78bfa;
+  --edge: #6b6b66;
+
+  --accent: #3987e5;
+  --accent-ink: #06121f;
+  --critical: #e66767;
+  --good: #0ca30c;
+
+  --glass: rgba(26, 26, 25, 0.82);
+  --shadow-panel: 0 1px 2px rgba(0, 0, 0, 0.5), 0 14px 36px rgba(0, 0, 0, 0.45);
+  --shadow-pop: 0 2px 8px rgba(0, 0, 0, 0.55), 0 22px 56px rgba(0, 0, 0, 0.55);
+}
+
+@theme inline {
+  --color-plane: var(--plane);
+  --color-surface-1: var(--surface-1);
+  --color-surface-2: var(--surface-2);
+  --color-text-primary: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-muted: var(--text-muted);
+  --color-gridline: var(--gridline);
+  --color-hairline: var(--hairline);
+  --color-hairline-strong: var(--hairline-strong);
+  --color-series-eoa: var(--series-eoa);
+  --color-series-focus: var(--series-focus);
+  --color-series-contract: var(--series-contract);
+  --color-series-token: var(--series-token);
+  --color-edge: var(--edge);
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
+  --color-critical: var(--critical);
+  --color-good: var(--good);
+  --color-glass: var(--glass);
+
+  --font-ui: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono-ui: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --radius-ui-sm: 6px;
+  --radius-ui: 10px;
+  --radius-ui-lg: 14px;
+  --shadow-panel: var(--shadow-panel);
+  --shadow-pop: var(--shadow-pop);
+  --animate-drawer-in: drawer-in 180ms ease;
+  --animate-spin-exact: spin-exact 720ms linear infinite;
+}
+
+@keyframes drawer-in {
+  from {
+    opacity: 0;
+    transform: translateX(12px);
+  }
+}
+
+@keyframes spin-exact {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "name": "nile-send",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "description": "Send test TRX transfers to Tron Nile through the observer SOCKS proxy",
+  "bin": {
+    "nile-send": "send.mjs"
+  },
+  "scripts": {
+    "start": "node send.mjs"
+  },
+  "dependencies": {
+    "tronweb": "^6"
+  }
+}

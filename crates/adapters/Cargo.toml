@@ -1,0 +1,35 @@
+[package]
+name = "ledgerscope-adapters"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "adapters"
+
+[dependencies]
+ledgerscope-domain.workspace = true
+ledgerscope-application.workspace = true
+
+async-trait.workspace = true
+async-stream.workspace = true
+reqwest.workspace = true
+alloy.workspace = true
+alloy-primitives.workspace = true
+tower.workspace = true
+tokio = { workspace = true, features = ["time", "sync"] }
+tracing.workspace = true
+futures.workspace = true
+redis.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+hex.workspace = true
+sqlx.workspace = true
+uuid.workspace = true
+time.workspace = true
+argon2.workspace = true
+sha2.workspace = true
+base64.workspace = true
+getrandom.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }

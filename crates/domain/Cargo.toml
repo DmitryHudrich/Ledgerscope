@@ -1,0 +1,14 @@
+[package]
+name = "ledgerscope-domain"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "domain"
+
+[dependencies]
+bon.workspace = true
+hex.workspace = true
+bs58.workspace = true
+alloy-primitives.workspace = true
+uuid.workspace = true

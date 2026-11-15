@@ -1,0 +1,168 @@
+name: ledgerscope
+
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: infra/api.Dockerfile
+    image: ledgerscope/web-api:dev
+    environment:
+      ETH_RPC_URL: ${ETH_RPC_URL:-}
+      RPC_CHAINLIST: ${RPC_CHAINLIST:-true}
+      CHAINS_DEFAULT: ${CHAINS_DEFAULT:-1}
+      CHAINS_ETHEREUM_L2: ${CHAINS_ETHEREUM_L2:-true}
+      CHAINS_TRON: ${CHAINS_TRON:-true}
+      CHAINS_TESTNETS: ${CHAINS_TESTNETS:-true}
+      ETH_RPC_PROXY: ${ETH_RPC_PROXY:-}
+      # Path inside the container to the etherscan label dump.
+      ETHERSCAN_JSON_PATH: ${ETHERSCAN_JSON_PATH:-labels.json}
+      BIND_ADDR: 0.0.0.0:3000
+      RUST_LOG: ${RUST_LOG:-info}
+      STORAGE_PERSIST_TXS: ${STORAGE_PERSIST_TXS:-true}
+      CLICKHOUSE_URL: ${CLICKHOUSE_URL:-http://clickhouse:8123}
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-ledgerscope}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-ledgerscope}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-ledgerscope}
+      # Empty = no cache, ClickHouse alone answers what is already indexed.
+      REDIS_URL: ${REDIS_URL-redis://redis:6379}
+      POSTGRES_URL: ${POSTGRES_URL:-postgres://${POSTGRES_USER:-ledgerscope}:${POSTGRES_PASSWORD:-ledgerscope}@postgres:5432/${POSTGRES_DB:-ledgerscope}}
+      AUTH_COOKIE_SECURE: ${AUTH_COOKIE_SECURE:-false}
+      AUTH_REGISTRATION: ${AUTH_REGISTRATION:-true}
+      # Local eth devnet (anvil) served alongside the configured chains.
+      CHAINS_DEVNETS: ${CHAINS_DEVNETS:-true}
+      DEVNET_EVM_RPC: ${DEVNET_EVM_RPC:-http://anvil:8545}
+      DEVNET_TRON_RPC: ${DEVNET_TRON_RPC:-http://tron-devnet:9090}
+      # Passive tls observer: ingest + ip-to-wallet correlation.
+      OBSERVER_ENABLED: ${OBSERVER_ENABLED:-true}
+      OBSERVER_TOKEN: ${OBSERVER_TOKEN:-devnet-observer-token}
+    ports:
+      - "127.0.0.1:${API_PORT:-3000}:3000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      anvil:
+        condition: service_healthy
+        required: false
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3000/ >/dev/null"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  anvil:
+    image: ghcr.io/foundry-rs/foundry:v1.9.0
+    profiles: ["devnet"]
+    entrypoint: ["anvil"]
+    command: ["--host", "0.0.0.0", "--port", "8545", "--chain-id", "${DEVNET_CHAIN_ID:-31337}", "--block-time", "2"]
+    ports:
+      - "127.0.0.1:${DEVNET_PORT:-8545}:8545"
+    healthcheck:
+      test: ["CMD-SHELL", "cast block-number --rpc-url http://127.0.0.1:8545 >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 3s
+    restart: unless-stopped
+
+  tron-devnet:
+    image: trontools/quickstart:2.1.1
+    environment:
+      defaultBalance: "100000"
+      showQueryString: "true"
+    ports:
+      - "127.0.0.1:${DEVNET_TRON_PORT:-9090}:9090"
+    profiles: ["tron-devnet"]
+    restart: unless-stopped
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    environment:
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-ledgerscope}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-ledgerscope}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-ledgerscope}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - clickhouse-logs:/var/log/clickhouse-server
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --user $${CLICKHOUSE_USER} --password $${CLICKHOUSE_PASSWORD} --query 'SELECT 1' >/dev/null"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command:
+      ["redis-server", "--save", "60", "1", "--appendonly", "no"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-ledgerscope}
+      POSTGRES_USER: ${POSTGRES_USER:-ledgerscope}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ledgerscope}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ..
+      dockerfile: infra/web.Dockerfile
+    image: ledgerscope/web:dev
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      api:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:2019/config/"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+volumes:
+  caddy-data:
+  caddy-config:
+  clickhouse-data:
+  clickhouse-logs:
+  redis-data:
+  postgres-data:
