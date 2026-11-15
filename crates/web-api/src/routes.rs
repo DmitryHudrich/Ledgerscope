@@ -26,7 +26,7 @@ use crate::{
     auth::MaybeUser,
     dto::{
         ChainsResponse, CoverageResponse, GraphRequest, GraphResponse, HistogramResponse,
-        LowLevelGraphResponse, RpcConfirmationResponse, parse_address,
+        LowLevelGraphResponse, RpcConfirmationResponse, ScopeRequest, parse_address,
     },
     openapi::ApiDoc,
     state::{AppState, ChainState},
@@ -254,6 +254,9 @@ async fn ensure_mined(chain: &ChainState, request: &GraphRequest) -> Result<(), 
 
 fn explore_request(request: &GraphRequest) -> Result<ExploreRequest, ApiError> {
     let spans = request_spans(request)?;
+    if let ScopeRequest::Blocks = request.scope {
+        return Ok(ExploreRequest::blocks(spans, request.confirm_rpc));
+    }
 
     let mut roots = Vec::with_capacity(request.roots.len());
     for root in &request.roots {

@@ -52,6 +52,8 @@ pub trait EthTxIndex: Send + Sync {
         addresses: &[EthAddress],
         span: BlockRange,
     ) -> Result<Vec<MinedTx>, io::Error>;
+
+    async fn txs_within(&self, span: BlockRange, limit: usize) -> Result<Vec<MinedTx>, io::Error>;
 }
 
 #[async_trait::async_trait]

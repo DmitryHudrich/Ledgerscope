@@ -14,6 +14,7 @@ import {
 import { assetLabel, sortedAssets, type GraphModel, type GraphNode } from '../graph/model';
 import { getPrimarySystemLabel } from '../graph/labels';
 import { IconChevron, IconClose, IconCopy, IconTable, IconTarget } from './Icons';
+import { TagList } from './TagList';
 import {
   Button,
   Dot,
@@ -40,10 +41,10 @@ interface Props {
   onClose: () => void;
   labelsSlot?: ReactNode;
   actionsSlot?: ReactNode;
+  onPickTag?: (key: string) => void;
 }
 
 const KIND_LABEL: Record<GraphNode['kind'], string> = {
-  focus: 'Focus wallet',
   contract: 'Contract',
   eoa: 'Wallet (EOA)',
 };
@@ -73,6 +74,7 @@ export function DetailsDrawer({
   onShowTransactions,
   onClose,
   labelsSlot,
+  onPickTag,
   actionsSlot,
 }: Props) {
   const [showAllPeers, setShowAllPeers] = useState(false);
@@ -159,7 +161,7 @@ export function DetailsDrawer({
         <div className="min-w-0 flex-1">
           <span className="inline-flex items-center gap-[6px] text-[10px] uppercase tracking-[0.07em] text-text-secondary">
             <Dot tone={node.kind} />
-            {KIND_LABEL[node.kind]}
+            {KIND_LABEL[node.kind]}{node.root && ' · investigation root'}
           </span>
           {primaryLabel && (
             <div className="mt-1.5 truncate text-sm font-semibold text-text-primary" title={primaryLabel.value}>
@@ -181,6 +183,7 @@ export function DetailsDrawer({
 
       <div className="overflow-y-auto overscroll-contain">
         {labelsSlot}
+        <TagList tags={node.tags} onPickTag={onPickTag} />
         {serverLabels.length > 0 && (
           <PanelSection>
             <PanelTitle>System labels</PanelTitle>

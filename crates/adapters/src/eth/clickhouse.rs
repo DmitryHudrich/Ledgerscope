@@ -425,6 +425,21 @@ impl EthTxIndex for ClickhouseTxRepository {
 
         rows.into_iter().map(TxRow::into_mined).collect()
     }
+
+    async fn txs_within(&self, span: BlockRange, limit: usize) -> Result<Vec<MinedTx>, io::Error> {
+        let chain = self.chain_id;
+        let (lower, highest) = (span.from_block(), span.to_block());
+
+        let rows: Vec<TxRow> = self
+            .rows(&format!(
+                "SELECT * FROM {TXS_TABLE} FINAL \
+                 WHERE chain_id = {chain} AND block_number BETWEEN {lower} AND {highest} \
+                 ORDER BY block_number, tx_hash LIMIT {limit}"
+            ))
+            .await?;
+
+        rows.into_iter().map(TxRow::into_mined).collect()
+    }
 }
 
 #[async_trait::async_trait]

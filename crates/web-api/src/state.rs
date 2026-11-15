@@ -16,8 +16,8 @@ use application::account::{
 };
 use application::observe::{ObservationStore, TlsCorrelationConfig};
 use application::eth::{
-    CachingActorResolver, EthExplorer, ExploreLimits, FetchingTxIndex, JsonLabelProvider,
-    ScanBoard, StoringEthTxSource,
+    BuildBoard, CachingActorResolver, EthExplorer, ExploreLimits, FetchingTxIndex,
+    JsonLabelProvider, ScanBoard, StoringEthTxSource,
     classificator::FulliestEthTxClassificator,
     ports::{
         ActorRepository, EthRpcSource, EthTxCache, EthTxIndex, EthTxRepository, EthTxSource,
@@ -153,6 +153,7 @@ pub struct AppState {
     accounts: Option<Arc<Accounts>>,
     monitor: Arc<RpcMonitor>,
     scans: Arc<ScanBoard>,
+    builds: Arc<BuildBoard>,
     storage: Option<ClickhouseTxRepository>,
     started_at: OffsetDateTime,
 }
@@ -216,6 +217,7 @@ impl AppState {
 
         let monitor = Arc::new(RpcMonitor::default());
         let scans = Arc::new(ScanBoard::default());
+        let builds = Arc::new(BuildBoard::default());
 
         let mut chains = BTreeMap::new();
         for meta in metas {
@@ -256,7 +258,8 @@ impl AppState {
                     label_provider,
                     limits(&config.graph),
                 )
-                .with_scans(scans.for_chain(chain_id)),
+                .with_scans(scans.for_chain(chain_id))
+                .with_builds(builds.for_chain(chain_id)),
             );
 
             chains.insert(
@@ -282,6 +285,7 @@ impl AppState {
             accounts: accounts(&config.accounts, &fleet, &http_client).await,
             monitor,
             scans,
+            builds,
             storage: shared.repository.clone(),
             started_at: OffsetDateTime::now_utc(),
         })
@@ -315,6 +319,10 @@ impl AppState {
 
     pub fn scans(&self) -> &ScanBoard {
         &self.scans
+    }
+
+    pub fn builds(&self) -> &BuildBoard {
+        &self.builds
     }
 
     pub fn storage(&self) -> Option<&ClickhouseTxRepository> {

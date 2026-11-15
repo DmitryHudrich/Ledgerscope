@@ -66,7 +66,8 @@ export async function fetchGraph(
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         chain: query.chain,
-        roots: query.roots,
+        scope: query.scope ?? 'roots',
+        roots: query.scope === 'blocks' ? [] : query.roots,
         from_block: query.from_block,
         to_block: query.to_block,
         ranges: query.ranges ?? [],

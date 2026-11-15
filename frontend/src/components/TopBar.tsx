@@ -1,6 +1,6 @@
 import { useState, type FormEvent, type ReactNode } from 'react';
 
-import type { ChainInfo, GraphRoot } from '../api/types';
+import type { ChainInfo, GraphRoot, GraphScope } from '../api/types';
 import { addressHint, displayAddress, parseAddressInput } from '../lib/chain';
 import { formatCount } from '../lib/format';
 import type { Theme } from '../lib/theme';
@@ -17,6 +17,8 @@ interface Props {
   onChainsRefresh: () => void;
   roots: GraphRoot[];
   maxRoots: number;
+  scope: GraphScope;
+  onScopeChange: (next: GraphScope) => void;
   selection: BlockBounds;
   onSubmit: (address: string | null) => void;
   loading: boolean;
@@ -38,6 +40,8 @@ export function TopBar({
   onChainsRefresh,
   roots,
   maxRoots,
+  scope,
+  onScopeChange,
   selection,
   onSubmit,
   loading,
@@ -58,10 +62,15 @@ export function TopBar({
   const invalid = raw.length > 0 && parsed === null;
   const known = roots.some((root) => root.address === typed);
   const full = roots.length >= maxRoots && !known;
-  const canBuild = roots.length > 0 || (parsed !== null && !full);
+  const sweeping = scope === 'blocks';
+  const canBuild = sweeping || roots.length > 0 || (parsed !== null && !full);
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
+    if (sweeping) {
+      if (!loading) onSubmit(null);
+      return;
+    }
     if (!loading && canBuild && !invalid) onSubmit(typed || null);
   };
 
@@ -85,18 +94,37 @@ export function TopBar({
         className="flex min-w-0 max-w-[760px] flex-[1_1_600px] items-center gap-2 max-[1100px]:order-3 max-[1100px]:basis-full max-[1100px]:max-w-none"
         onSubmit={submit}
       >
+        <div className="flex h-9 flex-none items-center rounded-ui-sm border border-hairline p-0.5" role="radiogroup" aria-label="Graph scope">
+          {(['roots', 'blocks'] as const).map((value) => (
+            <button
+              key={value}
+              type="button"
+              role="radio"
+              aria-checked={scope === value}
+              title={value === 'roots' ? 'Walk out from the addresses you add' : 'Every transaction inside the block range'}
+              className={cx(
+                'h-full cursor-pointer rounded-[5px] border-0 bg-transparent px-2.5 text-xs font-medium text-text-muted',
+                scope === value && 'bg-[color-mix(in_srgb,var(--accent)_14%,transparent)] text-accent',
+              )}
+              onClick={() => onScopeChange(value)}
+            >
+              {value === 'roots' ? 'Addresses' : 'All txs'}
+            </button>
+          ))}
+        </div>
         <label className="sr-only" htmlFor="q-wallet">Wallet or address</label>
         <Input
           id="q-wallet"
           className="h-9 min-w-[18ch] flex-1 font-mono-ui text-[13px]"
-          invalid={invalid}
-          value={draft}
+          invalid={!sweeping && invalid}
+          value={sweeping ? '' : draft}
+          disabled={sweeping}
           spellCheck={false}
           autoComplete="off"
-          placeholder={`Search or paste ${chain?.name ?? 'Ethereum'} ${addressHint()}`}
+          placeholder={sweeping ? 'Every transaction in the block range' : `Search or paste ${chain?.name ?? 'Ethereum'} ${addressHint()}`}
           onChange={(event) => setDraft(event.target.value)}
         />
-        <Button className="h-9 px-4" variant="primary" type="submit" disabled={!canBuild || invalid || full || loading}>
+        <Button className="h-9 px-4" variant="primary" type="submit" disabled={!canBuild || (!sweeping && (invalid || full)) || loading}>
           {loading ? 'Building…' : 'Build graph'}
         </Button>
         <Button

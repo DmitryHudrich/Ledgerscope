@@ -1,14 +1,14 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 
 import { ApiError, RpcConfirmationRequired, fetchChains, fetchCoverage, fetchGraph, fetchHistogram } from './api/client';
 import { canvasApi, isUserLabelSource, labelApi, type CanvasInfo, type Me, type OwnerRequest, type UserLabel } from './api/account';
 import { demoGraph } from './api/demo';
 import type {
-  BlockRangeSpan,
   ChainInfo,
   CoverageResponse,
   GraphResponse,
   GraphRoot,
+  GraphScope,
   HistogramResponse,
   RpcConfirmation,
 } from './api/types';
@@ -17,7 +17,7 @@ import { EdgeInspector, MultiSelectionInspector } from './components/ContextInsp
 import { IconFilter } from './components/Icons';
 import { InvestigationPanel, type WorkspacePanel } from './components/SidePanel';
 import { BlockRangePanel } from './components/BlockRangePanel';
-import type { BlockBounds } from './components/Timeline';
+import { Timeline, type BlockBounds } from './components/Timeline';
 import { ToolRail } from './components/ToolRail';
 import { TopBar } from './components/TopBar';
 import { SHEET_HEIGHT, TxSheet } from './components/TxSheet';
@@ -38,6 +38,7 @@ import { ShareDialog } from './components/account/ShareDialog';
 import { TeamsDialog } from './components/account/TeamsDialog';
 import { errorText } from './components/Modal';
 import { MonitorPanel } from './components/monitor/MonitorPanel';
+import { BuildProgress } from './components/monitor/BuildProgress';
 import { ScanProgress } from './components/monitor/ScanProgress';
 import { Button, Dot, Kbd, Panel } from './components/ui';
 import { GraphCanvas, type GraphHandle } from './graph/GraphCanvas';
@@ -54,7 +55,7 @@ import {
   type GraphModel,
   type NodePosition,
 } from './graph/model';
-import { clampRange, sameRange, type BlockLimits } from './lib/blockRange';
+import { clampRange, indexedWithin, sameRange, type BlockLimits } from './lib/blockRange';
 import { readStoredChain, setActiveChain, storeChain } from './lib/chain';
 import {
   documentBytes,
@@ -154,28 +155,22 @@ function chainOrder(defaultChain: number) {
     || a.name.localeCompare(b.name);
 }
 
-function storedSelection(coverage: CoverageResponse, maxBlocks: number): BlockBounds | null {
-  const widest = coverage.ranges.reduce<BlockRangeSpan | null>(
-    (best, range) => (range.block_count > (best?.block_count ?? 0) ? range : best),
-    null,
-  );
-  if (widest) {
-    return {
-      from: widest.from_block,
-      to: Math.min(widest.to_block, widest.from_block + maxBlocks - 1),
-    };
-  }
+function storedSelection(coverage: CoverageResponse, maxBlocks: number): BlockBounds[] | null {
+  const indexed = indexedWithin(coverage.ranges, maxBlocks);
+  if (indexed.length > 0) return indexed;
   if (coverage.chain_head === null) return null;
-  return {
+  return [{
     from: Math.max(coverage.chain_head - Math.min(10, HEAD_WINDOW), 0),
     to: coverage.chain_head,
-  };
+  }];
 }
 
 export default function App() {
   const [theme, setTheme] = useTheme();
   const [palette, setPalette] = useState<VizPalette>(() => readPalette());
   const [roots, setRoots] = useState<GraphRoot[]>(INITIAL_ROOTS);
+  const [scope, setScope] = useState<GraphScope>('roots');
+  const [timelineOpen, setTimelineOpen] = useState(true);
   const [ranges, setRanges] = useState<BlockBounds[]>([INITIAL_SELECTION]);
   const [activeRange, setActiveRange] = useState(0);
   const selection = ranges[activeRange] ?? ranges[0] ?? INITIAL_SELECTION;
@@ -245,6 +240,7 @@ export default function App() {
   const annotationsRef = useRef(annotations);
   const modelRef = useRef<GraphModel>(EMPTY_MODEL);
   const requestId = useRef(0);
+  const inFlight = useRef<AbortController | null>(null);
   const snapped = useRef(false);
   const buildingFrom = useRef(false);
   const restored = useRef<Map<string, NodePosition> | null>(null);
@@ -311,7 +307,8 @@ export default function App() {
     setAnnotations(next);
   }, []);
 
-  const filters = useMemo<GraphFilters>(() => ({ ...filterState, focus: '' }), [filterState]);
+  const deferredFilters = useDeferredValue(filterState);
+  const filters = useMemo<GraphFilters>(() => ({ ...deferredFilters, focus: '' }), [deferredFilters]);
   const hidden = useMemo(() => hiddenSets(removedNodeIds, hiddenTxs, groups), [groups, hiddenTxs, removedNodeIds]);
   const visibleResponse = useMemo(() => (response ? withoutTxs(response, hidden.txs) : null), [hidden.txs, response]);
   const rawModel = useMemo(() => {
@@ -400,8 +397,11 @@ export default function App() {
 
   const run = useCallback(
     async (confirmRpc = false, requestedRoots = roots): Promise<GraphResponse | null> => {
-      if (requestedRoots.length === 0) return null;
+      if (scope === 'roots' && requestedRoots.length === 0) return null;
       const id = (requestId.current += 1);
+      inFlight.current?.abort();
+      const controller = new AbortController();
+      inFlight.current = controller;
       setError(null);
       setPending(null);
       setBuildFeedback(null);
@@ -411,6 +411,7 @@ export default function App() {
 
       const query = {
         chain: chainId ?? undefined,
+        scope,
         roots: requestedRoots,
         from_block: selection.from,
         to_block: selection.to,
@@ -418,7 +419,7 @@ export default function App() {
         confirm_rpc: confirmRpc,
       };
       try {
-        const payload = demo ? demoGraph(query) : await fetchGraph(query);
+        const payload = demo ? demoGraph(query) : await fetchGraph(query, controller.signal);
         if (requestId.current !== id) return null;
         setResponse(payload);
         return payload;
@@ -433,9 +434,10 @@ export default function App() {
         return null;
       } finally {
         if (requestId.current === id) setLoading(false);
+        if (inFlight.current === controller) inFlight.current = null;
       }
     },
-    [chainId, demo, roots, ranges, activeRange],
+    [chainId, demo, roots, ranges, activeRange, scope],
   );
 
   const refreshCoverage = useCallback(async () => {
@@ -458,6 +460,15 @@ export default function App() {
     }
   }, [chainId]);
 
+  const stopFetching = useCallback(() => {
+    requestId.current += 1;
+    inFlight.current?.abort();
+    inFlight.current = null;
+    setLoading(false);
+    setNotice('Fetch stopped. Blocks fetched so far stay indexed.');
+    void refreshCoverage();
+  }, [refreshCoverage]);
+
   useEffect(() => {
     if (chainsLoaded) void refreshCoverage();
   }, [chainsLoaded, refreshCoverage]);
@@ -468,6 +479,7 @@ export default function App() {
     storeChain(picked.chain_id);
     setActiveChain(picked);
     requestId.current += 1;
+    inFlight.current?.abort();
     snapped.current = false;
     setChainId(picked.chain_id);
     setResponse(null);
@@ -492,8 +504,8 @@ export default function App() {
     snapped.current = true;
     const next = coverage ? storedSelection(coverage, coverage.limits.max_blocks) : null;
     if (next) {
-      setRanges([next]);
-      setActiveRange(0);
+      setRanges(next);
+      setActiveRange(next.length - 1);
     }
     setPrimed(true);
   }, [coverageLoaded, coverage]);
@@ -670,6 +682,7 @@ export default function App() {
 
   const canvasState = useCallback((): CanvasState => ({
     chainId: chainId ?? defaultChain ?? 1,
+    scope,
     roots,
     selection,
     filters: filterState,
@@ -682,7 +695,7 @@ export default function App() {
     annotations,
     positions: positionsOf(modelRef.current),
     graph: response,
-  }), [annotations, chainId, defaultChain, dimmed, filterState, groups, hiddenTxs, labelMode, removedNodeIds, response, roots, selection, showFlow]);
+  }), [annotations, chainId, defaultChain, dimmed, filterState, groups, hiddenTxs, labelMode, removedNodeIds, response, roots, scope, selection, showFlow]);
 
   const currentPrint = useMemo(() => fingerprint(canvasState()), [canvasState]);
   const saveState: SaveState = saving ? 'saving' : saveError ? 'error' : canvas && savedPrint === currentPrint ? 'clean' : 'dirty';
@@ -718,6 +731,7 @@ export default function App() {
     setSelectedId(null);
     setSelectedIds(new Set());
     setSelectedLinkId(null);
+    setScope(document.scope);
     setRoots(document.roots);
     setRanges([document.selection]);
     setActiveRange(0);
@@ -747,6 +761,7 @@ export default function App() {
 
     return fingerprint({
       chainId: document.chain_id,
+      scope: document.scope,
       roots: document.roots,
       selection: document.selection,
       filters: document.filters,
@@ -930,6 +945,10 @@ export default function App() {
     ? monitor.scans.find((job) => job.running && job.chain_id === chainId && job.started_ms >= loadStartedAt.current - 2000) ?? null
     : null;
 
+  const activeBuild = loading && !activeScan
+    ? monitor.builds.find((job) => job.running && job.chain_id === chainId && job.started_ms >= loadStartedAt.current - 2000) ?? null
+    : null;
+
   const changeLayoutGently = useCallback(() => setIncrementalLayoutVersion((version) => version + 1), []);
 
   const hideNodes = useCallback((ids: string[]) => {
@@ -989,6 +1008,8 @@ export default function App() {
         onChainsRefresh={() => void refreshChains()}
         roots={roots}
         maxRoots={limits.maxRoots}
+        scope={scope}
+        onScopeChange={setScope}
         selection={selection}
         onSubmit={submitFromTopBar}
         loading={loading || buildingFromId !== null}
@@ -1249,6 +1270,7 @@ export default function App() {
                 </div>
               </div>
             )}
+            onPickTag={(tag) => setFilterState((current) => ({ ...current, tag }))}
             labelsSlot={account.config?.enabled && !demo ? (
               <NodeLabels
                 me={account.me}
@@ -1282,12 +1304,23 @@ export default function App() {
             groups={groups}
             onGroup={(target) => groupItems(target, [], selectedLink.txs.map((tx) => tx.tx_hash))}
             onHide={() => hideTxs(selectedLink.txs.map((tx) => tx.tx_hash))}
+            onPickTag={(tag) => setFilterState((current) => ({ ...current, tag }))}
             onClose={() => selectLink(null)}
             onShowTransactions={() => {
               setSheetScope(null);
               setSheetLinkScope(selectedLink.id);
               setSheetOpen(true);
             }}
+          />
+        )}
+
+        {visibleResponse && visibleResponse.edges.length > 0 && (
+          <Timeline
+            edges={visibleResponse.edges}
+            window={filterState.window}
+            onWindowChange={(window) => setFilterState((current) => ({ ...current, window }))}
+            open={timelineOpen}
+            onOpenChange={setTimelineOpen}
           />
         )}
 
@@ -1330,10 +1363,17 @@ export default function App() {
               <h2 className="m-0 text-base font-semibold">{activeScan ? 'Fetching blocks over RPC' : 'Building investigation graph'}</h2>
               {activeScan ? (
                 <ScanProgress job={activeScan} calls={monitor.calls} onOpenMonitor={() => setMonitorOpen(true)} />
+              ) : activeBuild ? (
+                <BuildProgress job={activeBuild} sweep={scope === 'blocks'} />
               ) : (
                 <p className="m-0 text-[13px] text-text-secondary">
                   Stored blocks answer immediately. Missing live blocks can take longer over JSON-RPC.
                 </p>
+              )}
+              {!demo && (
+                <Button className="mt-1" onClick={stopFetching}>
+                  {activeScan ? 'Stop fetching' : 'Cancel'}
+                </Button>
               )}
             </Panel>
           </div>
@@ -1369,7 +1409,7 @@ export default function App() {
         )}
 
         {notice && (
-          <Panel className="absolute bottom-[calc(var(--sheet-h)+12px)] left-1/2 z-40 flex max-w-[560px] -translate-x-1/2 items-center gap-3 px-4 py-2.5 text-xs text-text-secondary shadow-pop" role="status">
+          <Panel className="absolute bottom-[calc(var(--sheet-h)+108px)] left-1/2 z-40 flex max-w-[560px] -translate-x-1/2 items-center gap-3 px-4 py-2.5 text-xs text-text-secondary shadow-pop" role="status">
             <span>{notice}</span>
             <Button variant="ghost" className="h-7 px-2" onClick={() => setNotice(null)}>Dismiss</Button>
           </Panel>

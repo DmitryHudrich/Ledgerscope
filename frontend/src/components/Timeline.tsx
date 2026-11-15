@@ -1,173 +1,219 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState, type ChangeEvent } from 'react';
 
-import type { CoverageResponse, HistogramResponse } from '../api/types';
-import { formatCompact, formatCount } from '../lib/format';
+import type { GraphEdge } from '../api/types';
+import type { BlockWindow } from '../graph/model';
+import { formatCount, formatTimestamp } from '../lib/format';
+import { Button, Panel, cx } from './ui';
 
 export interface BlockBounds {
   from: number;
   to: number;
 }
 
+const BUCKETS = 72;
+
+const thumb = cx(
+  'pointer-events-none absolute inset-x-0 top-0 m-0 h-5 w-full appearance-none bg-transparent outline-none',
+  '[&::-webkit-slider-thumb]:pointer-events-auto [&::-webkit-slider-thumb]:size-3.5 [&::-webkit-slider-thumb]:cursor-ew-resize [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-surface-1 [&::-webkit-slider-thumb]:bg-accent',
+  '[&::-moz-range-thumb]:pointer-events-auto [&::-moz-range-thumb]:size-3 [&::-moz-range-thumb]:cursor-ew-resize [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-2 [&::-moz-range-thumb]:border-surface-1 [&::-moz-range-thumb]:bg-accent',
+  'focus-visible:[&::-webkit-slider-thumb]:ring-2 focus-visible:[&::-webkit-slider-thumb]:ring-accent',
+);
+
 interface Props {
-  bounds: BlockBounds;
-  selection: BlockBounds;
-  coverage: CoverageResponse | null;
-  histogram: HistogramResponse | null;
-  maxBlocks: number;
-  onBoundsChange: (next: BlockBounds) => void;
-  onSelectionChange: (next: BlockBounds) => void;
+  edges: GraphEdge[];
+  window: BlockWindow | null;
+  onWindowChange: (next: BlockWindow | null) => void;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
 }
 
 function clamp(value: number, low: number, high: number): number {
   return Math.min(Math.max(value, low), high);
 }
 
-function storeLabel(coverage: CoverageResponse | null): string {
-  if (!coverage) return 'store: backend unreachable';
-  if (!coverage.persisted) return 'store: off (storage.persist_txs)';
-  if (coverage.block_count === 0) return 'store: empty, every block needs the node';
-
-  return `store: ${formatCount(coverage.block_count)} blocks · ${formatCompact(
-    coverage.tx_count,
-  )} txs`;
+function firstAbove(sorted: Float64Array, value: number): number {
+  let low = 0;
+  let high = sorted.length;
+  while (low < high) {
+    const middle = (low + high) >> 1;
+    if (sorted[middle] <= value) low = middle + 1;
+    else high = middle;
+  }
+  return low;
 }
 
-function storeTone(coverage: CoverageResponse | null): string | undefined {
-  return !coverage || !coverage.persisted || coverage.block_count === 0
-    ? 'timeline-warn'
-    : undefined;
-}
+function BlockInput({ id, value, low, high, onCommit }: {
+  id: string;
+  value: number;
+  low: number;
+  high: number;
+  onCommit: (value: number) => void;
+}) {
+  const [draft, setDraft] = useState(String(value));
+  useEffect(() => setDraft(String(value)), [value]);
 
-export function Timeline({
-  bounds,
-  selection,
-  coverage,
-  histogram,
-  maxBlocks,
-  onBoundsChange,
-  onSelectionChange,
-}: Props) {
-  const span = Math.max(bounds.to - bounds.from, 1);
-  const peak = useMemo(
-    () => histogram?.buckets.reduce((top, bucket) => Math.max(top, bucket.tx_count), 0) ?? 0,
-    [histogram],
-  );
-
-  const indexedInWindow = useMemo(() => {
-    if (!coverage) return 0;
-    return coverage.ranges.reduce((sum, range) => {
-      const from = Math.max(range.from_block, selection.from);
-      const to = Math.min(range.to_block, selection.to);
-      return sum + (to >= from ? to - from + 1 : 0);
-    }, 0);
-  }, [coverage, selection]);
-
-  const picked = selection.to - selection.from + 1;
-  const missing = Math.max(picked - indexedInWindow, 0);
-  const tooWide = picked > maxBlocks;
-
-  const left = ((selection.from - bounds.from) / span) * 100;
-  const width = ((selection.to - selection.from) / span) * 100;
-
-  const editBound = (key: keyof BlockBounds, raw: string) => {
-    const value = Number.parseInt(raw, 10);
-    if (!Number.isFinite(value) || value < 0) return;
-
-    const next = { ...bounds, [key]: value };
-    if (next.from > next.to) return;
-    onBoundsChange(next);
+  const commit = () => {
+    const parsed = Number.parseInt(draft, 10);
+    if (Number.isFinite(parsed)) onCommit(clamp(parsed, low, high));
+    else setDraft(String(value));
   };
 
   return (
-    <div className="timeline panel overlay">
-      <div className="timeline-head">
-        <div className="field">
-          <label htmlFor="t-low">Slider from block</label>
-          <input
-            id="t-low"
-            className="input input-block"
-            value={String(bounds.from)}
-            inputMode="numeric"
-            onChange={(event) => editBound('from', event.target.value.replace(/\D/g, ''))}
-          />
-        </div>
-        <div className="field">
-          <label htmlFor="t-high">Slider to block</label>
-          <input
-            id="t-high"
-            className="input input-block"
-            value={String(bounds.to)}
-            inputMode="numeric"
-            onChange={(event) => editBound('to', event.target.value.replace(/\D/g, ''))}
-          />
-        </div>
+    <input
+      id={id}
+      className="h-7 w-[104px] rounded-ui-sm border border-hairline bg-surface-2 px-2 font-mono-ui text-[11px] tabular-nums text-text-primary outline-none focus-visible:border-accent"
+      inputMode="numeric"
+      value={draft}
+      onChange={(event) => setDraft(event.target.value.replace(/\D/g, ''))}
+      onBlur={commit}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter') commit();
+        if (event.key === 'Escape') setDraft(String(value));
+      }}
+    />
+  );
+}
 
-        <div className="timeline-facts">
-          <span>
-            <strong>{formatCount(picked)}</strong> blocks picked
+export function Timeline({ edges, window, onWindowChange, open, onOpenChange }: Props) {
+  const domain = useMemo(() => {
+    if (edges.length === 0) return null;
+    let from = Number.POSITIVE_INFINITY;
+    let to = 0;
+    for (const edge of edges) {
+      if (edge.block_number < from) from = edge.block_number;
+      if (edge.block_number > to) to = edge.block_number;
+    }
+    return { from, to };
+  }, [edges]);
+
+  const stamps = useMemo(() => {
+    const byBlock = new Map<number, number>();
+    for (const edge of edges) if (edge.timestamp) byBlock.set(edge.block_number, edge.timestamp);
+    return [...byBlock.entries()].sort((a, b) => a[0] - b[0]);
+  }, [edges]);
+
+  const bars = useMemo(() => {
+    if (!domain) return [];
+    const span = domain.to - domain.from + 1;
+    const count = Math.min(BUCKETS, span);
+    const size = span / count;
+    const out = Array.from({ length: count }, (_, index) => ({
+      from: domain.from + Math.floor(index * size),
+      to: domain.from + Math.floor((index + 1) * size) - 1,
+      txs: 0,
+    }));
+    for (const edge of edges) {
+      const index = Math.min(Math.floor((edge.block_number - domain.from) / size), count - 1);
+      out[index].txs += 1;
+    }
+    return out;
+  }, [domain, edges]);
+
+  const peak = useMemo(() => bars.reduce((top, bar) => Math.max(top, bar.txs), 0), [bars]);
+  const from = domain ? clamp(window?.from ?? domain.from, domain.from, domain.to) : 0;
+  const to = domain ? clamp(window?.to ?? domain.to, domain.from, domain.to) : 0;
+  const blocks = useMemo(() => Float64Array.from(edges, (edge) => edge.block_number).sort(), [edges]);
+  const shown = firstAbove(blocks, to) - firstAbove(blocks, from - 1);
+
+  if (!domain) return null;
+  const span = Math.max(domain.to - domain.from, 1);
+
+  const stampOf = (block: number): number | null => {
+    let low = 0;
+    let high = stamps.length;
+    while (low < high) {
+      const middle = (low + high) >> 1;
+      if (stamps[middle][0] <= block) low = middle + 1;
+      else high = middle;
+    }
+    return stamps[Math.max(low - 1, 0)]?.[1] ?? null;
+  };
+
+  const apply = (next: BlockWindow) => {
+    const ordered = { from: Math.min(next.from, next.to), to: Math.max(next.from, next.to) };
+    onWindowChange(ordered.from <= domain.from && ordered.to >= domain.to ? null : ordered);
+  };
+
+  const fromStamp = stampOf(from);
+  const toStamp = stampOf(to);
+
+  if (!open) {
+    return (
+      <Panel className="absolute bottom-[calc(var(--sheet-h)+12px)] left-1/2 z-12 flex -translate-x-1/2 items-center gap-2 px-2 py-1 text-xs text-text-secondary">
+        <Button variant="ghost" className="h-7 px-2" onClick={() => onOpenChange(true)}>Timeline</Button>
+        {window && (
+          <span className="tabular-nums">
+            {formatCount(from)}–{formatCount(to)}
           </span>
-          <span className={missing > 0 ? 'timeline-warn' : undefined}>
-            <strong>{formatCount(indexedInWindow)}</strong> in clickhouse
-            {missing > 0 && <> · {formatCount(missing)} need the node</>}
-          </span>
-          <span className={storeTone(coverage)}>{storeLabel(coverage)}</span>
-          {coverage?.chain_head != null && (
-            <span>head {formatCount(coverage.chain_head)}</span>
-          )}
-          {tooWide && (
-            <span className="timeline-warn">over the {formatCount(maxBlocks)} block limit</span>
-          )}
-        </div>
+        )}
+      </Panel>
+    );
+  }
+
+  return (
+    <Panel
+      className="absolute bottom-[calc(var(--sheet-h)+12px)] left-[calc(var(--investigation-w)+12px)] right-[calc(var(--inspector-w)+12px)] z-12 mx-auto grid max-w-[880px] gap-2 px-3 py-2.5 text-xs text-text-secondary"
+      aria-label="Display timeline"
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <label className="text-[10px] uppercase tracking-[0.07em] text-text-muted" htmlFor="tl-from">Show blocks</label>
+        <BlockInput id="tl-from" value={from} low={domain.from} high={to} onCommit={(value) => apply({ from: value, to })} />
+        <span aria-hidden="true">–</span>
+        <BlockInput id="tl-to" value={to} low={from} high={domain.to} onCommit={(value) => apply({ from, to: value })} />
+        <span className="tabular-nums text-text-muted max-[720px]:hidden">
+          {fromStamp ? formatTimestamp(fromStamp) : ''}{fromStamp && toStamp ? ' → ' : ''}{toStamp ? formatTimestamp(toStamp) : ''}
+        </span>
+        <span className="ml-auto tabular-nums">
+          <strong className="font-semibold text-text-primary">{formatCount(shown)}</strong> of {formatCount(edges.length)} txs
+        </span>
+        <Button variant="ghost" className="h-7 px-2" disabled={!window} onClick={() => onWindowChange(null)}>All</Button>
+        <Button variant="ghost" className="h-7 px-2" onClick={() => onOpenChange(false)} aria-label="Collapse timeline">Hide</Button>
       </div>
 
-      <div className="timeline-track">
-        <div className="timeline-bars" aria-hidden="true">
-          {histogram?.buckets.map((bucket) => (
-            <div
-              className={`timeline-bar${bucket.indexed_blocks > 0 ? ' timeline-bar-indexed' : ''}`}
-              key={bucket.from_block}
-              style={{ height: `${peak > 0 ? (bucket.tx_count / peak) * 100 : 0}%` }}
-              title={`${formatCount(bucket.from_block)}–${formatCount(bucket.to_block)}: ${formatCount(
-                bucket.tx_count,
-              )} txs, ${formatCount(bucket.indexed_blocks)} blocks indexed`}
-            />
-          ))}
+      <div className="relative">
+        <div className="flex h-9 items-end gap-px" aria-hidden="true">
+          {bars.map((bar) => {
+            const inside = bar.to >= from && bar.from <= to;
+            return (
+              <button
+                type="button"
+                tabIndex={-1}
+                key={bar.from}
+                className={cx('min-w-0 flex-1 cursor-pointer rounded-t-[2px] border-0 p-0', inside ? 'bg-accent' : 'bg-hairline-strong opacity-60')}
+                style={{ height: `${peak > 0 ? Math.max((bar.txs / peak) * 100, bar.txs > 0 ? 6 : 2) : 2}%` }}
+                title={`${formatCount(bar.from)}–${formatCount(bar.to)}: ${formatCount(bar.txs)} txs`}
+                onClick={() => apply({ from: bar.from, to: bar.to })}
+              />
+            );
+          })}
         </div>
-        <div
-          className="timeline-window"
-          style={{ left: `${clamp(left, 0, 100)}%`, width: `${clamp(width, 0, 100)}%` }}
-          aria-hidden="true"
-        />
-      </div>
-
-      <div className="timeline-sliders">
-        <label className="timeline-slider">
-          <span>From {formatCount(selection.from)}</span>
+        <div className="relative mt-1 h-5">
+          <div className="absolute inset-x-0 top-[9px] h-0.5 rounded-full bg-hairline" aria-hidden="true" />
+          <div
+            className="absolute top-[9px] h-0.5 rounded-full bg-accent"
+            style={{ left: `${((from - domain.from) / span) * 100}%`, right: `${100 - ((to - domain.from) / span) * 100}%` }}
+            aria-hidden="true"
+          />
           <input
             type="range"
-            min={bounds.from}
-            max={bounds.to}
-            value={clamp(selection.from, bounds.from, bounds.to)}
-            onChange={(event) => {
-              const from = Number(event.target.value);
-              onSelectionChange({ from, to: Math.max(from, selection.to) });
-            }}
+            className={thumb}
+            aria-label="First block shown"
+            min={domain.from}
+            max={domain.to}
+            value={from}
+            onChange={(event: ChangeEvent<HTMLInputElement>) => apply({ from: Math.min(Number(event.target.value), to), to })}
           />
-        </label>
-        <label className="timeline-slider">
-          <span>To {formatCount(selection.to)}</span>
           <input
             type="range"
-            min={bounds.from}
-            max={bounds.to}
-            value={clamp(selection.to, bounds.from, bounds.to)}
-            onChange={(event) => {
-              const to = Number(event.target.value);
-              onSelectionChange({ from: Math.min(to, selection.from), to });
-            }}
+            className={thumb}
+            aria-label="Last block shown"
+            min={domain.from}
+            max={domain.to}
+            value={to}
+            onChange={(event: ChangeEvent<HTMLInputElement>) => apply({ from, to: Math.max(Number(event.target.value), from) })}
           />
-        </label>
+        </div>
       </div>
-    </div>
+    </Panel>
   );
 }

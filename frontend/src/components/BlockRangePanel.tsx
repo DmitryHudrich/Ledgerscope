@@ -1,7 +1,7 @@
 import { useMemo, type CSSProperties } from 'react';
 
 import type { CoverageResponse, HistogramResponse } from '../api/types';
-import type { BlockLimits } from '../lib/blockRange';
+import { indexedWithin, sameRange, type BlockLimits } from '../lib/blockRange';
 import { formatCount } from '../lib/format';
 import { IconClose } from './Icons';
 import { Button, Input, PanelSection, PanelTitle, cx } from './ui';
@@ -40,6 +40,7 @@ export function BlockRangePanel({
   histogram,
   onActiveChange,
   onRangesChange,
+  limits,
   onApply,
   applyDisabled,
 }: Props) {
@@ -130,6 +131,21 @@ export function BlockRangePanel({
         + Add range
       </Button>
 
+      <IndexedRanges
+        coverage={coverage}
+        maxBlocks={limits.maxBlocks}
+        ranges={ranges}
+        onUse={(range) => patchRange(activeIndex, range)}
+        onAdd={(range) => {
+          onRangesChange([...ranges, range]);
+          onActiveChange(ranges.length);
+        }}
+        onUseAll={(picked) => {
+          onRangesChange(picked);
+          onActiveChange(0);
+        }}
+      />
+
       <section className="mt-3 border-t border-hairline pt-3" aria-label="Indexed coverage">
         <div className="mb-1.5 flex items-center justify-between text-[10px] uppercase tracking-[0.07em] text-text-muted">
           <span>Active range coverage</span>
@@ -174,5 +190,66 @@ export function BlockRangePanel({
         </Button>
       </div>
     </PanelSection>
+  );
+}
+
+const SHOWN_INDEXED = 12;
+
+function IndexedRanges({ coverage, maxBlocks, ranges, onUse, onAdd, onUseAll }: {
+  coverage: CoverageResponse | null;
+  maxBlocks: number;
+  ranges: BlockSpan[];
+  onUse: (range: BlockSpan) => void;
+  onAdd: (range: BlockSpan) => void;
+  onUseAll: (ranges: BlockSpan[]) => void;
+}) {
+  const indexed = useMemo(
+    () => [...(coverage?.ranges ?? [])].sort((a, b) => b.to_block - a.to_block),
+    [coverage],
+  );
+  if (indexed.length === 0) return null;
+
+  const all = indexedWithin(indexed, maxBlocks);
+  const total = indexed.reduce((sum, range) => sum + range.block_count, 0);
+  const clipped = all.reduce((sum, range) => sum + range.to - range.from + 1, 0) < total;
+  const usingAll = all.length === ranges.length && all.every((range, index) => sameRange(range, ranges[index]));
+
+  return (
+    <section className="mt-3 border-t border-hairline pt-3" aria-label="Indexed ranges">
+      <div className="mb-1.5 flex items-center justify-between gap-2">
+        <span className="text-[10px] uppercase tracking-[0.07em] text-text-muted">
+          Already indexed · {formatCount(total)} blocks
+        </span>
+        <Button
+          variant="ghost"
+          className="h-6 px-2 text-[11px]"
+          disabled={usingAll}
+          title={clipped ? `Newest ${formatCount(maxBlocks)} indexed blocks, the per-graph limit` : 'Every indexed range, no RPC needed'}
+          onClick={() => onUseAll(all)}
+        >
+          {clipped ? 'Use newest' : 'Use all'}
+        </Button>
+      </div>
+      <div className="grid gap-0.5">
+        {indexed.slice(0, SHOWN_INDEXED).map((range) => {
+          const span = { from: range.from_block, to: Math.min(range.to_block, range.from_block + maxBlocks - 1) };
+          const picked = ranges.some((current) => sameRange(current, span));
+          return (
+            <div key={range.from_block} className="flex items-center gap-1 rounded-ui-sm px-1.5 py-0.5 text-[11px] hover:bg-[color-mix(in_srgb,var(--text-primary)_5%,transparent)]">
+              <span className={cx('size-1.5 flex-none rounded-full', picked ? 'bg-accent' : 'bg-hairline-strong')} aria-hidden="true" />
+              <span className="min-w-0 flex-1 truncate font-mono-ui tabular-nums text-text-secondary">
+                {formatCount(range.from_block)}–{formatCount(range.to_block)}
+              </span>
+              <span className="tabular-nums text-text-muted">{formatCount(range.block_count)}</span>
+              <Button variant="ghost" className="h-6 px-1.5 text-[11px]" disabled={picked} title="Put into the active range" onClick={() => onUse(span)}>Use</Button>
+              <Button variant="ghost" className="h-6 px-1.5 text-[11px]" disabled={picked} title="Add as another range" onClick={() => onAdd(span)}>+</Button>
+            </div>
+          );
+        })}
+        {indexed.length > SHOWN_INDEXED && (
+          <p className="m-0 px-1.5 text-[11px] text-text-muted">and {formatCount(indexed.length - SHOWN_INDEXED)} older ranges</p>
+        )}
+      </div>
+    </section>
   );
 }

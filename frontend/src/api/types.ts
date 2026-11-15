@@ -102,9 +102,23 @@ export interface LowLevelGraphResponse {
   truncated: boolean;
 }
 
+export type TagSourceKind = 'heuristic' | 'provider' | 'user' | 'agent';
+
+export interface GraphTag {
+  subject_kind: 'address' | 'tx';
+  subject: string;
+  key: string;
+  category: string;
+  confidence: number;
+  source: { kind: TagSourceKind; name: string; version: number };
+  evidence: string[];
+  note: string;
+}
+
 export interface GraphResponse {
   nodes: GraphNode[];
   edges: GraphEdge[];
+  tags?: GraphTag[];
   span: BlockRangeSpan;
   filled_from_rpc: BlockRangeSpan[];
   truncated: boolean;
@@ -135,8 +149,11 @@ export interface ChainsResponse {
   chains: ChainInfo[];
 }
 
+export type GraphScope = 'roots' | 'blocks';
+
 export interface GraphQuery {
   chain?: number;
+  scope?: GraphScope;
   roots: GraphRoot[];
   from_block: number;
   to_block: number;

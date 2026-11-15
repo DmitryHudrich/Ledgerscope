@@ -3,6 +3,7 @@ import { formatCount, formatTimestamp, formatUnits, shortAddress } from '../lib/
 import type { GraphLink, GraphModel } from '../graph/model';
 import type { GraphGroup } from '../lib/groups';
 import { GroupPicker } from './GroupPicker';
+import { TagList } from './TagList';
 import { IconClose, IconEyeOff, IconFocus, IconTable } from './Icons';
 import { Button, MetaList, Panel, PanelSection, PanelTitle, Tag } from './ui';
 
@@ -48,8 +49,9 @@ export function MultiSelectionInspector({
   );
 }
 
-export function EdgeInspector({ link, onClose, onShowTransactions, groups, onGroup, onHide }: {
+export function EdgeInspector({ link, onClose, onShowTransactions, groups, onGroup, onHide, onPickTag }: {
   link: GraphLink;
+  onPickTag?: (key: string) => void;
   onClose: () => void;
   onShowTransactions: () => void;
   groups: GraphGroup[];
@@ -80,6 +82,9 @@ export function EdgeInspector({ link, onClose, onShowTransactions, groups, onGro
           <Button onClick={onHide}><IconEyeOff size={14} /> Hide {link.count === 1 ? 'transaction' : `${formatCount(link.count)} transactions`}</Button>
         </div>
       </PanelSection>
+      <div className="overflow-y-auto overscroll-contain">
+        <TagList tags={[...link.tags, ...link.source.tags, ...link.target.tags]} onPickTag={onPickTag} />
+      </div>
     </Panel>
   );
 }

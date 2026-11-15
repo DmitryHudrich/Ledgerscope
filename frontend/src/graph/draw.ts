@@ -70,7 +70,6 @@ const MAX_LABELS = 90;
 const FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif';
 
 export function nodeColor(node: GraphNode, palette: VizPalette): string {
-  if (node.kind === 'focus') return palette.focus;
   if (node.kind === 'contract') return palette.contract;
   return palette.eoa;
 }
@@ -181,8 +180,8 @@ export function drawScene(ctx: CanvasRenderingContext2D, scene: Scene): void {
       layer.clearRect(0, 0, layer.canvas.width, layer.canvas.height);
       layer.setTransform(dpr * t.k, 0, 0, dpr * t.k, dpr * t.x, dpr * t.y);
       layer.lineCap = 'round';
-      for (const link of fadedLinks) drawLink(layer, link, scene, 1, false);
-      for (const node of fadedNodes) drawNode(layer, node, scene, 1);
+      drawLinks(layer, fadedLinks, scene, 1, false);
+      drawNodes(layer, fadedNodes, scene, 1);
 
       ctx.save();
       ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -194,22 +193,19 @@ export function drawScene(ctx: CanvasRenderingContext2D, scene: Scene): void {
   }
 
   const contextAlpha = 1 - DIM * scene.focusMix;
-  for (const link of dimmed) drawLink(ctx, link, scene, contextAlpha, false);
-  for (const link of lit) drawLink(ctx, link, scene, 1, true);
+  drawLinks(ctx, dimmed, scene, contextAlpha, false);
+  drawLinks(ctx, lit, scene, 1, true);
 
   if (scene.showFlow && lit.length > 0 && lit.length <= 400) {
     for (const link of lit) drawFlow(ctx, link, scene);
   }
 
   const highlightNodes = scene.highlightNodes;
-  for (const node of visible) {
-    if (highlightNodes?.has(node.id)) continue;
-    drawNode(ctx, node, scene, highlightNodes ? contextAlpha : 1);
-  }
   if (highlightNodes) {
-    for (const node of visible) {
-      if (highlightNodes.has(node.id)) drawNode(ctx, node, scene, 1);
-    }
+    drawNodes(ctx, visible.filter((node) => !highlightNodes.has(node.id)), scene, contextAlpha);
+    drawNodes(ctx, visible.filter((node) => highlightNodes.has(node.id)), scene, 1);
+  } else {
+    drawNodes(ctx, visible, scene, 1);
   }
 
   drawLabels(ctx, visible, scene);
@@ -330,58 +326,87 @@ function drawGrid(ctx: CanvasRenderingContext2D, scene: Scene): void {
   ctx.restore();
 }
 
-function drawLink(
+const MIN_ARROW_SCREEN_LENGTH = 14;
+const MIN_BORDER_SCREEN_RADIUS = 2.5;
+
+interface StrokeBatch {
+  style: string;
+  width: number;
+  dashed: boolean;
+  path: Path2D;
+}
+
+function drawLinks(
   ctx: CanvasRenderingContext2D,
-  link: GraphLink,
+  links: GraphLink[],
   scene: Scene,
   alpha: number,
   lit: boolean,
 ): void {
-  if (alpha <= 0.02) return;
+  if (alpha <= 0.02 || links.length === 0) return;
   const { transform: t, palette } = scene;
-  const color = linkColor(link, palette, lit);
-  const width = Math.max(link.width, lit ? 1.6 : 1) / t.k;
-  const tinted = !lit && (link.tone === 'token' || link.tone === 'mixed');
+  const strokes = new Map<string, StrokeBatch>();
+  const heads = new Map<string, Path2D>();
 
-  ctx.strokeStyle = withAlpha(color, alpha * (lit ? 0.92 : tinted ? 0.52 : 0.62));
-  ctx.lineWidth = width;
-  ctx.setLineDash(link.tone === 'call' ? [6 / t.k, 5 / t.k] : []);
+  for (const link of links) {
+    const color = linkColor(link, palette, lit);
+    const tinted = !lit && (link.tone === 'token' || link.tone === 'mixed');
+    const style = withAlpha(color, alpha * (lit ? 0.92 : tinted ? 0.52 : 0.62));
+    const width = Math.round(Math.max(link.width, lit ? 1.6 : 1) * 2) / 2;
+    const dashed = link.tone === 'call';
+    const key = `${style}|${width}|${dashed ? 1 : 0}`;
+    let batch = strokes.get(key);
+    if (!batch) {
+      batch = { style, width, dashed, path: new Path2D() };
+      strokes.set(key, batch);
+    }
 
-  if (link.selfLoop) {
-    const { cx, cy, r } = loopGeometry(link.source);
-    ctx.beginPath();
-    ctx.arc(cx, cy, r, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.setLineDash([]);
-    return;
+    if (link.selfLoop) {
+      const { cx, cy, r } = loopGeometry(link.source);
+      batch.path.moveTo(cx + r, cy);
+      batch.path.arc(cx, cy, r, 0, Math.PI * 2);
+      continue;
+    }
+
+    const { cx, cy } = controlPoint(link);
+    batch.path.moveTo(link.source.x, link.source.y);
+    batch.path.quadraticCurveTo(cx, cy, link.target.x, link.target.y);
+
+    let dx = link.target.x - cx;
+    let dy = link.target.y - cy;
+    const len = Math.hypot(dx, dy);
+    if (len < 1e-3 || (!lit && len * t.k < MIN_ARROW_SCREEN_LENGTH)) continue;
+    dx /= len;
+    dy /= len;
+
+    const size = Math.min(9, 4.5 + link.width) / t.k;
+    const gap = link.target.r + 2.5 / t.k;
+    const tipX = link.target.x - dx * gap;
+    const tipY = link.target.y - dy * gap;
+    const fill = withAlpha(color, alpha * (lit ? 0.95 : 0.6));
+    let head = heads.get(fill);
+    if (!head) {
+      head = new Path2D();
+      heads.set(fill, head);
+    }
+    head.moveTo(tipX, tipY);
+    head.lineTo(tipX - dx * size - dy * size * 0.52, tipY - dy * size + dx * size * 0.52);
+    head.lineTo(tipX - dx * size + dy * size * 0.52, tipY - dy * size - dx * size * 0.52);
+    head.closePath();
   }
 
-  const { cx, cy } = controlPoint(link);
-  ctx.beginPath();
-  ctx.moveTo(link.source.x, link.source.y);
-  ctx.quadraticCurveTo(cx, cy, link.target.x, link.target.y);
-  ctx.stroke();
+  const dash = [6 / t.k, 5 / t.k];
+  for (const batch of strokes.values()) {
+    ctx.strokeStyle = batch.style;
+    ctx.lineWidth = batch.width / t.k;
+    ctx.setLineDash(batch.dashed ? dash : []);
+    ctx.stroke(batch.path);
+  }
   ctx.setLineDash([]);
-
-  let dx = link.target.x - cx;
-  let dy = link.target.y - cy;
-  const len = Math.hypot(dx, dy);
-  if (len < 1e-3) return;
-  dx /= len;
-  dy /= len;
-
-  const size = Math.min(9, 4.5 + link.width) / t.k;
-  const gap = link.target.r + 2.5 / t.k;
-  const tipX = link.target.x - dx * gap;
-  const tipY = link.target.y - dy * gap;
-
-  ctx.fillStyle = withAlpha(color, alpha * (lit ? 0.95 : 0.6));
-  ctx.beginPath();
-  ctx.moveTo(tipX, tipY);
-  ctx.lineTo(tipX - dx * size - dy * size * 0.52, tipY - dy * size + dx * size * 0.52);
-  ctx.lineTo(tipX - dx * size + dy * size * 0.52, tipY - dy * size - dx * size * 0.52);
-  ctx.closePath();
-  ctx.fill();
+  for (const [fill, head] of heads) {
+    ctx.fillStyle = fill;
+    ctx.fill(head);
+  }
 }
 
 function drawFlow(ctx: CanvasRenderingContext2D, link: GraphLink, scene: Scene): void {
@@ -430,8 +455,8 @@ function drawNode(
   traceNodeShape(ctx, node);
   ctx.stroke();
 
-  if (node.kind === 'focus') {
-    ctx.strokeStyle = withAlpha(color, alpha * 0.75);
+  if (node.root) {
+    ctx.strokeStyle = withAlpha(palette.ink, alpha * 0.55);
     ctx.lineWidth = 1.5 / t.k;
     ctx.beginPath();
     ctx.arc(node.x, node.y, node.r + 4 / t.k, 0, Math.PI * 2);
@@ -465,6 +490,67 @@ export function deanonColor(confidence: number): string {
   if (confidence >= 0.75) return '#ef4444';
   if (confidence >= 0.4) return '#f59e0b';
   return '#9ca3af';
+}
+
+function plainNode(node: GraphNode, scene: Scene): boolean {
+  return !node.root
+    && node.id !== scene.activeId
+    && !(scene.selectedIds?.has(node.id) ?? node.id === scene.selectedId)
+    && !scene.searchMatches.has(node.id)
+    && !scene.deanon?.has(node.id);
+}
+
+function drawNodes(
+  ctx: CanvasRenderingContext2D,
+  nodes: GraphNode[],
+  scene: Scene,
+  alpha: number,
+): void {
+  if (alpha <= 0.02 || nodes.length === 0) return;
+  const { palette, transform: t } = scene;
+  const fills = new Map<string, Path2D>();
+  const borders = new Path2D();
+  let bordered = false;
+  const special: GraphNode[] = [];
+
+  for (const node of nodes) {
+    if (!plainNode(node, scene)) {
+      special.push(node);
+      continue;
+    }
+    const fill = withAlpha(nodeColor(node, palette), alpha);
+    let path = fills.get(fill);
+    if (!path) {
+      path = new Path2D();
+      fills.set(fill, path);
+    }
+    addNodeShape(path, node);
+    if (node.r * t.k >= MIN_BORDER_SCREEN_RADIUS) {
+      addNodeShape(borders, node);
+      bordered = true;
+    }
+  }
+
+  for (const [fill, path] of fills) {
+    ctx.fillStyle = fill;
+    ctx.fill(path);
+  }
+  if (bordered) {
+    ctx.strokeStyle = withAlpha(palette.plane, alpha * 0.95);
+    ctx.lineWidth = 2 / t.k;
+    ctx.stroke(borders);
+  }
+  for (const node of special) drawNode(ctx, node, scene, alpha);
+}
+
+function addNodeShape(path: Path2D, node: GraphNode): void {
+  if (node.kind === 'contract') {
+    const s = node.r * 0.92;
+    path.roundRect(node.x - s, node.y - s, s * 2, s * 2, Math.min(3, s * 0.35));
+  } else {
+    path.moveTo(node.x + node.r, node.y);
+    path.arc(node.x, node.y, node.r, 0, Math.PI * 2);
+  }
 }
 
 function traceNodeShape(ctx: CanvasRenderingContext2D, node: GraphNode): void {
@@ -516,7 +602,7 @@ function drawLabels(
   for (const node of candidates) {
     if (drawn >= MAX_LABELS) break;
     const text = scene.nodeLabels?.get(node.id) ?? shortAddress(node.id, 6, 4);
-    const w = ctx.measureText(text).width;
+    const w = labelWidth(ctx, text, fontPx) / t.k;
     const h = fontPx / t.k;
     const x = node.x;
     const y = node.y + node.r + 4 / t.k;
@@ -536,6 +622,21 @@ function drawLabels(
     ctx.fillText(text, x, y);
     drawn += 1;
   }
+}
+
+const LABEL_WIDTH_LIMIT = 20_000;
+const labelWidths = new Map<string, number>();
+
+function labelWidth(ctx: CanvasRenderingContext2D, text: string, fontPx: number): number {
+  const cached = labelWidths.get(text);
+  if (cached !== undefined) return cached;
+  const font = ctx.font;
+  ctx.font = `500 ${fontPx}px ${FONT}`;
+  const width = ctx.measureText(text).width;
+  ctx.font = font;
+  if (labelWidths.size >= LABEL_WIDTH_LIMIT) labelWidths.clear();
+  labelWidths.set(text, width);
+  return width;
 }
 
 function overlaps(a: LabelBox, b: LabelBox): boolean {
@@ -563,6 +664,8 @@ export function findNodeAt(
   return best;
 }
 
+const LOOP_REACH = 20;
+
 export function findLinkAt(
   model: GraphModel,
   world: { x: number; y: number },
@@ -572,6 +675,14 @@ export function findLinkAt(
   let best: GraphLink | null = null;
   let bestDistance = tolerance * tolerance;
   for (const link of model.links) {
+    const reach = tolerance + LOOP_REACH + link.source.r * 3
+      + Math.abs(link.curve) * Math.hypot(link.target.x - link.source.x, link.target.y - link.source.y);
+    if (
+      world.x < Math.min(link.source.x, link.target.x) - reach
+      || world.x > Math.max(link.source.x, link.target.x) + reach
+      || world.y < Math.min(link.source.y, link.target.y) - reach
+      || world.y > Math.max(link.source.y, link.target.y) + reach
+    ) continue;
     if (link.selfLoop) {
       const { cx, cy, r } = loopGeometry(link.source);
       const d = Math.abs(Math.hypot(world.x - cx, world.y - cy) - r);

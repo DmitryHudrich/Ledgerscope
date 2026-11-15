@@ -50,3 +50,15 @@ export function rangeProblem(next: BlockSpan, limits: BlockLimits): string | nul
   }
   return null;
 }
+
+export function indexedWithin(ranges: Array<{ from_block: number; to_block: number }>, maxBlocks: number): BlockSpan[] {
+  const picked: BlockSpan[] = [];
+  let room = Math.max(maxBlocks, 0);
+  for (const range of [...ranges].sort((a, b) => b.to_block - a.to_block)) {
+    if (room <= 0) break;
+    const from = Math.max(range.from_block, range.to_block - room + 1);
+    picked.push({ from, to: range.to_block });
+    room -= range.to_block - from + 1;
+  }
+  return picked.sort((a, b) => a.from - b.from);
+}

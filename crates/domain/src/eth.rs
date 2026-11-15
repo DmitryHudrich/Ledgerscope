@@ -5,6 +5,7 @@ pub mod coverage;
 pub mod graph;
 pub mod lowlevel;
 pub mod receipt;
+pub mod tag;
 pub mod tx;
 pub mod label {
     #[derive(Clone, Debug, Eq, PartialEq)]
@@ -39,4 +40,5 @@ pub use graph::{
 pub use label::*;
 pub use lowlevel::{LowLevelActor, LowLevelInteraction, LowLevelTarget};
 pub use receipt::{EthLog, EthReceipt};
+pub use tag::{SourceKind, Tag, TagSource, TagSubject};
 pub use tx::{EthTx, IssuedAsset, MinedTx};

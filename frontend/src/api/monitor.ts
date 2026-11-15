@@ -55,6 +55,23 @@ export interface ScanJob {
   error: string | null;
 }
 
+export type BuildStage = 'coverage' | 'walk' | 'index' | 'classify' | 'actors' | 'tags';
+
+export interface BuildJob {
+  id: number;
+  chain_id: number;
+  stage: BuildStage;
+  done: number;
+  total: number;
+  percent: number;
+  txs: number;
+  started_ms: number;
+  updated_ms: number;
+  finished_ms: number | null;
+  running: boolean;
+  error: string | null;
+}
+
 async function get<T>(path: string): Promise<T> {
   const response = await call(path, { method: 'GET' });
   if (!response.ok) throw await failure(response);
@@ -72,6 +89,7 @@ export const monitorApi = {
 export interface StreamHandlers {
   onCall: (call: RpcCall) => void;
   onScan: (job: ScanJob) => void;
+  onBuild: (job: BuildJob) => void;
   onLagged: (missed: number) => void;
   onState: (connected: boolean) => void;
 }
@@ -82,6 +100,7 @@ export function openMonitorStream(handlers: StreamHandlers): () => void {
   source.onerror = () => handlers.onState(false);
   source.addEventListener('call', (event) => handlers.onCall(JSON.parse((event as MessageEvent).data) as RpcCall));
   source.addEventListener('scan', (event) => handlers.onScan(JSON.parse((event as MessageEvent).data) as ScanJob));
+  source.addEventListener('build', (event) => handlers.onBuild(JSON.parse((event as MessageEvent).data) as BuildJob));
   source.addEventListener('lagged', (event) => handlers.onLagged(Number((event as MessageEvent).data) || 0));
   return () => source.close();
 }

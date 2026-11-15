@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import { monitorApi, openMonitorStream, type RpcCall, type ScanJob } from '../api/monitor';
+import { monitorApi, openMonitorStream, type BuildJob, type RpcCall, type ScanJob } from '../api/monitor';
 
 const KEPT_CALLS = 1500;
 const FLUSH_MS = 250;
+const CLOCK_MS = 5_000;
 const HEALTH_WINDOW_MS = 60_000;
 
 export type Health = 'idle' | 'good' | 'degraded' | 'failing' | 'offline';
@@ -12,6 +13,7 @@ export interface MonitorState {
   connected: boolean;
   calls: RpcCall[];
   scans: ScanJob[];
+  builds: BuildJob[];
   lagged: number;
   paused: boolean;
   setPaused: (paused: boolean) => void;
@@ -24,6 +26,7 @@ export function useMonitor(enabled: boolean): MonitorState {
   const [connected, setConnected] = useState(false);
   const [calls, setCalls] = useState<RpcCall[]>([]);
   const [scans, setScans] = useState<ScanJob[]>([]);
+  const [builds, setBuilds] = useState<BuildJob[]>([]);
   const [lagged, setLagged] = useState(0);
   const [paused, setPaused] = useState(false);
   const [now, setNow] = useState(() => Date.now());
@@ -51,13 +54,18 @@ export function useMonitor(enabled: boolean): MonitorState {
         const next = current.filter((candidate) => candidate.id !== job.id);
         return [job, ...next].sort((a, b) => b.id - a.id).slice(0, 50);
       }),
+      onBuild: (job) => setBuilds((current) => {
+        const next = current.filter((candidate) => candidate.id !== job.id);
+        return [job, ...next].sort((a, b) => b.id - a.id).slice(0, 20);
+      }),
       onLagged: (missed) => setLagged((count) => count + missed),
       onState: setConnected,
     });
 
+    const clock = window.setInterval(() => setNow(Date.now()), CLOCK_MS);
     const flush = window.setInterval(() => {
-      setNow(Date.now());
       if (pending.current.length === 0) return;
+      setNow(Date.now());
       const fresh = pending.current;
       pending.current = [];
       setCalls((current) => {
@@ -71,6 +79,7 @@ export function useMonitor(enabled: boolean): MonitorState {
       alive = false;
       close();
       window.clearInterval(flush);
+      window.clearInterval(clock);
     };
   }, [enabled]);
 
@@ -101,5 +110,5 @@ export function useMonitor(enabled: boolean): MonitorState {
           ? 'degraded'
           : 'good';
 
-  return { connected, calls, scans, lagged, paused, setPaused, clear, health, recent };
+  return { connected, calls, scans, builds, lagged, paused, setPaused, clear, health, recent };
 }

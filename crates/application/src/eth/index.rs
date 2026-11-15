@@ -76,6 +76,16 @@ impl EthTxIndex for FetchingTxIndex {
             .cloned()
             .collect())
     }
+
+    async fn txs_within(&self, span: BlockRange, limit: usize) -> Result<Vec<MinedTx>, io::Error> {
+        Ok(self
+            .span_txs(span)
+            .await?
+            .iter()
+            .take(limit)
+            .cloned()
+            .collect())
+    }
 }
 
 #[cfg(test)]

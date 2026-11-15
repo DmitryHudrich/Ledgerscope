@@ -60,7 +60,21 @@ export function readPalette(): VizPalette {
   return out;
 }
 
+const ALPHA_CACHE_LIMIT = 4096;
+const alphaCache = new Map<string, string>();
+
 export function withAlpha(color: string, alpha: number): string {
+  const step = Math.round(Math.max(0, Math.min(1, alpha)) * 100);
+  const key = `${color}|${step}`;
+  const cached = alphaCache.get(key);
+  if (cached !== undefined) return cached;
+  const made = mixAlpha(color, step / 100);
+  if (alphaCache.size >= ALPHA_CACHE_LIMIT) alphaCache.clear();
+  alphaCache.set(key, made);
+  return made;
+}
+
+function mixAlpha(color: string, alpha: number): string {
   const hex = color.trim();
   if (!hex.startsWith('#')) return hex;
   const digits =

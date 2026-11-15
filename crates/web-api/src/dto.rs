@@ -14,6 +14,7 @@ use application::eth::{
 use domain::eth::{
     Actor, ActorKind, AddressLabel, BlockBucket, BlockRange, ContractAction, ContractKind,
     EthAddress, IndexCoverage, Interaction, InteractionEdge, InteractionKind, LowLevelInteraction,
+    Tag, TagSubject,
 };
 
 use crate::state::{AppState, ChainState};
@@ -67,6 +68,9 @@ impl ChainParam {
 pub struct GraphRequest {
     #[serde(default)]
     pub chain: Option<ChainParam>,
+    #[serde(default)]
+    pub scope: ScopeRequest,
+    #[serde(default)]
     pub roots: Vec<RootRequest>,
     pub from_block: u64,
     pub to_block: u64,
@@ -76,6 +80,14 @@ pub struct GraphRequest {
 
     #[serde(default)]
     pub confirm_rpc: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ScopeRequest {
+    #[default]
+    Roots,
+    Blocks,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -117,6 +129,7 @@ impl From<BlockRange> for RangeResponse {
 pub struct GraphResponse {
     nodes: Vec<NodeResponse>,
     edges: Vec<EdgeResponse>,
+    tags: Vec<TagResponse>,
     span: RangeResponse,
     filled_from_rpc: Vec<RangeResponse>,
     truncated: bool,
@@ -137,6 +150,7 @@ impl GraphResponse {
                 .iter()
                 .map(|edge| EdgeResponse::new(edge, &tokens))
                 .collect(),
+            tags: graph.tags().iter().map(TagResponse::from).collect(),
             span: span.into(),
             filled_from_rpc: graph
                 .filled()
@@ -145,6 +159,55 @@ impl GraphResponse {
                 .map(RangeResponse::from)
                 .collect(),
             truncated: graph.truncated(),
+        }
+    }
+}
+
+#[derive(Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TagSubjectKind {
+    Address,
+    Tx,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct TagSourceResponse {
+    kind: String,
+    name: String,
+    version: u32,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct TagResponse {
+    subject_kind: TagSubjectKind,
+    subject: String,
+    key: String,
+    category: String,
+    confidence: f32,
+    source: TagSourceResponse,
+    evidence: Vec<String>,
+    note: String,
+}
+
+impl From<&Tag> for TagResponse {
+    fn from(tag: &Tag) -> Self {
+        let (subject_kind, subject) = match tag.subject() {
+            TagSubject::Address(address) => (TagSubjectKind::Address, address.to_string()),
+            TagSubject::Tx(hash) => (TagSubjectKind::Tx, hash.to_string()),
+        };
+        Self {
+            subject_kind,
+            subject,
+            key: tag.key().to_owned(),
+            category: tag.category().to_owned(),
+            confidence: tag.confidence(),
+            source: TagSourceResponse {
+                kind: tag.source().kind().as_str().to_owned(),
+                name: tag.source().name().to_owned(),
+                version: tag.source().version(),
+            },
+            evidence: tag.evidence().iter().map(ToString::to_string).collect(),
+            note: tag.note().to_owned(),
         }
     }
 }
