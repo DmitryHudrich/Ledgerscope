@@ -32,7 +32,7 @@ pub mod label {
 pub use actor::{Actor, ActorHint, ActorKind, ContractKind};
 pub use address::{EthAddress, EthAddressParseError};
 pub use block::BlockRef;
-pub use coverage::{BlockBucket, BlockRange, IndexCoverage};
+pub use coverage::{BlockBucket, BlockRange, BlockSource, IndexCoverage};
 pub use graph::{
     AssetTransfer, ContractAction, Interaction, InteractionEdge, InteractionId, InteractionKind,
     TxMeta,

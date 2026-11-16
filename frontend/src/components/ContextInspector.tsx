@@ -4,6 +4,7 @@ import type { GraphLink, GraphModel } from '../graph/model';
 import type { GraphGroup } from '../lib/groups';
 import { GroupPicker } from './GroupPicker';
 import { TagList } from './TagList';
+import { CopyAddress } from './CopyAddress';
 import { IconClose, IconEyeOff, IconFocus, IconTable } from './Icons';
 import { Button, MetaList, Panel, PanelSection, PanelTitle, Tag } from './ui';
 
@@ -68,8 +69,8 @@ export function EdgeInspector({ link, onClose, onShowTransactions, groups, onGro
       <PanelSection>
         <PanelTitle>Interaction</PanelTitle>
         <MetaList>
-          <div><dt>From</dt><dd className="font-mono-ui">{shortAddress(link.source.id, 9, 6)}</dd></div>
-          <div><dt>To</dt><dd className="font-mono-ui">{shortAddress(link.target.id, 9, 6)}</dd></div>
+          <div><dt>From</dt><dd className="font-mono-ui">{shortAddress(link.source.id, 9, 6)} <CopyAddress address={link.source.id} /></dd></div>
+          <div><dt>To</dt><dd className="font-mono-ui">{shortAddress(link.target.id, 9, 6)} <CopyAddress address={link.target.id} /></dd></div>
           <div><dt>Transactions</dt><dd>{formatCount(link.count)}</dd></div>
           <div><dt>Type</dt><dd>{link.count === 1 && first ? edgeLabel(first) : 'Aggregated transfers'}</dd></div>
           {link.assets.length > 0 && <div><dt>Assets</dt><dd>{link.assets.map((asset) => <Tag key={asset.key}>{formatUnits(asset.amount, asset.decimals)} {asset.symbol}</Tag>)}</dd></div>}

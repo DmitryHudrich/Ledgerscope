@@ -2,12 +2,12 @@ import { useState, type FormEvent, type ReactNode } from 'react';
 
 import type { ChainInfo, GraphRoot, GraphScope } from '../api/types';
 import { addressHint, displayAddress, parseAddressInput } from '../lib/chain';
-import { formatCount } from '../lib/format';
 import type { Theme } from '../lib/theme';
 import type { BlockBounds } from './Timeline';
 import { IconChevron, IconLogo, IconMoon, IconSun } from './Icons';
 import { ChainPicker } from './ChainPicker';
-import { Button, Dot, Input, cx } from './ui';
+import { BlockSpanText } from './BlockSpanText';
+import { Button, Input, cx } from './ui';
 
 interface Props {
   chains: ChainInfo[];
@@ -22,8 +22,6 @@ interface Props {
   selection: BlockBounds;
   onSubmit: (address: string | null) => void;
   loading: boolean;
-  demo: boolean;
-  onDemoChange: (next: boolean) => void;
   advancedOpen: boolean;
   onAdvancedOpenChange: (next: boolean) => void;
   theme: Theme;
@@ -45,8 +43,6 @@ export function TopBar({
   selection,
   onSubmit,
   loading,
-  demo,
-  onDemoChange,
   advancedOpen,
   onAdvancedOpenChange,
   theme,
@@ -134,7 +130,7 @@ export function TopBar({
           aria-pressed={advancedOpen}
           title="Block range & scan ranges"
         >
-          <span className="tabular-nums">{formatCount(selection.from)}–{formatCount(selection.to)}</span>
+          <BlockSpanText from={selection.from} to={selection.to} />
           <IconChevron className={cx('transition-transform', advancedOpen && 'rotate-180')} />
         </Button>
       </form>
@@ -143,15 +139,6 @@ export function TopBar({
 
       <div className="ml-auto flex min-w-0 items-center gap-1.5">
         {canvasSlot}
-        <Button
-          aria-pressed={demo}
-          onClick={() => onDemoChange(!demo)}
-          title="Render generated sample data instead of calling the backend"
-        >
-          <Dot tone={demo ? 'focus' : 'eoa'} />
-          {demo ? 'Demo mode' : 'Live data'}
-        </Button>
-
         <Button
           variant="ghost"
           icon

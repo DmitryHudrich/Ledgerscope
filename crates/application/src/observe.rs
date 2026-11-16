@@ -278,7 +278,13 @@ mod tests {
                 .collect())
         }
 
-        async fn save(&self, _lower: u64, _upper: u64, _txs: &[MinedTx]) -> Result<(), io::Error> {
+        async fn save(
+            &self,
+            _lower: u64,
+            _upper: u64,
+            _txs: &[MinedTx],
+            _source: domain::eth::BlockSource,
+        ) -> Result<(), io::Error> {
             Ok(())
         }
     }

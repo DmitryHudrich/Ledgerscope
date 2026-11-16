@@ -1,3 +1,4 @@
+mod dataset;
 mod networks;
 
 use std::{collections::BTreeMap, path::Path, sync::Arc, time::Duration};
@@ -16,7 +17,7 @@ use application::account::{
 };
 use application::observe::{ObservationStore, TlsCorrelationConfig};
 use application::eth::{
-    BuildBoard, CachingActorResolver, EthExplorer, ExploreLimits, FetchingTxIndex,
+    BuildBoard, CachingActorResolver, EthExplorer, ExploreLimits, FetchingTxIndex, FillPlan,
     JsonLabelProvider, ScanBoard, StoringEthTxSource,
     classificator::FulliestEthTxClassificator,
     ports::{
@@ -31,7 +32,7 @@ pub use networks::Network;
 
 use crate::{
     auth::LoginThrottle,
-    config::{AccountsConfig, Config, GraphConfig, StorageConfig},
+    config::{AccountsConfig, Config, GraphConfig, IndexerConfig, StorageConfig},
 };
 
 const DEFAULT_NATIVE_SYMBOL: &str = "ETH";
@@ -226,7 +227,7 @@ impl AppState {
                 .pool(chain_id)
                 .expect("every chain got a pool in the fleet");
             pool.watch(monitor.clone());
-            let (tx_source, rpc_source) = sources(meta.family, pool.clone());
+            let (tx_source, rpc_source) = sources(meta.family, pool.clone(), &config.indexer);
             let storage = if meta.network == Network::Devnet {
                 storage(&SharedStorage::none(), chain_id, tx_source)
             } else {
@@ -249,8 +250,14 @@ impl AppState {
                 Arc::new(FetchingTxIndex::new(storage.source.clone())) as Arc<dyn EthTxIndex>
             });
 
-            let explorer = Arc::new(
-                EthExplorer::new(
+            let dataset = dataset::source(
+                &config.indexer.aws_public,
+                &http_client,
+                chain_id,
+                |upstream| stored(&shared, chain_id, upstream),
+            );
+
+            let explorer = EthExplorer::new(
                     index,
                     storage.source,
                     classificator.clone(),
@@ -259,8 +266,15 @@ impl AppState {
                     limits(&config.graph),
                 )
                 .with_scans(scans.for_chain(chain_id))
-                .with_builds(builds.for_chain(chain_id)),
-            );
+                .with_builds(builds.for_chain(chain_id))
+                .with_fill(FillPlan {
+                    window_blocks: config.indexer.window_blocks.max(1),
+                    parallel_windows: config.indexer.parallel_windows,
+                });
+            let explorer = Arc::new(match dataset {
+                Some(dataset) => explorer.with_dataset(dataset),
+                None => explorer,
+            });
 
             chains.insert(
                 chain_id,
@@ -382,10 +396,14 @@ async fn chainlist(
     }
 }
 
-fn sources(family: Family, pool: Arc<RpcPool>) -> (Arc<dyn EthTxSource>, Arc<dyn EthRpcSource>) {
+fn sources(
+    family: Family,
+    pool: Arc<RpcPool>,
+    indexer: &IndexerConfig,
+) -> (Arc<dyn EthTxSource>, Arc<dyn EthRpcSource>) {
     match family {
         Family::Evm => {
-            let source = Arc::new(RpcTxSource::new(pool));
+            let source = Arc::new(RpcTxSource::new(pool).with_batch_blocks(indexer.batch_blocks));
             (source.clone(), source)
         }
         Family::Tron => {
@@ -664,6 +682,19 @@ async fn shared_storage(storage: &StorageConfig) -> anyhow::Result<SharedStorage
         repository: Some(repository),
         cache: tx_cache(&storage.redis.url).await,
     })
+}
+
+fn stored(
+    shared: &SharedStorage,
+    chain_id: u64,
+    upstream: Arc<dyn EthTxSource>,
+) -> Option<StoringEthTxSource> {
+    let repository = shared.repository.as_ref()?.for_chain(chain_id);
+    let cache = shared
+        .cache
+        .as_ref()
+        .map(|cache| Arc::new(cache.for_chain(chain_id)) as Arc<dyn EthTxCache>);
+    Some(StoringEthTxSource::new(upstream, Arc::new(repository), cache))
 }
 
 fn storage(shared: &SharedStorage, chain_id: u64, upstream: Arc<dyn EthTxSource>) -> Storage {

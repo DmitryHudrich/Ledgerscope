@@ -157,7 +157,7 @@ export interface GraphQuery {
   roots: GraphRoot[];
   from_block: number;
   to_block: number;
-  ranges?: Array<{ from_block: number; to_block: number }>;
+  ranges?: Array<{ from_block: number; to_block: number; source?: 'auto' | 'rpc' | 'dataset'; exact?: boolean }>;
   confirm_rpc?: boolean;
 }
 
@@ -168,6 +168,8 @@ export interface RpcConfirmation {
   missing: BlockRangeSpan[];
   missing_blocks: number;
   indexed_blocks: number;
+  dataset_blocks: number;
+  exact_blocks: number;
 }
 
 export interface GraphLimits {
@@ -187,7 +189,20 @@ export interface CoverageResponse {
   block_count: number;
   tx_count: number;
   ranges: BlockRangeSpan[];
+  approximate: BlockRangeSpan[];
+  dataset: DatasetInfo | null;
   limits: GraphLimits;
+}
+
+export interface DatasetInfo {
+  name: string;
+  exact_values: boolean;
+  available_until: number | null;
+}
+
+export interface HeadResponse {
+  chain_id: number;
+  head: number;
 }
 
 export interface HistogramBucket {

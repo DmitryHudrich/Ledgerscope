@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { CopyAddress } from '../CopyAddress';
 
 import type { ChainInfo } from '../../api/types';
 import { labelApi, ownerName, type UserLabel } from '../../api/account';
@@ -130,6 +131,7 @@ export function LabelsDialog({ chains, chainId, onFocusAddress, onChanged, onClo
                     >
                       {shortAddress(displayAddress(label.address), 8, 6)}
                     </button>
+                    <CopyAddress address={label.address} className="ml-0.5" />
                     {label.note && <div className="text-[11px] text-text-secondary">{label.note}</div>}
                   </div>
                   <div className="grid justify-items-end text-[11px] text-text-muted">

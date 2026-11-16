@@ -1,14 +1,15 @@
 use std::{io, str::FromStr, time::Duration};
 
 use application::account::{
-    Canvas, CanvasRecord, CanvasShare, CanvasStore, CanvasSummary, Credentials, LabelStore, Member,
-    Membership, PublicLink, RpcNode, RpcNodeStore, SessionStore, StoreError, Team, TeamStore, User,
-    UserLabel, UserStore, ports::CanvasChange,
+    Canvas, CanvasRecord, CanvasShare, CanvasStore, CanvasSummary, CanvasVersion, Credentials,
+    LabelStore, Member, Membership, PublicLink, RpcNode, RpcNodeStore, SessionStore, StoreError,
+    Team, TeamStore, User, UserLabel, UserStore, ports::CanvasChange,
 };
 use domain::{
     account::{
-        CanvasId, CanvasTitle, DisplayName, Email, LabelId, LabelValue, LinkId, Owner, RpcNodeId,
-        ShareAccess, TeamId, TeamName, TeamRole, UserId,
+        CanvasId, CanvasOpening, CanvasTitle, CanvasVersionId, DisplayName, Email, LabelId,
+        LabelValue, LinkId, Owner, RpcNodeId, ShareAccess, TeamId, TeamName, TeamRole, UserId,
+        VersionKind,
     },
     eth::EthAddress,
 };
@@ -22,7 +23,10 @@ use uuid::Uuid;
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
 const CANVAS_COLUMNS: &str = "c.id, c.owner_user_id, c.owner_team_id, c.title, c.chain_id, c.version, \
-     c.created_by, c.updated_by, c.created_at, c.updated_at";
+     c.opening, c.created_by, c.updated_by, c.created_at, c.updated_at";
+
+const VERSION_COLUMNS: &str = "v.id, v.canvas_id, v.kind, v.label, v.chain_id, v.canvas_version, \
+     v.created_by, u.name as author, v.created_at";
 
 const LABEL_SELECT: &str = "select l.id, l.owner_user_id, l.owner_team_id, l.chain_id, l.address, l.value, \
      l.note, l.created_by, l.created_at, l.updated_at, t.name as team_name, m.role as team_role \
@@ -162,11 +166,37 @@ fn summary_of(row: &PgRow) -> Result<CanvasSummary, io::Error> {
         title: CanvasTitle::parse(&title).map_err(|_| corrupt("canvas title"))?,
         chain_id: chain_of(row, "chain_id")?,
         version: row.try_get("version").map_err(failed)?,
+        opening: CanvasOpening::from_str(&row.try_get::<String, _>("opening").map_err(failed)?)
+            .map_err(corrupt)?,
         created_by: UserId::from_uuid(row.try_get("created_by").map_err(failed)?),
         updated_by: UserId::from_uuid(row.try_get("updated_by").map_err(failed)?),
         created_at: row.try_get("created_at").map_err(failed)?,
         updated_at: row.try_get("updated_at").map_err(failed)?,
     })
+}
+
+fn version_of(row: &PgRow) -> Result<CanvasVersion, io::Error> {
+    Ok(CanvasVersion {
+        id: CanvasVersionId::from_uuid(row.try_get("id").map_err(failed)?),
+        canvas: CanvasId::from_uuid(row.try_get("canvas_id").map_err(failed)?),
+        kind: VersionKind::from_str(&row.try_get::<String, _>("kind").map_err(failed)?)
+            .map_err(corrupt)?,
+        label: row.try_get("label").map_err(failed)?,
+        chain_id: chain_of(row, "chain_id")?,
+        canvas_version: row.try_get("canvas_version").map_err(failed)?,
+        created_by: UserId::from_uuid(row.try_get("created_by").map_err(failed)?),
+        author: row.try_get("author").map_err(failed)?,
+        created_at: row.try_get("created_at").map_err(failed)?,
+    })
+}
+
+fn versioned_document(row: &PgRow) -> Result<(CanvasVersion, serde_json::Value), io::Error> {
+    Ok((
+        version_of(row)?,
+        row.try_get::<sqlx::types::Json<serde_json::Value>, _>("document")
+            .map_err(failed)?
+            .0,
+    ))
 }
 
 fn record_of(row: &PgRow) -> Result<CanvasRecord, io::Error> {
@@ -556,7 +586,8 @@ impl CanvasStore for PgAccounts {
         let (owner_user, owner_team) = owner_columns(summary.owner);
         sqlx::query(
             "insert into canvases (id, owner_user_id, owner_team_id, title, chain_id, document, version, \
-             created_by, updated_by, created_at, updated_at) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+             created_by, updated_by, created_at, updated_at, opening) \
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
         )
         .bind(summary.id.uuid())
         .bind(owner_user)
@@ -569,6 +600,7 @@ impl CanvasStore for PgAccounts {
         .bind(summary.updated_by.uuid())
         .bind(summary.created_at)
         .bind(summary.updated_at)
+        .bind(summary.opening.as_str())
         .execute(&self.pool)
         .await
         .map_err(|error| stored(error, "this canvas already exists"))?;
@@ -628,7 +660,8 @@ impl CanvasStore for PgAccounts {
         let chain = change.chain_id.map(chain_param).transpose()?;
         let row = sqlx::query(AssertSqlSafe(format!(
             "update canvases c set title = coalesce($3, c.title), chain_id = coalesce($4, c.chain_id), \
-             document = coalesce($5, c.document), version = c.version + 1, updated_by = $6, updated_at = now() \
+             document = coalesce($5, c.document), opening = coalesce($7, c.opening), \
+             version = c.version + 1, updated_by = $6, updated_at = now() \
              where c.id = $1 and c.version = $2 returning {CANVAS_COLUMNS}"
         )))
         .bind(id.uuid())
@@ -637,6 +670,7 @@ impl CanvasStore for PgAccounts {
         .bind(chain)
         .bind(change.document.as_ref().map(sqlx::types::Json))
         .bind(by.uuid())
+        .bind(change.opening.map(CanvasOpening::as_str))
         .fetch_optional(&self.pool)
         .await
         .map_err(failed)?;
@@ -788,6 +822,114 @@ impl CanvasStore for PgAccounts {
             })
         })
         .transpose()
+    }
+
+    async fn insert_version(
+        &self,
+        version: &CanvasVersion,
+        document: &serde_json::Value,
+    ) -> Result<(), io::Error> {
+        sqlx::query(
+            "insert into canvas_versions (id, canvas_id, kind, label, chain_id, canvas_version, document, \
+             created_by, created_at) values ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+        )
+        .bind(version.id.uuid())
+        .bind(version.canvas.uuid())
+        .bind(version.kind.as_str())
+        .bind(&version.label)
+        .bind(chain_param(version.chain_id)?)
+        .bind(version.canvas_version)
+        .bind(sqlx::types::Json(document))
+        .bind(version.created_by.uuid())
+        .bind(version.created_at)
+        .execute(&self.pool)
+        .await
+        .map_err(failed)?;
+        Ok(())
+    }
+
+    async fn versions(&self, canvas: CanvasId) -> Result<Vec<CanvasVersion>, io::Error> {
+        sqlx::query(AssertSqlSafe(format!(
+            "select {VERSION_COLUMNS} from canvas_versions v join users u on u.id = v.created_by \
+             where v.canvas_id = $1 order by v.created_at desc"
+        )))
+        .bind(canvas.uuid())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(failed)?
+        .iter()
+        .map(version_of)
+        .collect()
+    }
+
+    async fn version(
+        &self,
+        canvas: CanvasId,
+        id: CanvasVersionId,
+    ) -> Result<Option<(CanvasVersion, serde_json::Value)>, io::Error> {
+        sqlx::query(AssertSqlSafe(format!(
+            "select {VERSION_COLUMNS}, v.document from canvas_versions v join users u on u.id = v.created_by \
+             where v.canvas_id = $1 and v.id = $2"
+        )))
+        .bind(canvas.uuid())
+        .bind(id.uuid())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(failed)?
+        .map(|row| versioned_document(&row))
+        .transpose()
+    }
+
+    async fn latest_version(
+        &self,
+        canvas: CanvasId,
+        kind: VersionKind,
+    ) -> Result<Option<(CanvasVersion, serde_json::Value)>, io::Error> {
+        sqlx::query(AssertSqlSafe(format!(
+            "select {VERSION_COLUMNS}, v.document from canvas_versions v join users u on u.id = v.created_by \
+             where v.canvas_id = $1 and v.kind = $2 order by v.created_at desc limit 1"
+        )))
+        .bind(canvas.uuid())
+        .bind(kind.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(failed)?
+        .map(|row| versioned_document(&row))
+        .transpose()
+    }
+
+    async fn prune_versions(
+        &self,
+        canvas: CanvasId,
+        kind: VersionKind,
+        keep: usize,
+    ) -> Result<(), io::Error> {
+        sqlx::query(
+            "delete from canvas_versions where id in ( \
+             select id from canvas_versions where canvas_id = $1 and kind = $2 \
+             order by created_at desc offset $3)",
+        )
+        .bind(canvas.uuid())
+        .bind(kind.as_str())
+        .bind(i64::try_from(keep).unwrap_or(i64::MAX))
+        .execute(&self.pool)
+        .await
+        .map_err(failed)?;
+        Ok(())
+    }
+
+    async fn delete_version(
+        &self,
+        canvas: CanvasId,
+        id: CanvasVersionId,
+    ) -> Result<bool, io::Error> {
+        let done = sqlx::query("delete from canvas_versions where canvas_id = $1 and id = $2")
+            .bind(canvas.uuid())
+            .bind(id.uuid())
+            .execute(&self.pool)
+            .await
+            .map_err(failed)?;
+        Ok(done.rows_affected() > 0)
     }
 }
 

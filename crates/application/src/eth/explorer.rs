@@ -4,12 +4,12 @@ use std::{
     sync::Arc,
 };
 
-use futures::StreamExt;
+use futures::{StreamExt, TryStreamExt};
 
 use alloy_primitives::TxHash;
 
 use domain::eth::{
-    Actor, ActorHint, BlockBucket, BlockRange, EthAddress, IndexCoverage, Interaction,
+    Actor, ActorHint, BlockBucket, BlockRange, BlockSource, EthAddress, IndexCoverage, Interaction,
     InteractionEdge, InteractionId, LowLevelActor, LowLevelInteraction, MinedTx, Tag, TxMeta,
 };
 
@@ -19,14 +19,14 @@ use crate::eth::{
     classificator::EthTxClassificator,
     lowlevel::{LowLevelGraph, LowLevelNode},
     ports::{ActorResolver, EthTxIndex, EthTxSource},
-    scan::{NoScans, ScanObserver, ScanRun},
+    scan::{self, NoScans, ScanObserver, ScanRun},
     tags::TagEngine,
 };
 
 const ASKING_CHUNK: usize = 128;
-const FILL_WINDOW: u64 = 24;
 const CLASSIFY_CONCURRENCY: usize = 20;
 const PROGRESS_STEP: u64 = 256;
+const AUTO_WINDOWS: (usize, usize) = (2, 16);
 
 #[derive(Clone, Copy, Debug)]
 pub struct GraphRoot {
@@ -55,10 +55,25 @@ pub enum ExploreScope {
     Blocks,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SourceChoice {
+    #[default]
+    Auto,
+    Rpc,
+    Dataset,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SpanChoice {
+    pub source: SourceChoice,
+    pub exact: bool,
+}
+
 #[derive(Clone, Debug)]
 pub struct ExploreRequest {
     roots: Vec<GraphRoot>,
     spans: Vec<BlockRange>,
+    choices: Vec<SpanChoice>,
     confirm_rpc: bool,
     scope: ExploreScope,
 }
@@ -72,6 +87,7 @@ impl ExploreRequest {
         Self {
             roots,
             spans,
+            choices: Vec::new(),
             confirm_rpc,
             scope: ExploreScope::Roots,
         }
@@ -81,9 +97,18 @@ impl ExploreRequest {
         Self {
             roots: Vec::new(),
             spans,
+            choices: Vec::new(),
             confirm_rpc,
             scope: ExploreScope::Blocks,
         }
+    }
+
+    pub fn with_choices(self, choices: Vec<SpanChoice>) -> Self {
+        Self { choices, ..self }
+    }
+
+    pub fn choice(&self, index: usize) -> SpanChoice {
+        self.choices.get(index).copied().unwrap_or_default()
     }
 
     pub fn scope(&self) -> ExploreScope {
@@ -116,6 +141,46 @@ impl ExploreRequest {
 
     pub fn confirm_rpc(&self) -> bool {
         self.confirm_rpc
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct FillPlan {
+    pub window_blocks: u64,
+    pub parallel_windows: usize,
+}
+
+impl Default for FillPlan {
+    fn default() -> Self {
+        Self {
+            window_blocks: 96,
+            parallel_windows: 0,
+        }
+    }
+}
+
+impl FillPlan {
+    fn parallel(&self, hint: Option<usize>) -> usize {
+        match self.parallel_windows {
+            0 => hint
+                .unwrap_or(AUTO_WINDOWS.0)
+                .clamp(AUTO_WINDOWS.0, AUTO_WINDOWS.1),
+            fixed => fixed,
+        }
+    }
+
+    fn windows(&self, span: BlockRange) -> Vec<BlockRange> {
+        let size = self.window_blocks.max(1);
+        let mut windows = Vec::new();
+        let mut from = span.from_block();
+        loop {
+            let to = from.saturating_add(size - 1).min(span.to_block());
+            windows.push(BlockRange::new(from, to));
+            if to >= span.to_block() {
+                return windows;
+            }
+            from = to + 1;
+        }
     }
 }
 
@@ -211,6 +276,8 @@ pub struct RpcPlan {
     missing: Vec<BlockRange>,
     indexed_blocks: u64,
     missing_blocks: u64,
+    dataset_blocks: u64,
+    exact_blocks: u64,
 }
 
 impl RpcPlan {
@@ -219,7 +286,33 @@ impl RpcPlan {
             missing,
             indexed_blocks,
             missing_blocks,
+            dataset_blocks: 0,
+            exact_blocks: 0,
         }
+    }
+
+    fn of(work: &[Fill], indexed_blocks: u64) -> Self {
+        let blocks = |keep: fn(&Fill) -> bool| -> u64 {
+            work.iter()
+                .filter(|fill| keep(fill))
+                .map(|fill| fill.range.block_count())
+                .sum()
+        };
+        Self {
+            missing: work.iter().map(|fill| fill.range).collect(),
+            indexed_blocks,
+            missing_blocks: blocks(|fill| !fill.refetch),
+            dataset_blocks: blocks(|fill| fill.via == BlockSource::Dataset),
+            exact_blocks: blocks(|fill| fill.refetch),
+        }
+    }
+
+    pub fn dataset_blocks(&self) -> u64 {
+        self.dataset_blocks
+    }
+
+    pub fn exact_blocks(&self) -> u64 {
+        self.exact_blocks
     }
 
     pub fn missing(&self) -> &[BlockRange] {
@@ -233,6 +326,13 @@ impl RpcPlan {
     pub fn missing_blocks(&self) -> u64 {
         self.missing_blocks
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Fill {
+    range: BlockRange,
+    via: BlockSource,
+    refetch: bool,
 }
 
 #[derive(Debug)]
@@ -290,8 +390,10 @@ pub struct EthExplorer {
     actors: Arc<dyn ActorResolver>,
     limits: ExploreLimits,
     scans: Arc<dyn ScanObserver>,
+    dataset: Option<Arc<dyn EthTxSource>>,
     builds: Arc<dyn BuildObserver>,
     tagger: Arc<TagEngine>,
+    fill: FillPlan,
 }
 
 impl EthExplorer {
@@ -311,13 +413,34 @@ impl EthExplorer {
             limits,
             label_provider,
             scans: Arc::new(NoScans),
+            dataset: None,
             builds: Arc::new(NoBuilds),
+            fill: FillPlan::default(),
             tagger: Arc::new(TagEngine::standard()),
         }
     }
 
     pub fn with_scans(self, scans: Arc<dyn ScanObserver>) -> Self {
         Self { scans, ..self }
+    }
+
+    pub fn with_dataset(self, dataset: Arc<dyn EthTxSource>) -> Self {
+        Self {
+            dataset: Some(dataset),
+            ..self
+        }
+    }
+
+    pub fn has_dataset(&self) -> bool {
+        self.dataset.is_some()
+    }
+
+    pub async fn dataset_until(&self) -> Option<u64> {
+        self.dataset.as_ref()?.available_until().await
+    }
+
+    pub fn with_fill(self, fill: FillPlan) -> Self {
+        Self { fill, ..self }
     }
 
     pub fn with_builds(self, builds: Arc<dyn BuildObserver>) -> Self {
@@ -353,29 +476,45 @@ impl EthExplorer {
         request: &ExploreRequest,
         run: &BuildRun<'_>,
     ) -> Result<Ready, ExploreError> {
-        let mut missing: Vec<BlockRange> = Vec::new();
+        let mut work: Vec<Fill> = Vec::new();
         let mut indexed = 0u64;
         run.stage(BuildStage::Coverage, request.spans().len() as u64);
-        for span in request.spans() {
+        let dataset_until = match &self.dataset {
+            Some(dataset) => dataset.available_until().await,
+            None => None,
+        };
+        for (index, span) in request.spans().iter().enumerate() {
+            let choice = request.choice(index);
             let coverage = self.index.coverage(*span).await.map_err(ExploreError::Io)?;
-            missing.extend(coverage.gaps(*span));
+            for gap in coverage.gaps(*span) {
+                work.extend(self.route(gap, choice.source, dataset_until));
+            }
+            if choice.exact {
+                work.extend(
+                    coverage
+                        .approximate_within(*span)
+                        .into_iter()
+                        .map(|range| Fill {
+                            range,
+                            via: BlockSource::Rpc,
+                            refetch: true,
+                        }),
+                );
+            }
             indexed += coverage.indexed_within(*span);
             run.advance(1, 0);
         }
 
-        if !missing.is_empty() && !request.confirm_rpc {
-            return Ok(Ready::Confirm(RpcPlan::new(
-                missing.clone(),
-                indexed,
-                missing.iter().map(BlockRange::block_count).sum(),
-            )));
+        if !work.is_empty() && !request.confirm_rpc {
+            return Ok(Ready::Confirm(RpcPlan::of(&work, indexed)));
         }
 
-        if !missing.is_empty() && self.index.persistent() {
+        let missing: Vec<BlockRange> = work.iter().map(|fill| fill.range).collect();
+        if !work.is_empty() && self.index.persistent() {
             let scan = ScanRun::begin(self.scans.as_ref(), &missing);
             let mut filled = Ok(());
-            for gap in &missing {
-                filled = self.fill(*gap, scan.id()).await;
+            for fill in &work {
+                filled = self.fill(*fill, scan.id()).await;
                 if filled.is_err() {
                     break;
                 }
@@ -385,6 +524,38 @@ impl EthExplorer {
         }
 
         Ok(Ready::Walk(missing))
+    }
+
+    fn route(
+        &self,
+        gap: BlockRange,
+        choice: SourceChoice,
+        dataset_until: Option<u64>,
+    ) -> Vec<Fill> {
+        let rpc = |range| Fill {
+            range,
+            via: BlockSource::Rpc,
+            refetch: false,
+        };
+        let dataset = |range| Fill {
+            range,
+            via: BlockSource::Dataset,
+            refetch: false,
+        };
+        if self.dataset.is_none() {
+            return vec![rpc(gap)];
+        }
+        match (choice, dataset_until) {
+            (SourceChoice::Rpc, _) => vec![rpc(gap)],
+            (SourceChoice::Dataset, _) => vec![dataset(gap)],
+            (SourceChoice::Auto, None) => vec![rpc(gap)],
+            (SourceChoice::Auto, Some(until)) if gap.to_block() <= until => vec![dataset(gap)],
+            (SourceChoice::Auto, Some(until)) if gap.from_block() > until => vec![rpc(gap)],
+            (SourceChoice::Auto, Some(until)) => vec![
+                dataset(BlockRange::new(gap.from_block(), until)),
+                rpc(BlockRange::new(until + 1, gap.to_block())),
+            ],
+        }
     }
 
     pub async fn explore(
@@ -465,42 +636,73 @@ impl EthExplorer {
         Ok(())
     }
 
-    async fn fill(&self, span: BlockRange, job: u64) -> Result<(), io::Error> {
+    async fn fill(&self, fill: Fill, job: u64) -> Result<(), io::Error> {
+        let source = match (fill.via, &self.dataset) {
+            (BlockSource::Dataset, Some(dataset)) => dataset.as_ref(),
+            _ => self.source.as_ref(),
+        };
+        let span = fill.range;
+        let windows = match source.windows(span).await {
+            Some(windows) => windows,
+            None => self.fill.windows(span),
+        };
+        let parallel = self.fill.parallel(source.parallelism());
+        self.scans.source(job, fill.via);
         tracing::info!(
-            "asking the rpc for blocks {}..={}",
+            "filling blocks {}..={} from {}{} in {} windows, {parallel} at a time",
             span.from_block(),
-            span.to_block()
+            span.to_block(),
+            fill.via.as_str(),
+            if fill.refetch { " again" } else { "" },
+            windows.len(),
         );
 
-        let mut from = span.from_block();
-        loop {
-            let to = from.saturating_add(FILL_WINDOW - 1).min(span.to_block());
-            let mut stream = self.source.txs(from, to).await;
-            let mut stumble = None;
-            let mut txs = 0;
+        futures::stream::iter(windows)
+            .map(|window| {
+                scan::within(
+                    self.scans.clone(),
+                    job,
+                    self.fill_window(source, window, fill.refetch, job),
+                )
+            })
+            .buffer_unordered(parallel)
+            .try_for_each(|()| async { Ok(()) })
+            .await
+    }
 
-            while let Some(item) = stream.next().await {
-                match item {
-                    Ok(_) => txs += 1,
-                    Err(error) => {
-                        tracing::error!("blocks {from}..={to} stumbled: {error}");
-                        if stumble.is_none() {
-                            stumble = Some(error);
-                        }
+    async fn fill_window(
+        &self,
+        source: &dyn EthTxSource,
+        window: BlockRange,
+        refetch: bool,
+        job: u64,
+    ) -> Result<(), io::Error> {
+        let (from, to) = (window.from_block(), window.to_block());
+        let mut stream = if refetch {
+            source.refresh(from, to).await
+        } else {
+            source.txs(from, to).await
+        };
+        let mut stumble = None;
+        let mut txs = 0;
+
+        while let Some(item) = stream.next().await {
+            match item {
+                Ok(_) => txs += 1,
+                Err(error) => {
+                    tracing::error!("blocks {from}..={to} stumbled: {error}");
+                    if stumble.is_none() {
+                        stumble = Some(error);
                     }
                 }
             }
-
-            if let Some(error) = stumble {
-                return Err(error);
-            }
-            self.scans.advance(job, to - from + 1, txs);
-
-            if to >= span.to_block() {
-                return Ok(());
-            }
-            from = to + 1;
         }
+
+        if let Some(error) = stumble {
+            return Err(error);
+        }
+        self.scans.advance(job, window.block_count(), txs);
+        Ok(())
     }
 
     fn note(
@@ -1149,6 +1351,85 @@ mod tests {
 
         assert_eq!(swept.edges().len(), 2);
         assert!(swept.truncated());
+    }
+
+    #[test]
+    fn a_span_splits_into_whole_windows() {
+        let plan = FillPlan {
+            window_blocks: 10,
+            parallel_windows: 2,
+        };
+
+        assert_eq!(
+            plan.windows(BlockRange::new(5, 29)),
+            [
+                BlockRange::new(5, 14),
+                BlockRange::new(15, 24),
+                BlockRange::new(25, 29)
+            ]
+        );
+        assert_eq!(plan.windows(BlockRange::new(7, 7)), [BlockRange::new(7, 7)]);
+    }
+
+    #[test]
+    fn automatic_parallelism_follows_the_nodes_within_bounds() {
+        let auto = FillPlan::default();
+        let fixed = FillPlan {
+            parallel_windows: 3,
+            ..FillPlan::default()
+        };
+
+        assert_eq!(auto.parallel(None), 2);
+        assert_eq!(auto.parallel(Some(7)), 7);
+        assert_eq!(auto.parallel(Some(50)), 16);
+        assert_eq!(fixed.parallel(Some(50)), 3);
+    }
+
+    fn routed(fills: Vec<Fill>) -> Vec<(u64, u64, BlockSource)> {
+        fills
+            .into_iter()
+            .map(|fill| (fill.range.from_block(), fill.range.to_block(), fill.via))
+            .collect()
+    }
+
+    #[test]
+    fn auto_takes_the_dataset_up_to_where_it_reaches() {
+        let explorer = explorer(ExploreLimits::default()).with_dataset(Arc::new(Blocks));
+        let gap = BlockRange::new(100, 199);
+
+        assert_eq!(
+            routed(explorer.route(gap, SourceChoice::Auto, Some(149))),
+            [
+                (100, 149, BlockSource::Dataset),
+                (150, 199, BlockSource::Rpc)
+            ]
+        );
+        assert_eq!(
+            routed(explorer.route(gap, SourceChoice::Auto, Some(500))),
+            [(100, 199, BlockSource::Dataset)]
+        );
+        assert_eq!(
+            routed(explorer.route(gap, SourceChoice::Auto, Some(50))),
+            [(100, 199, BlockSource::Rpc)]
+        );
+        assert_eq!(
+            routed(explorer.route(gap, SourceChoice::Auto, None)),
+            [(100, 199, BlockSource::Rpc)]
+        );
+        assert_eq!(
+            routed(explorer.route(gap, SourceChoice::Rpc, Some(500))),
+            [(100, 199, BlockSource::Rpc)]
+        );
+    }
+
+    #[test]
+    fn without_a_dataset_everything_goes_to_the_rpc() {
+        let explorer = explorer(ExploreLimits::default());
+
+        assert_eq!(
+            routed(explorer.route(BlockRange::new(1, 9), SourceChoice::Dataset, Some(50))),
+            [(1, 9, BlockSource::Rpc)]
+        );
     }
 
     #[tokio::test]

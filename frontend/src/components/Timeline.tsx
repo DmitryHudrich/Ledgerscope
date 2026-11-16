@@ -4,6 +4,7 @@ import type { GraphEdge } from '../api/types';
 import type { BlockWindow } from '../graph/model';
 import { formatCount, formatTimestamp } from '../lib/format';
 import { Button, Panel, cx } from './ui';
+import { BlockSpanText } from './BlockSpanText';
 
 export interface BlockBounds {
   from: number;
@@ -142,9 +143,7 @@ export function Timeline({ edges, window, onWindowChange, open, onOpenChange }: 
       <Panel className="absolute bottom-[calc(var(--sheet-h)+12px)] left-1/2 z-12 flex -translate-x-1/2 items-center gap-2 px-2 py-1 text-xs text-text-secondary">
         <Button variant="ghost" className="h-7 px-2" onClick={() => onOpenChange(true)}>Timeline</Button>
         {window && (
-          <span className="tabular-nums">
-            {formatCount(from)}–{formatCount(to)}
-          </span>
+          <BlockSpanText from={from} to={to} />
         )}
       </Panel>
     );

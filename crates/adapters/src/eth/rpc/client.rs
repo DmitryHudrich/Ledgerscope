@@ -22,11 +22,15 @@ use futures::{StreamExt, TryStreamExt};
 
 pub const DEFAULT_RATE_LIMIT_RPS: u32 = 15;
 
-const BATCH_SIZE: usize = 3;
-const CHUNKS_IN_FLIGHT: usize = 4;
+pub const DEFAULT_BATCH_BLOCKS: usize = 10;
+const CHUNKS_PER_NODE: usize = 2;
+const MIN_CHUNKS_IN_FLIGHT: usize = 4;
+const MAX_CHUNKS_IN_FLIGHT: usize = 32;
 
 pub struct RpcTxSource {
     provider: RootProvider<AnyNetwork>,
+    pool: Arc<RpcPool>,
+    batch_blocks: usize,
 }
 
 impl RpcTxSource {
@@ -35,7 +39,20 @@ impl RpcTxSource {
 
         Self {
             provider: RootProvider::new(client),
+            pool,
+            batch_blocks: DEFAULT_BATCH_BLOCKS,
         }
+    }
+
+    pub fn with_batch_blocks(self, batch_blocks: usize) -> Self {
+        Self {
+            batch_blocks: batch_blocks.max(1),
+            ..self
+        }
+    }
+
+    fn chunks_in_flight(&self) -> usize {
+        (self.pool.len() * CHUNKS_PER_NODE).clamp(MIN_CHUNKS_IN_FLIGHT, MAX_CHUNKS_IN_FLIGHT)
     }
 
     async fn batch<Params, Resp>(
@@ -51,12 +68,12 @@ impl RpcTxSource {
     {
         let blocks: Vec<u64> = (from_block..=to_block).collect();
         let mut chunks = Vec::new();
-        for chunk in blocks.chunks(BATCH_SIZE) {
+        for chunk in blocks.chunks(self.batch_blocks) {
             chunks.push(self.batch_chunk(method, chunk, &params));
         }
 
         let answers: Vec<Vec<Resp>> = futures::stream::iter(chunks)
-            .buffered(CHUNKS_IN_FLIGHT)
+            .buffered(self.chunks_in_flight())
             .try_collect()
             .await?;
 
@@ -203,6 +220,10 @@ impl EthRpcSource for RpcTxSource {
 
 #[async_trait::async_trait]
 impl EthTxSource for RpcTxSource {
+    fn parallelism(&self) -> Option<usize> {
+        Some(self.pool.len())
+    }
+
     async fn txs(
         &self,
         lower_block: u64,

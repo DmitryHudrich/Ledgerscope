@@ -46,6 +46,7 @@ macro_rules! id {
 id!(UserId);
 id!(TeamId);
 id!(CanvasId);
+id!(CanvasVersionId);
 id!(LabelId);
 id!(LinkId);
 id!(RpcNodeId);

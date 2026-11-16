@@ -8,6 +8,7 @@ import {
   forceY,
   type Simulation,
 } from 'd3-force';
+import { marqueeModeOf, modeOf, type SelectMode } from '../lib/selection';
 
 import { formatCount, formatEth, formatUnits, shortAddress } from '../lib/format';
 import type { VizPalette } from '../lib/theme';
@@ -64,9 +65,9 @@ interface Props {
   restoredLayoutVersion?: number;
   groups?: GraphGroup[];
   fade?: SceneFade | null;
-  onSelect: (id: string | null, additive?: boolean) => void;
+  onSelect: (id: string | null, mode?: SelectMode) => void;
   onSelectLink: (id: string | null) => void;
-  onSelectMany: (ids: Set<string>) => void;
+  onSelectMany: (ids: Set<string>, mode?: SelectMode) => void;
   handle: RefObject<GraphHandle | null>;
 }
 
@@ -838,7 +839,7 @@ export function GraphCanvas({
             node.fx = null;
             node.fy = null;
           }
-          onSelect(dragNodes[0].id, event.shiftKey);
+          onSelect(dragNodes[0].id, modeOf(event));
         }
         dragNodes = null;
         dragOrigin = null;
@@ -874,7 +875,7 @@ export function GraphCanvas({
               .filter((node) => node.x >= start.x && node.x <= end.x && node.y >= start.y && node.y <= end.y)
               .map((node) => node.id),
           );
-          onSelectMany(ids);
+          onSelectMany(ids, marqueeModeOf(event));
         }
         selecting = false;
         selectionStart = null;

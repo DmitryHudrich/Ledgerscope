@@ -16,7 +16,7 @@ reqwest.workspace = true
 alloy.workspace = true
 alloy-primitives.workspace = true
 tower.workspace = true
-tokio = { workspace = true, features = ["time", "sync"] }
+tokio = { workspace = true, features = ["time", "sync", "fs", "io-util"] }
 tracing.workspace = true
 futures.workspace = true
 redis.workspace = true
@@ -30,6 +30,19 @@ argon2.workspace = true
 sha2.workspace = true
 base64.workspace = true
 getrandom.workspace = true
+parquet = { workspace = true, optional = true }
+arrow-array = { workspace = true, optional = true }
+arrow-schema = { workspace = true, optional = true }
+bytes = { workspace = true, optional = true }
+
+[features]
+default = []
+aws-public = [
+  "dep:parquet",
+  "dep:arrow-array",
+  "dep:arrow-schema",
+  "dep:bytes",
+]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

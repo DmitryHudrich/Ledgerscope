@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { BlockSpanText } from '../BlockSpanText';
 
 import type { ChainInfo } from '../../api/types';
 import {
@@ -271,7 +272,7 @@ export function MonitorPanel({ monitor, chains, chainId, onClose }: Props) {
                   <span className="font-medium">{chainName(job.chain_id)}</span>
                   <span className="text-text-muted">
                     {job.ranges.length === 1
-                      ? `${formatCount(job.ranges[0].from_block)} – ${formatCount(job.ranges[0].to_block)}`
+                      ? <BlockSpanText from={job.ranges[0].from_block} to={job.ranges[0].to_block} />
                       : `${job.ranges.length} gaps`}
                   </span>
                   <span className={cx('ml-auto text-[11px] font-medium', job.error ? 'text-critical' : job.running ? 'text-accent' : 'text-good')}>

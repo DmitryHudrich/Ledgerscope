@@ -15,6 +15,8 @@ import { assetLabel, sortedAssets, type GraphModel, type GraphNode } from '../gr
 import { getPrimarySystemLabel } from '../graph/labels';
 import { IconChevron, IconClose, IconCopy, IconTable, IconTarget } from './Icons';
 import { TagList } from './TagList';
+import { BlockSpanText } from './BlockSpanText';
+import { CopyAddress } from './CopyAddress';
 import {
   Button,
   Dot,
@@ -168,7 +170,9 @@ export function DetailsDrawer({
               {primaryLabel.value}
             </div>
           )}
-          <div className={primaryLabel ? 'mt-1 break-all font-mono-ui text-[11px] leading-relaxed text-text-secondary' : 'mt-1.5 break-all font-mono-ui text-[12.5px] leading-relaxed'}>{displayAddress(node.id)}</div>
+          <div className={primaryLabel ? 'mt-1 break-all font-mono-ui text-[11px] leading-relaxed text-text-secondary' : 'mt-1.5 break-all font-mono-ui text-[12.5px] leading-relaxed'}>
+            {displayAddress(node.id)} <CopyAddress address={node.id} />
+          </div>
         </div>
         <Button
           variant="ghost"
@@ -257,9 +261,7 @@ export function DetailsDrawer({
             <div>
               <dt>Blocks</dt>
               <dd>
-                {node.firstBlock
-                  ? `${formatCount(node.firstBlock)} – ${formatCount(node.lastBlock)}`
-                  : '—'}
+                {node.firstBlock ? <BlockSpanText from={node.firstBlock} to={node.lastBlock} /> : '—'}
               </dd>
             </div>
             <div>
@@ -336,8 +338,8 @@ export function DetailsDrawer({
             {visiblePeers.map((peer) => {
               const net = peer.received - peer.sent;
               return (
+                <div key={peer.id} className="flex items-center gap-0.5">
                 <button
-                  key={peer.id}
                   type="button"
                   className={cx(
                     'grid w-full cursor-pointer grid-cols-[auto_1fr_auto] items-center gap-2 rounded-ui-sm border-0 bg-transparent px-2 py-[7px] text-left hover:bg-[color-mix(in_srgb,var(--text-primary)_6%,transparent)]',
@@ -361,6 +363,8 @@ export function DetailsDrawer({
                     )}
                   </span>
                 </button>
+                <CopyAddress address={peer.id} />
+                </div>
               );
             })}
           </div>}

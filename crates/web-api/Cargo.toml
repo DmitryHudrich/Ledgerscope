@@ -7,6 +7,10 @@ edition = "2024"
 name = "web-api"
 path = "src/main.rs"
 
+[features]
+default = ["aws-public"]
+aws-public = ["ledgerscope-adapters/aws-public"]
+
 [dependencies]
 ledgerscope-domain.workspace = true
 ledgerscope-application.workspace = true

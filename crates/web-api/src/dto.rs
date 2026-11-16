@@ -9,12 +9,12 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use application::eth::{
-    AddressGraph, ExploreLimits, GraphNode, LowLevelGraph, LowLevelNode, RpcPlan,
+    AddressGraph, ExploreLimits, GraphNode, LowLevelGraph, LowLevelNode, RpcPlan, SourceChoice,
 };
 use domain::eth::{
-    Actor, ActorKind, AddressLabel, BlockBucket, BlockRange, ContractAction, ContractKind,
-    EthAddress, IndexCoverage, Interaction, InteractionEdge, InteractionKind, LowLevelInteraction,
-    Tag, TagSubject,
+    Actor, ActorKind, AddressLabel, BlockBucket, BlockRange, BlockSource, ContractAction,
+    ContractKind, EthAddress, IndexCoverage, Interaction, InteractionEdge, InteractionKind,
+    LowLevelInteraction, Tag, TagSubject,
 };
 
 use crate::state::{AppState, ChainState};
@@ -94,6 +94,29 @@ pub enum ScopeRequest {
 pub struct RangeRequest {
     pub from_block: u64,
     pub to_block: u64,
+    #[serde(default)]
+    pub source: SourceRequest,
+    #[serde(default)]
+    pub exact: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceRequest {
+    #[default]
+    Auto,
+    Rpc,
+    Dataset,
+}
+
+impl From<SourceRequest> for SourceChoice {
+    fn from(source: SourceRequest) -> Self {
+        match source {
+            SourceRequest::Auto => SourceChoice::Auto,
+            SourceRequest::Rpc => SourceChoice::Rpc,
+            SourceRequest::Dataset => SourceChoice::Dataset,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -367,6 +390,8 @@ pub struct RpcConfirmationResponse {
     missing: Vec<RangeResponse>,
     missing_blocks: u64,
     indexed_blocks: u64,
+    dataset_blocks: u64,
+    exact_blocks: u64,
 }
 
 impl RpcConfirmationResponse {
@@ -388,6 +413,8 @@ impl RpcConfirmationResponse {
                 .collect(),
             missing_blocks: plan.missing_blocks(),
             indexed_blocks: plan.indexed_blocks(),
+            dataset_blocks: plan.dataset_blocks(),
+            exact_blocks: plan.exact_blocks(),
         }
     }
 }
@@ -448,7 +475,26 @@ pub struct CoverageResponse {
     block_count: u64,
     tx_count: u64,
     ranges: Vec<RangeResponse>,
+    approximate: Vec<RangeResponse>,
+    dataset: Option<DatasetResponse>,
     limits: LimitsResponse,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct DatasetResponse {
+    name: &'static str,
+    exact_values: bool,
+    available_until: Option<u64>,
+}
+
+impl DatasetResponse {
+    pub fn new(available_until: Option<u64>) -> Self {
+        Self {
+            name: "aws-public",
+            exact_values: BlockSource::Dataset.exact(),
+            available_until,
+        }
+    }
 }
 
 impl CoverageResponse {
@@ -458,6 +504,7 @@ impl CoverageResponse {
         persisted: bool,
         chain_head: Option<u64>,
         limits: ExploreLimits,
+        dataset: Option<DatasetResponse>,
     ) -> Self {
         Self {
             chain_id,
@@ -473,6 +520,13 @@ impl CoverageResponse {
                 .copied()
                 .map(RangeResponse::from)
                 .collect(),
+            approximate: coverage
+                .approximate()
+                .iter()
+                .copied()
+                .map(RangeResponse::from)
+                .collect(),
+            dataset,
             limits: limits.into(),
         }
     }
@@ -1005,15 +1059,21 @@ mod tests {
 
     #[test]
     fn coverage_carries_the_limits_the_ui_needs() {
-        let coverage = IndexCoverage::new(vec![BlockRange::new(10, 20)], 42);
+        let coverage = IndexCoverage::new(vec![BlockRange::new(10, 20)], 42)
+            .with_approximate(vec![BlockRange::new(12, 14)]);
         let encoded = serde_json::to_value(CoverageResponse::new(
             &coverage,
             1,
             true,
             Some(21_000_000),
             ExploreLimits::default(),
+            Some(DatasetResponse::new(Some(20_000_000))),
         ))
         .unwrap();
+
+        assert_eq!(encoded["approximate"][0]["from_block"], json!(12));
+        assert_eq!(encoded["dataset"]["exact_values"], json!(false));
+        assert_eq!(encoded["dataset"]["available_until"], json!(20_000_000));
 
         assert_eq!(encoded["lowest_block"], json!(10));
         assert_eq!(encoded["highest_block"], json!(20));

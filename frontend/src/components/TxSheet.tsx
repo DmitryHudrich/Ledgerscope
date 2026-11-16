@@ -1,4 +1,5 @@
 import { useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react';
+import { CopyAddress } from './CopyAddress';
 
 import { edgeEndpoints, edgeLabel, edgeTransfer, type EdgeTransfer } from '../api/edges';
 import type { GraphEdge } from '../api/types';
@@ -290,24 +291,30 @@ export function TxSheet({ model, scope, linkScope, open, height, onOpenChange, o
                     <td title={formatTimestamp(tx.timestamp)}>{formatRelative(tx.timestamp)}</td>
                     <td className="font-mono-ui text-[11.5px]">
                       {endpoints ? (
-                        <CellLink
-                          failed={!tx.succeeded}
-                          onClick={() => onSelect(endpoints.from.toLowerCase())}
-                        >
-                          {shortAddress(endpoints.from, 8, 6)}
-                        </CellLink>
+                        <span className="inline-flex items-center gap-0.5">
+                          <CellLink
+                            failed={!tx.succeeded}
+                            onClick={() => onSelect(endpoints.from.toLowerCase())}
+                          >
+                            {shortAddress(endpoints.from, 8, 6)}
+                          </CellLink>
+                          <CopyAddress address={endpoints.from} />
+                        </span>
                       ) : (
                         '—'
                       )}
                     </td>
                     <td className="font-mono-ui text-[11.5px]">
                       {endpoints ? (
-                        <CellLink
-                          failed={!tx.succeeded}
-                          onClick={() => onSelect(endpoints.to.toLowerCase())}
-                        >
-                          {shortAddress(endpoints.to, 8, 6)}
-                        </CellLink>
+                        <span className="inline-flex items-center gap-0.5">
+                          <CellLink
+                            failed={!tx.succeeded}
+                            onClick={() => onSelect(endpoints.to.toLowerCase())}
+                          >
+                            {shortAddress(endpoints.to, 8, 6)}
+                          </CellLink>
+                          <CopyAddress address={endpoints.to} />
+                        </span>
                       ) : (
                         '—'
                       )}

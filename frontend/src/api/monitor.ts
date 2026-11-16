@@ -53,6 +53,8 @@ export interface ScanJob {
   blocks_per_second: number | null;
   eta_ms: number | null;
   error: string | null;
+  source: 'rpc' | 'dataset' | null;
+  transfer: { label: string; done_bytes: number; total_bytes: number } | null;
 }
 
 export type BuildStage = 'coverage' | 'walk' | 'index' | 'classify' | 'actors' | 'tags';

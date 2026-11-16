@@ -3,6 +3,7 @@ import type {
   CoverageResponse,
   GraphQuery,
   GraphResponse,
+  HeadResponse,
   HistogramQuery,
   HistogramResponse,
   RpcConfirmation,
@@ -108,6 +109,14 @@ export async function fetchCoverage(chain?: number, signal?: AbortSignal): Promi
   if (!response.ok) throw await failure(response);
 
   return (await response.json()) as CoverageResponse;
+}
+
+export async function fetchHead(chain?: number): Promise<HeadResponse> {
+  const suffix = chain === undefined ? '' : `?chain=${chain}`;
+  const response = await call(`/head${suffix}`, { method: 'GET' });
+  if (!response.ok) throw await failure(response);
+
+  return (await response.json()) as HeadResponse;
 }
 
 export async function fetchHistogram(

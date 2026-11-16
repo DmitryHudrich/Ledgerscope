@@ -2,7 +2,7 @@ use serde::Serialize;
 use utoipa::ToSchema;
 
 use adapters::eth::{NodeStats, PoolNode, RpcCall};
-use application::eth::{BuildJob, ScanJob};
+use application::eth::{BuildJob, ScanJob, Transfer};
 
 use crate::dto::RangeResponse;
 
@@ -154,6 +154,25 @@ pub struct ScanResponse {
     blocks_per_second: Option<f64>,
     eta_ms: Option<u64>,
     error: Option<String>,
+    source: Option<&'static str>,
+    transfer: Option<TransferResponse>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct TransferResponse {
+    label: String,
+    done_bytes: u64,
+    total_bytes: u64,
+}
+
+impl From<&Transfer> for TransferResponse {
+    fn from(transfer: &Transfer) -> Self {
+        Self {
+            label: transfer.label.clone(),
+            done_bytes: transfer.done_bytes,
+            total_bytes: transfer.total_bytes,
+        }
+    }
 }
 
 impl From<&ScanJob> for ScanResponse {
@@ -182,6 +201,8 @@ impl From<&ScanJob> for ScanResponse {
             blocks_per_second: job.blocks_per_second(),
             eta_ms: job.eta_ms(),
             error: job.error.clone(),
+            source: job.source.map(|source| source.as_str()),
+            transfer: job.transfer.as_ref().map(TransferResponse::from),
         }
     }
 }

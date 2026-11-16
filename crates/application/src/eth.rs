@@ -130,7 +130,7 @@ pub use build::{BuildBoard, BuildJob, BuildObserver, BuildStage, NoBuilds};
 pub use etherscan_json_labels::JsonLabelProvider;
 pub use explorer::{
     AddressGraph, EthExplorer, Exploration, ExploreError, ExploreLimits, ExploreRequest,
-    ExploreScope, GraphNode, GraphRoot, RpcPlan,
+    ExploreScope, FillPlan, GraphNode, GraphRoot, RpcPlan, SourceChoice, SpanChoice,
 };
 pub use index::FetchingTxIndex;
 pub use lowlevel::{LowLevelGraph, LowLevelNode};
@@ -138,5 +138,5 @@ pub use ports::{
     ActorRepository, ActorResolver, EthRpcSource, EthTxCache, EthTxIndex, EthTxRepository,
     EthTxSource, LabelProvider,
 };
-pub use scan::{NoScans, ScanBoard, ScanJob, ScanObserver};
+pub use scan::{NoScans, ScanBoard, ScanJob, ScanObserver, Transfer, report_transfer};
 pub use store::StoringEthTxSource;

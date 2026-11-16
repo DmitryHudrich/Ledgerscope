@@ -1,11 +1,18 @@
-use std::sync::Arc;
+use std::{future::Future, sync::Arc};
 
-use domain::eth::BlockRange;
+use domain::eth::{BlockRange, BlockSource};
 use tokio::sync::broadcast;
 
 use crate::eth::jobs::{Job, JobBoard, now_ms};
 
 pub const STOPPED: &str = "stopped before it finished";
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Transfer {
+    pub label: String,
+    pub done_bytes: u64,
+    pub total_bytes: u64,
+}
 
 pub trait ScanObserver: Send + Sync {
     fn begin(&self, ranges: &[BlockRange]) -> u64;
@@ -13,6 +20,28 @@ pub trait ScanObserver: Send + Sync {
     fn advance(&self, job: u64, blocks: u64, txs: u64);
 
     fn finish(&self, job: u64, error: Option<String>);
+
+    fn source(&self, _job: u64, _source: BlockSource) {}
+
+    fn transfer(&self, _job: u64, _transfer: Option<Transfer>) {}
+}
+
+#[derive(Clone)]
+struct ScanContext {
+    scans: Arc<dyn ScanObserver>,
+    job: u64,
+}
+
+tokio::task_local! {
+    static SCAN: ScanContext;
+}
+
+pub async fn within<F: Future>(scans: Arc<dyn ScanObserver>, job: u64, work: F) -> F::Output {
+    SCAN.scope(ScanContext { scans, job }, work).await
+}
+
+pub fn report_transfer(transfer: Option<Transfer>) {
+    let _ = SCAN.try_with(|context| context.scans.transfer(context.job, transfer));
 }
 
 pub struct ScanRun<'a> {
@@ -71,6 +100,8 @@ pub struct ScanJob {
     pub updated_ms: u64,
     pub finished_ms: Option<u64>,
     pub error: Option<String>,
+    pub source: Option<BlockSource>,
+    pub transfer: Option<Transfer>,
 }
 
 impl ScanJob {
@@ -153,6 +184,8 @@ impl ScanObserver for ChainScans {
             updated_ms: now,
             finished_ms: None,
             error: None,
+            source: None,
+            transfer: None,
         })
     }
 
@@ -167,7 +200,18 @@ impl ScanObserver for ChainScans {
         self.board.board.change(job, |job| {
             job.finished_ms = Some(now_ms());
             job.error = error;
+            job.transfer = None;
         });
+    }
+
+    fn source(&self, job: u64, source: BlockSource) {
+        self.board
+            .board
+            .change(job, |job| job.source = Some(source));
+    }
+
+    fn transfer(&self, job: u64, transfer: Option<Transfer>) {
+        self.board.board.change(job, |job| job.transfer = transfer);
     }
 }
 
@@ -220,6 +264,37 @@ mod tests {
         let job = &board.jobs(None)[0];
         assert!(!job.running());
         assert_eq!(job.error, None);
+    }
+
+    #[tokio::test]
+    async fn a_transfer_reported_inside_a_scan_lands_on_its_job() {
+        let board = Arc::new(ScanBoard::default());
+        let scans = board.for_chain(1);
+        let job = scans.begin(&[BlockRange::new(0, 9)]);
+        scans.source(job, BlockSource::Dataset);
+
+        report_transfer(Some(Transfer {
+            label: "outside".to_owned(),
+            done_bytes: 1,
+            total_bytes: 2,
+        }));
+        assert_eq!(board.jobs(None)[0].transfer, None);
+
+        within(scans.clone(), job, async {
+            report_transfer(Some(Transfer {
+                label: "logs".to_owned(),
+                done_bytes: 5,
+                total_bytes: 10,
+            }));
+        })
+        .await;
+
+        let seen = &board.jobs(None)[0];
+        assert_eq!(seen.source, Some(BlockSource::Dataset));
+        assert_eq!(seen.transfer.as_ref().map(|t| t.done_bytes), Some(5));
+
+        scans.finish(job, None);
+        assert_eq!(board.jobs(None)[0].transfer, None);
     }
 
     #[test]

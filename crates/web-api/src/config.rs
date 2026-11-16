@@ -21,6 +21,14 @@ const DEFAULT_MAX_DEPTH: u32 = 5;
 const DEFAULT_MAX_NODES: usize = 5_000;
 const DEFAULT_MAX_EDGES: usize = 20_000;
 const DEFAULT_MAX_BLOCKS: u64 = 100_000;
+const DEFAULT_WINDOW_BLOCKS: u64 = 96;
+const DEFAULT_BATCH_BLOCKS: usize = 10;
+const DEFAULT_AWS_PUBLIC_URL: &str = "https://aws-public-blockchain.s3.us-east-2.amazonaws.com/";
+const DEFAULT_AWS_PUBLIC_PREFIX: &str = "v1.0/eth";
+const DEFAULT_AWS_PUBLIC_CHAIN: u64 = 1;
+const DEFAULT_AWS_PUBLIC_CACHE: &str = "cache/aws-public";
+const DEFAULT_AWS_PUBLIC_KEEP_DAYS: usize = 3;
+const DEFAULT_AWS_PUBLIC_WINDOW: u64 = 1_200;
 const DEFAULT_RESCAN_INTERVAL_SECS: u64 = 1800;
 const DEFAULT_CHAINLIST_MAX_NODES: usize = 16;
 const DEFAULT_POSTGRES_URL: &str = "postgres://ledgerscope:ledgerscope@127.0.0.1:5432/ledgerscope";
@@ -45,6 +53,7 @@ pub struct Config {
     pub chains: ChainsConfig,
     pub storage: StorageConfig,
     pub graph: GraphConfig,
+    pub indexer: IndexerConfig,
     pub accounts: AccountsConfig,
 }
 
@@ -60,6 +69,7 @@ impl Default for Config {
             chains: ChainsConfig::default(),
             storage: StorageConfig::default(),
             graph: GraphConfig::default(),
+            indexer: IndexerConfig::default(),
             accounts: AccountsConfig::default(),
         }
     }
@@ -129,6 +139,52 @@ impl Default for AccountsConfig {
             max_canvas_bytes: DEFAULT_MAX_CANVAS_BYTES,
             personal_rpc: PersonalRpcConfig::default(),
             observer: ObserverConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct IndexerConfig {
+    pub window_blocks: u64,
+    pub parallel_windows: usize,
+    pub batch_blocks: usize,
+    pub aws_public: AwsPublicSection,
+}
+
+impl Default for IndexerConfig {
+    fn default() -> Self {
+        Self {
+            window_blocks: DEFAULT_WINDOW_BLOCKS,
+            parallel_windows: 0,
+            batch_blocks: DEFAULT_BATCH_BLOCKS,
+            aws_public: AwsPublicSection::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AwsPublicSection {
+    pub enabled: bool,
+    pub base_url: String,
+    pub prefix: String,
+    pub chains: Vec<u64>,
+    pub cache_dir: String,
+    pub keep_days: usize,
+    pub window_blocks: u64,
+}
+
+impl Default for AwsPublicSection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            base_url: DEFAULT_AWS_PUBLIC_URL.to_owned(),
+            prefix: DEFAULT_AWS_PUBLIC_PREFIX.to_owned(),
+            chains: vec![DEFAULT_AWS_PUBLIC_CHAIN],
+            cache_dir: DEFAULT_AWS_PUBLIC_CACHE.to_owned(),
+            keep_days: DEFAULT_AWS_PUBLIC_KEEP_DAYS,
+            window_blocks: DEFAULT_AWS_PUBLIC_WINDOW,
         }
     }
 }
@@ -714,6 +770,15 @@ fn split_urls(value: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_example_config_reads_with_the_indexer_section() {
+        let config = Config::from_yaml(include_str!("../../../config.example.yaml")).unwrap();
+
+        assert_eq!(config.indexer.window_blocks, 96);
+        assert_eq!(config.indexer.aws_public.chains, [1]);
+        assert_eq!(config.indexer.aws_public.prefix, "v1.0/eth");
+    }
 
     const YAML: &str = "
 rpc:

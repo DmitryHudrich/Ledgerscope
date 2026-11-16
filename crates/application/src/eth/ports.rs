@@ -4,8 +4,8 @@ use alloy_primitives::{Bytes, TxHash};
 use futures::stream::BoxStream;
 
 use domain::eth::{
-    Actor, ActorHint, AddressLabel, BlockBucket, BlockRange, BlockRef, EthAddress, EthReceipt,
-    IndexCoverage, MinedTx,
+    Actor, ActorHint, AddressLabel, BlockBucket, BlockRange, BlockRef, BlockSource, EthAddress,
+    EthReceipt, IndexCoverage, MinedTx,
 };
 
 #[async_trait::async_trait]
@@ -15,6 +15,26 @@ pub trait EthTxSource: Send + Sync {
         lower_block: u64,
         highest_block: u64,
     ) -> BoxStream<'_, Result<MinedTx, io::Error>>;
+
+    async fn refresh(
+        &self,
+        lower_block: u64,
+        highest_block: u64,
+    ) -> BoxStream<'_, Result<MinedTx, io::Error>> {
+        self.txs(lower_block, highest_block).await
+    }
+
+    fn parallelism(&self) -> Option<usize> {
+        None
+    }
+
+    async fn windows(&self, _span: BlockRange) -> Option<Vec<BlockRange>> {
+        None
+    }
+
+    async fn available_until(&self) -> Option<u64> {
+        None
+    }
 }
 
 #[async_trait::async_trait]
@@ -32,6 +52,7 @@ pub trait EthTxRepository: Send + Sync {
         lower_block: u64,
         highest_block: u64,
         txs: &[MinedTx],
+        source: BlockSource,
     ) -> Result<(), io::Error>;
 }
 

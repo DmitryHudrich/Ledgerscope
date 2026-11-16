@@ -1,8 +1,12 @@
 import { formatCount } from './format';
 
+export type RangeSource = 'auto' | 'rpc' | 'dataset';
+
 export interface BlockSpan {
   from: number;
   to: number;
+  source?: RangeSource;
+  exact?: boolean;
 }
 
 export interface BlockLimits {
@@ -31,7 +35,7 @@ export function clampRange(next: BlockSpan, limits: BlockLimits, edited: RangeEd
     else from = Math.max(to - span + 1, 0);
   }
 
-  return { from, to };
+  return { ...next, from, to };
 }
 
 export function sameRange(a: BlockSpan, b: BlockSpan): boolean {

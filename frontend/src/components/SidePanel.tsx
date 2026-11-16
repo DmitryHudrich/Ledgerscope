@@ -39,6 +39,8 @@ import {
   cx,
 } from './ui';
 import { displayAddress, nativeSymbol } from '../lib/chain';
+import { BlockSpanText } from './BlockSpanText';
+import { CopyAddress } from './CopyAddress';
 
 export type WorkspacePanel = 'advanced' | 'addresses' | 'filters' | 'legend' | 'stats' | 'groups' | 'tls';
 
@@ -290,6 +292,7 @@ function AddressesPanel({ model, roots, maxDepth, onSelect, onCenter, onRemove, 
                     {shortAddress(root.address, 7, 4)}
                   </span>
                 </button>
+                <CopyAddress address={root.address} />
                 <div className="flex items-center text-[10px] text-text-muted" title="Investigation depth">
                   <Button variant="ghost" icon className="size-6" disabled={root.depth <= 0} aria-label={`Less depth for ${root.address}`} onClick={() => onDepthChange(root.address, root.depth - 1)}>−</Button>
                   <span className="w-4 text-center tabular-nums">{root.depth}</span>
@@ -345,10 +348,11 @@ function TlsPanel({ model, ipLinks, onSelect, onCenter }: {
       ) : (
         <div className="grid gap-1.5">
           {rows.map(({ address, links }) => (
+            <div key={address} className="relative">
+            <CopyAddress address={address} className="absolute right-1.5 top-1.5" />
             <button
-              key={address}
               type="button"
-              className="grid gap-1 rounded-ui-sm px-2 py-2 text-left hover:bg-[color-mix(in_srgb,var(--text-primary)_5%,transparent)] focus-visible:outline-2 focus-visible:outline-accent"
+              className="grid w-full gap-1 rounded-ui-sm px-2 py-2 pr-8 text-left hover:bg-[color-mix(in_srgb,var(--text-primary)_5%,transparent)] focus-visible:outline-2 focus-visible:outline-accent"
               onClick={() => { onSelect(address); onCenter(address); }}
             >
               <span className="overflow-hidden text-ellipsis whitespace-nowrap font-mono-ui text-[11px] font-medium">
@@ -361,6 +365,7 @@ function TlsPanel({ model, ipLinks, onSelect, onCenter }: {
                 </span>
               ))}
             </button>
+            </div>
           ))}
         </div>
       )}
@@ -506,7 +511,7 @@ function StatsPanel({ model }: { model: GraphModel }) {
       <MetaList className="mt-4">
         <div><dt>Token transfers</dt><dd>{formatCount(stats.tokenTransfers)}</dd></div>
         <div><dt>Contract calls</dt><dd>{formatCount(stats.calls)}</dd></div>
-        <div><dt>Blocks</dt><dd>{stats.minBlock ? `${formatCount(stats.minBlock)} – ${formatCount(stats.maxBlock)}` : '—'}</dd></div>
+        <div><dt>Blocks</dt><dd>{stats.minBlock ? <BlockSpanText from={stats.minBlock} to={stats.maxBlock} /> : '—'}</dd></div>
         <div><dt>First tx</dt><dd>{formatTimestamp(stats.firstSeen)}</dd></div>
         <div><dt>Last tx</dt><dd>{formatTimestamp(stats.lastSeen)}</dd></div>
         {stats.failedTxs > 0 && <div><dt>Reverted</dt><dd>{formatCount(stats.failedTxs)} tx</dd></div>}

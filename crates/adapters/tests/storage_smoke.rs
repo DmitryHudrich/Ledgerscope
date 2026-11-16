@@ -3,9 +3,9 @@ use std::sync::Arc;
 use alloy_primitives::{B256, Bytes, TxHash, U256};
 use application::eth::{
     StoringEthTxSource,
-    ports::{EthTxCache, EthTxRepository, EthTxSource},
+    ports::{EthTxCache, EthTxIndex, EthTxRepository, EthTxSource},
 };
-use domain::eth::{EthAddress, EthLog, EthReceipt, EthTx, MinedTx};
+use domain::eth::{BlockRange, BlockSource, EthAddress, EthLog, EthReceipt, EthTx, MinedTx};
 use futures::StreamExt;
 use reqwest::{Client, Url};
 
@@ -70,7 +70,7 @@ async fn a_saved_range_reads_back_whole() {
     };
 
     repository
-        .save(100, 102, &[mined(100, 1), mined(101, 2)])
+        .save(100, 102, &[mined(100, 1), mined(101, 2)], BlockSource::Rpc)
         .await
         .unwrap();
 
@@ -107,7 +107,10 @@ async fn an_empty_range_is_still_remembered() {
         return;
     };
 
-    repository.save(500, 501, &[]).await.unwrap();
+    repository
+        .save(500, 501, &[], BlockSource::Rpc)
+        .await
+        .unwrap();
 
     assert_eq!(
         repository.indexed_blocks(500, 501).await.unwrap(),
@@ -123,12 +126,18 @@ async fn chains_keep_their_blocks_apart() {
     };
     let arbitrum = mainnet.for_chain(42161);
 
-    mainnet.save(900, 900, &[mined(900, 7)]).await.unwrap();
+    mainnet
+        .save(900, 900, &[mined(900, 7)], BlockSource::Rpc)
+        .await
+        .unwrap();
 
     assert!(arbitrum.indexed_blocks(900, 900).await.unwrap().is_empty());
     assert!(arbitrum.txs(900, 900).await.unwrap().is_empty());
 
-    arbitrum.save(900, 900, &[]).await.unwrap();
+    arbitrum
+        .save(900, 900, &[], BlockSource::Rpc)
+        .await
+        .unwrap();
 
     assert_eq!(arbitrum.indexed_blocks(900, 900).await.unwrap(), vec![900]);
     assert!(arbitrum.txs(900, 900).await.unwrap().is_empty());
@@ -141,14 +150,52 @@ async fn saving_the_same_block_twice_keeps_one_tx() {
         return;
     };
 
-    repository.save(700, 700, &[mined(700, 5)]).await.unwrap();
-    repository.save(700, 700, &[mined(700, 5)]).await.unwrap();
+    repository
+        .save(700, 700, &[mined(700, 5)], BlockSource::Rpc)
+        .await
+        .unwrap();
+    repository
+        .save(700, 700, &[mined(700, 5)], BlockSource::Rpc)
+        .await
+        .unwrap();
 
     assert_eq!(
         repository.indexed_blocks(700, 700).await.unwrap(),
         vec![700]
     );
     assert_eq!(repository.txs(700, 700).await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn dataset_blocks_stay_approximate_until_the_rpc_rewrites_them() {
+    let Some(repository) = repository("ledgerscope_smoke_sources").await else {
+        return;
+    };
+
+    repository
+        .save(800, 804, &[mined(801, 3)], BlockSource::Dataset)
+        .await
+        .unwrap();
+    let coverage = repository
+        .coverage(BlockRange::new(790, 810))
+        .await
+        .unwrap();
+    assert_eq!(coverage.ranges(), [BlockRange::new(800, 804)]);
+    assert_eq!(coverage.approximate(), [BlockRange::new(800, 804)]);
+
+    repository
+        .save(802, 803, &[], BlockSource::Rpc)
+        .await
+        .unwrap();
+    let coverage = repository
+        .coverage(BlockRange::new(790, 810))
+        .await
+        .unwrap();
+    assert_eq!(coverage.ranges(), [BlockRange::new(800, 804)]);
+    assert_eq!(
+        coverage.approximate(),
+        [BlockRange::new(800, 801), BlockRange::new(804, 804)]
+    );
 }
 
 #[tokio::test]

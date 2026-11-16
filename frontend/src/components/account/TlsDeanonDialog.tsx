@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { BlockSpanText } from '../BlockSpanText';
 
 import type { ChainInfo } from '../../api/types';
 import { tlsApi, type CorrelateResult, type IpWalletLink } from '../../api/tls';
@@ -197,7 +198,7 @@ export function TlsDeanonDialog({ chains, chainId, canvasRange, onChange, onClos
 
         {run && (
           <p className="m-0 text-[11px] text-text-muted">
-            Pass over blocks {run.from_block}–{run.to_block} on {chainName(chain)}: {run.matched_pairs} timing matches, {run.links_touched} links touched.
+            Pass over blocks <BlockSpanText from={run.from_block} to={run.to_block} /> on {chainName(chain)}: {run.matched_pairs} timing matches, {run.links_touched} links touched.
           </p>
         )}
 
