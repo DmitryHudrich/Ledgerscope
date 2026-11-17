@@ -1,17 +1,18 @@
-use std::{
-    collections::VecDeque,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
-    },
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::{future::Future, sync::Arc};
 
-use domain::eth::BlockRange;
+use domain::eth::{BlockRange, BlockSource};
 use tokio::sync::broadcast;
 
-const KEPT_JOBS: usize = 50;
-const STREAM_BUFFER: usize = 256;
+use crate::eth::jobs::{Job, JobBoard, now_ms};
+
+pub const STOPPED: &str = "stopped before it finished";
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Transfer {
+    pub label: String,
+    pub done_bytes: u64,
+    pub total_bytes: u64,
+}
 
 pub trait ScanObserver: Send + Sync {
     fn begin(&self, ranges: &[BlockRange]) -> u64;
@@ -19,6 +20,60 @@ pub trait ScanObserver: Send + Sync {
     fn advance(&self, job: u64, blocks: u64, txs: u64);
 
     fn finish(&self, job: u64, error: Option<String>);
+
+    fn source(&self, _job: u64, _source: BlockSource) {}
+
+    fn transfer(&self, _job: u64, _transfer: Option<Transfer>) {}
+}
+
+#[derive(Clone)]
+struct ScanContext {
+    scans: Arc<dyn ScanObserver>,
+    job: u64,
+}
+
+tokio::task_local! {
+    static SCAN: ScanContext;
+}
+
+pub async fn within<F: Future>(scans: Arc<dyn ScanObserver>, job: u64, work: F) -> F::Output {
+    SCAN.scope(ScanContext { scans, job }, work).await
+}
+
+pub fn report_transfer(transfer: Option<Transfer>) {
+    let _ = SCAN.try_with(|context| context.scans.transfer(context.job, transfer));
+}
+
+pub struct ScanRun<'a> {
+    scans: &'a dyn ScanObserver,
+    job: Option<u64>,
+}
+
+impl<'a> ScanRun<'a> {
+    pub fn begin(scans: &'a dyn ScanObserver, ranges: &[BlockRange]) -> Self {
+        Self {
+            job: Some(scans.begin(ranges)),
+            scans,
+        }
+    }
+
+    pub fn id(&self) -> u64 {
+        self.job.unwrap_or_default()
+    }
+
+    pub fn finish(mut self, error: Option<String>) {
+        if let Some(job) = self.job.take() {
+            self.scans.finish(job, error);
+        }
+    }
+}
+
+impl Drop for ScanRun<'_> {
+    fn drop(&mut self) {
+        if let Some(job) = self.job.take() {
+            self.scans.finish(job, Some(STOPPED.to_owned()));
+        }
+    }
 }
 
 pub struct NoScans;
@@ -45,6 +100,8 @@ pub struct ScanJob {
     pub updated_ms: u64,
     pub finished_ms: Option<u64>,
     pub error: Option<String>,
+    pub source: Option<BlockSource>,
+    pub transfer: Option<Transfer>,
 }
 
 impl ScanJob {
@@ -68,28 +125,27 @@ impl ScanJob {
     }
 }
 
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or(Duration::ZERO)
-        .as_millis() as u64
-}
-
-pub struct ScanBoard {
-    next_id: AtomicU64,
-    jobs: Mutex<VecDeque<ScanJob>>,
-    stream: broadcast::Sender<ScanJob>,
-}
-
-impl Default for ScanBoard {
-    fn default() -> Self {
-        let (stream, _) = broadcast::channel(STREAM_BUFFER);
-        Self {
-            next_id: AtomicU64::new(1),
-            jobs: Mutex::new(VecDeque::new()),
-            stream,
-        }
+impl Job for ScanJob {
+    fn id(&self) -> u64 {
+        self.id
     }
+
+    fn chain_id(&self) -> u64 {
+        self.chain_id
+    }
+
+    fn running(&self) -> bool {
+        self.finished_ms.is_none()
+    }
+
+    fn touched(&mut self, now_ms: u64) {
+        self.updated_ms = now_ms;
+    }
+}
+
+#[derive(Default)]
+pub struct ScanBoard {
+    board: JobBoard<ScanJob>,
 }
 
 impl ScanBoard {
@@ -101,31 +157,11 @@ impl ScanBoard {
     }
 
     pub fn jobs(&self, chain_id: Option<u64>) -> Vec<ScanJob> {
-        self.jobs
-            .lock()
-            .expect("the lock is never poisoned")
-            .iter()
-            .rev()
-            .filter(|job| chain_id.is_none_or(|chain_id| job.chain_id == chain_id))
-            .cloned()
-            .collect()
+        self.board.jobs(chain_id)
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<ScanJob> {
-        self.stream.subscribe()
-    }
-
-    fn change(&self, id: u64, apply: impl FnOnce(&mut ScanJob)) {
-        let changed = {
-            let mut jobs = self.jobs.lock().expect("the lock is never poisoned");
-            let Some(job) = jobs.iter_mut().find(|job| job.id == id) else {
-                return;
-            };
-            apply(job);
-            job.updated_ms = now_ms();
-            job.clone()
-        };
-        let _ = self.stream.send(changed);
+        self.board.subscribe()
     }
 }
 
@@ -137,8 +173,8 @@ struct ChainScans {
 impl ScanObserver for ChainScans {
     fn begin(&self, ranges: &[BlockRange]) -> u64 {
         let now = now_ms();
-        let job = ScanJob {
-            id: self.board.next_id.fetch_add(1, Ordering::Relaxed),
+        self.board.board.open(|id| ScanJob {
+            id,
             chain_id: self.chain_id,
             ranges: ranges.to_vec(),
             total_blocks: ranges.iter().map(BlockRange::block_count).sum(),
@@ -148,40 +184,41 @@ impl ScanObserver for ChainScans {
             updated_ms: now,
             finished_ms: None,
             error: None,
-        };
-
-        {
-            let mut jobs = self.board.jobs.lock().expect("the lock is never poisoned");
-            jobs.push_back(job.clone());
-            while jobs.len() > KEPT_JOBS {
-                let Some(finished) = jobs.iter().position(|job| !job.running()) else {
-                    break;
-                };
-                jobs.remove(finished);
-            }
-        }
-        let _ = self.board.stream.send(job.clone());
-        job.id
+            source: None,
+            transfer: None,
+        })
     }
 
     fn advance(&self, job: u64, blocks: u64, txs: u64) {
-        self.board.change(job, |job| {
+        self.board.board.change(job, |job| {
             job.done_blocks = (job.done_blocks + blocks).min(job.total_blocks);
             job.txs += txs;
         });
     }
 
     fn finish(&self, job: u64, error: Option<String>) {
-        self.board.change(job, |job| {
+        self.board.board.change(job, |job| {
             job.finished_ms = Some(now_ms());
             job.error = error;
+            job.transfer = None;
         });
+    }
+
+    fn source(&self, job: u64, source: BlockSource) {
+        self.board
+            .board
+            .change(job, |job| job.source = Some(source));
+    }
+
+    fn transfer(&self, job: u64, transfer: Option<Transfer>) {
+        self.board.board.change(job, |job| job.transfer = transfer);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::eth::jobs::KEPT_JOBS;
 
     #[test]
     fn a_job_counts_its_blocks_and_finishes() {
@@ -201,6 +238,63 @@ mod tests {
         assert!(!job.running());
         assert_eq!(job.eta_ms(), None);
         assert!(board.jobs(Some(10)).is_empty());
+    }
+
+    #[test]
+    fn a_run_dropped_midway_ends_as_stopped() {
+        let board = Arc::new(ScanBoard::default());
+        let scans = board.for_chain(1);
+
+        let run = ScanRun::begin(scans.as_ref(), &[BlockRange::new(0, 9)]);
+        assert!(board.jobs(None)[0].running());
+        drop(run);
+
+        let job = &board.jobs(None)[0];
+        assert!(!job.running());
+        assert_eq!(job.error.as_deref(), Some(STOPPED));
+    }
+
+    #[test]
+    fn a_finished_run_keeps_its_own_outcome() {
+        let board = Arc::new(ScanBoard::default());
+        let scans = board.for_chain(1);
+
+        ScanRun::begin(scans.as_ref(), &[BlockRange::new(0, 9)]).finish(None);
+
+        let job = &board.jobs(None)[0];
+        assert!(!job.running());
+        assert_eq!(job.error, None);
+    }
+
+    #[tokio::test]
+    async fn a_transfer_reported_inside_a_scan_lands_on_its_job() {
+        let board = Arc::new(ScanBoard::default());
+        let scans = board.for_chain(1);
+        let job = scans.begin(&[BlockRange::new(0, 9)]);
+        scans.source(job, BlockSource::Dataset);
+
+        report_transfer(Some(Transfer {
+            label: "outside".to_owned(),
+            done_bytes: 1,
+            total_bytes: 2,
+        }));
+        assert_eq!(board.jobs(None)[0].transfer, None);
+
+        within(scans.clone(), job, async {
+            report_transfer(Some(Transfer {
+                label: "logs".to_owned(),
+                done_bytes: 5,
+                total_bytes: 10,
+            }));
+        })
+        .await;
+
+        let seen = &board.jobs(None)[0];
+        assert_eq!(seen.source, Some(BlockSource::Dataset));
+        assert_eq!(seen.transfer.as_ref().map(|t| t.done_bytes), Some(5));
+
+        scans.finish(job, None);
+        assert_eq!(board.jobs(None)[0].transfer, None);
     }
 
     #[test]

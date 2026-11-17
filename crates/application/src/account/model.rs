@@ -2,8 +2,9 @@ use time::OffsetDateTime;
 
 use domain::{
     account::{
-        CanvasAccess, CanvasId, CanvasTitle, DisplayName, Email, LabelAccess, LabelId, LabelValue,
-        LinkId, Owner, RpcNodeId, ShareAccess, TeamId, TeamName, TeamRole, UserId,
+        CanvasAccess, CanvasId, CanvasOpening, CanvasTitle, CanvasVersionId, DisplayName, Email,
+        LabelAccess, LabelId, LabelValue, LinkId, Owner, RpcNodeId, ShareAccess, TeamId, TeamName,
+        TeamRole, UserId, VersionKind,
     },
     eth::EthAddress,
 };
@@ -50,10 +51,30 @@ pub struct CanvasSummary {
     pub title: CanvasTitle,
     pub chain_id: u64,
     pub version: i64,
+    pub opening: CanvasOpening,
     pub created_by: UserId,
     pub updated_by: UserId,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
+}
+
+#[derive(Clone, Debug)]
+pub struct CanvasVersion {
+    pub id: CanvasVersionId,
+    pub canvas: CanvasId,
+    pub kind: VersionKind,
+    pub label: String,
+    pub chain_id: u64,
+    pub canvas_version: i64,
+    pub created_by: UserId,
+    pub author: String,
+    pub created_at: OffsetDateTime,
+}
+
+#[derive(Clone, Debug)]
+pub enum Opened {
+    Head,
+    Version(CanvasVersion),
 }
 
 #[derive(Clone, Debug)]

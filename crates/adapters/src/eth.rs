@@ -1,3 +1,5 @@
+#[cfg(feature = "aws-public")]
+pub mod aws_public;
 pub mod chainlist;
 pub mod clickhouse;
 pub mod networks;

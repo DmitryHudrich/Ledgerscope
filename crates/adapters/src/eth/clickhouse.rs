@@ -4,7 +4,9 @@ mod row;
 use std::{collections::HashMap, io};
 
 use application::eth::ports::{ActorRepository, EthTxIndex, EthTxRepository};
-use domain::eth::{Actor, BlockBucket, BlockRange, EthAddress, IndexCoverage, MinedTx};
+use domain::eth::{
+    Actor, BlockBucket, BlockRange, BlockSource, EthAddress, IndexCoverage, MinedTx,
+};
 use reqwest::{Client, Url, header::CONTENT_LENGTH};
 use serde::{Deserialize, Serialize};
 
@@ -59,6 +61,8 @@ const BLOCKS_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS indexed_blocks (
     chain_id UInt64,
     block_number UInt64
 ) ENGINE = ReplacingMergeTree ORDER BY (chain_id, block_number)";
+
+const BLOCKS_SOURCE_COLUMN: &str = "source LowCardinality(String) DEFAULT 'rpc'";
 
 const ACTORS_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS actors (
     chain_id UInt64,
@@ -150,6 +154,11 @@ impl ClickhouseTxRepository {
             .await?;
         }
         self.execute(BLOCKS_SCHEMA, String::new()).await?;
+        self.execute(
+            &format!("ALTER TABLE {BLOCKS_TABLE} ADD COLUMN IF NOT EXISTS {BLOCKS_SOURCE_COLUMN}"),
+            String::new(),
+        )
+        .await?;
         self.execute(ACTORS_SCHEMA, String::new()).await?;
 
         for (legacy, table, columns) in LEGACY_TABLES {
@@ -335,11 +344,32 @@ impl EthTxIndex for ClickhouseTxRepository {
             ))
             .await?;
 
+        let approximate: Vec<RangeRow> = self
+            .rows(&format!(
+                "SELECT min(block_number) AS from_block, max(block_number) AS to_block FROM ( \
+                     SELECT block_number, \
+                            block_number - row_number() OVER (ORDER BY block_number) AS run \
+                     FROM ( \
+                         SELECT block_number FROM {BLOCKS_TABLE} FINAL \
+                         WHERE chain_id = {chain} AND block_number BETWEEN {lower} AND {highest} \
+                         AND source != '{exact}' \
+                     ) \
+                 ) GROUP BY run ORDER BY from_block",
+                exact = BlockSource::Rpc.as_str(),
+            ))
+            .await?;
+
         Ok(IndexCoverage::new(
             runs.into_iter()
                 .map(|row| BlockRange::new(row.from_block, row.to_block))
                 .collect(),
             counted.first().map(|row| row.value).unwrap_or_default(),
+        )
+        .with_approximate(
+            approximate
+                .into_iter()
+                .map(|row| BlockRange::new(row.from_block, row.to_block))
+                .collect(),
         ))
     }
 
@@ -420,6 +450,21 @@ impl EthTxIndex for ClickhouseTxRepository {
                      OR contract_address IN ({plain}) \
                      OR arrayExists(topics -> hasAny(topics, [{words}]), log_topics) \
                  ) ORDER BY block_number"
+            ))
+            .await?;
+
+        rows.into_iter().map(TxRow::into_mined).collect()
+    }
+
+    async fn txs_within(&self, span: BlockRange, limit: usize) -> Result<Vec<MinedTx>, io::Error> {
+        let chain = self.chain_id;
+        let (lower, highest) = (span.from_block(), span.to_block());
+
+        let rows: Vec<TxRow> = self
+            .rows(&format!(
+                "SELECT * FROM {TXS_TABLE} FINAL \
+                 WHERE chain_id = {chain} AND block_number BETWEEN {lower} AND {highest} \
+                 ORDER BY block_number, tx_hash LIMIT {limit}"
             ))
             .await?;
 
@@ -524,6 +569,7 @@ impl EthTxRepository for ClickhouseTxRepository {
         lower_block: u64,
         highest_block: u64,
         txs: &[MinedTx],
+        source: BlockSource,
     ) -> Result<(), io::Error> {
         if !txs.is_empty() {
             let mut body = String::new();
@@ -543,12 +589,12 @@ impl EthTxRepository for ClickhouseTxRepository {
         }
 
         let blocks: String = (lower_block..=highest_block)
-            .map(|block| format!("({}, {block})", self.chain_id))
+            .map(|block| format!("({}, {block}, '{}')", self.chain_id, source.as_str()))
             .collect::<Vec<_>>()
             .join(",");
 
         self.execute(
-            &format!("INSERT INTO {BLOCKS_TABLE} (chain_id, block_number) VALUES {blocks}"),
+            &format!("INSERT INTO {BLOCKS_TABLE} (chain_id, block_number, source) VALUES {blocks}"),
             String::new(),
         )
         .await?;

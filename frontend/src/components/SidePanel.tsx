@@ -39,6 +39,8 @@ import {
   cx,
 } from './ui';
 import { displayAddress, nativeSymbol } from '../lib/chain';
+import { BlockSpanText } from './BlockSpanText';
+import { CopyAddress } from './CopyAddress';
 
 export type WorkspacePanel = 'advanced' | 'addresses' | 'filters' | 'legend' | 'stats' | 'groups' | 'tls';
 
@@ -101,8 +103,11 @@ export function InvestigationPanel({
   advancedPanel,
   ipLinks,
 }: Props) {
-  const counts = { eoa: 0, contract: 0, focus: 0 };
-  for (const node of model.nodes) counts[node.kind] += 1;
+  const counts = { eoa: 0, contract: 0, root: 0 };
+  for (const node of model.nodes) {
+    counts[node.kind] += 1;
+    if (node.root) counts.root += 1;
+  }
 
   const changePanel = (next: WorkspacePanel) =>
     onPanelChange(activePanel === next ? null : next);
@@ -184,6 +189,7 @@ export function InvestigationPanel({
               <FiltersPanel
                 filters={filters}
                 onFiltersChange={onFiltersChange}
+                model={model}
                 search={search}
                 onSearchChange={onSearchChange}
                 matchCount={matchCount}
@@ -281,11 +287,12 @@ function AddressesPanel({ model, roots, maxDepth, onSelect, onCenter, onRemove, 
                   disabled={!node}
                   onClick={() => { onSelect(root.address); onCenter(root.address); }}
                 >
-                  <Dot tone={node?.kind ?? 'focus'} />
+                  <Dot tone={node?.kind ?? 'eoa'} />
                   <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap font-mono-ui text-[11px]">
                     {shortAddress(root.address, 7, 4)}
                   </span>
                 </button>
+                <CopyAddress address={root.address} />
                 <div className="flex items-center text-[10px] text-text-muted" title="Investigation depth">
                   <Button variant="ghost" icon className="size-6" disabled={root.depth <= 0} aria-label={`Less depth for ${root.address}`} onClick={() => onDepthChange(root.address, root.depth - 1)}>−</Button>
                   <span className="w-4 text-center tabular-nums">{root.depth}</span>
@@ -341,10 +348,11 @@ function TlsPanel({ model, ipLinks, onSelect, onCenter }: {
       ) : (
         <div className="grid gap-1.5">
           {rows.map(({ address, links }) => (
+            <div key={address} className="relative">
+            <CopyAddress address={address} className="absolute right-1.5 top-1.5" />
             <button
-              key={address}
               type="button"
-              className="grid gap-1 rounded-ui-sm px-2 py-2 text-left hover:bg-[color-mix(in_srgb,var(--text-primary)_5%,transparent)] focus-visible:outline-2 focus-visible:outline-accent"
+              className="grid w-full gap-1 rounded-ui-sm px-2 py-2 pr-8 text-left hover:bg-[color-mix(in_srgb,var(--text-primary)_5%,transparent)] focus-visible:outline-2 focus-visible:outline-accent"
               onClick={() => { onSelect(address); onCenter(address); }}
             >
               <span className="overflow-hidden text-ellipsis whitespace-nowrap font-mono-ui text-[11px] font-medium">
@@ -357,6 +365,7 @@ function TlsPanel({ model, ipLinks, onSelect, onCenter }: {
                 </span>
               ))}
             </button>
+            </div>
           ))}
         </div>
       )}
@@ -364,8 +373,9 @@ function TlsPanel({ model, ipLinks, onSelect, onCenter }: {
   );
 }
 
-function FiltersPanel({ filters, onFiltersChange, search, onSearchChange, matchCount, onResetFilters }: Pick<Props, 'filters' | 'onFiltersChange' | 'search' | 'onSearchChange' | 'matchCount' | 'onResetFilters'>) {
+function FiltersPanel({ filters, onFiltersChange, model, search, onSearchChange, matchCount, onResetFilters }: Pick<Props, 'filters' | 'onFiltersChange' | 'model' | 'search' | 'onSearchChange' | 'matchCount' | 'onResetFilters'>) {
   const patch = (next: Partial<GraphFilters>) => onFiltersChange({ ...filters, ...next });
+  const symbols = [...new Set(model.stats.assets.filter((flow) => !flow.native).map((flow) => flow.symbol))].slice(0, 40);
   return (
     <PanelSection className="border-b-0 px-3 py-4">
       <PanelTitle>Graph filters</PanelTitle>
@@ -381,24 +391,110 @@ function FiltersPanel({ filters, onFiltersChange, search, onSearchChange, matchC
           </p>
         )}
       </div>
-      <div className="mb-5 grid gap-2">
-        <div className="flex items-baseline justify-between text-xs text-text-secondary">
-          <label htmlFor="f-min">Minimum {nativeSymbol()} flow</label>
-          <span className="tabular-nums text-text-primary">{filters.minEth <= 0 ? 'Any' : `${formatCompact(filters.minEth)} ${nativeSymbol()}`}</span>
-        </div>
-        <RangeInput id="f-min" min={0} max={100} step={1} value={ethToSlider(filters.minEth)} onChange={(event) => patch({ minEth: sliderToEth(Number(event.target.value)) })} />
-      </div>
-      <div className="grid gap-1">
+
+      <FilterGroup title="Transactions">
         <Checkbox checked={filters.showNative} onChange={(event) => patch({ showNative: event.target.checked })}>{nativeSymbol()} transfers</Checkbox>
         <Checkbox checked={filters.showTokens} onChange={(event) => patch({ showTokens: event.target.checked })}>Token transfers</Checkbox>
-        <Checkbox checked={filters.showCalls} onChange={(event) => patch({ showCalls: event.target.checked })}>Contract calls & deployments</Checkbox>
+        <Checkbox checked={filters.showCalls} onChange={(event) => patch({ showCalls: event.target.checked })}>Contract calls</Checkbox>
+        <Checkbox checked={filters.showDeployments} onChange={(event) => patch({ showDeployments: event.target.checked })}>Deployments</Checkbox>
+        <Checkbox checked={filters.showFailed} onChange={(event) => patch({ showFailed: event.target.checked })}>Reverted transactions</Checkbox>
+        <Checkbox checked={!filters.hideSelfLoops} onChange={(event) => patch({ hideSelfLoops: !event.target.checked })}>Self transfers</Checkbox>
+      </FilterGroup>
+
+      <FilterGroup title="Value">
+        <div className="grid gap-2">
+          <div className="flex items-baseline justify-between text-xs text-text-secondary">
+            <label htmlFor="f-min">Minimum {nativeSymbol()} flow</label>
+            <span className="tabular-nums text-text-primary">{filters.minEth <= 0 ? 'Any' : `${formatCompact(filters.minEth)} ${nativeSymbol()}`}</span>
+          </div>
+          <RangeInput id="f-min" min={0} max={100} step={1} value={ethToSlider(filters.minEth)} onChange={(event) => patch({ minEth: sliderToEth(Number(event.target.value)) })} />
+        </div>
+        <div className="mt-2 grid gap-[6px]">
+          <label className="text-xs text-text-secondary" htmlFor="f-asset">Only this asset</label>
+          <Input id="f-asset" list="f-asset-list" className="w-full font-mono-ui text-xs" value={filters.asset} spellCheck={false} autoComplete="off" placeholder="USDT, 0x… or empty for all" onChange={(event) => patch({ asset: event.target.value })} />
+          <datalist id="f-asset-list">
+            <option value={nativeSymbol()} />
+            {symbols.map((symbol) => <option key={symbol} value={symbol} />)}
+          </datalist>
+        </div>
+      </FilterGroup>
+
+      <FilterGroup title="Addresses">
+        <Checkbox checked={filters.showEoas} onChange={(event) => patch({ showEoas: event.target.checked })}>Wallets (EOA)</Checkbox>
+        <Checkbox checked={filters.showContracts} onChange={(event) => patch({ showContracts: event.target.checked })}>Contracts</Checkbox>
         <Checkbox checked={filters.hideIsolated} onChange={(event) => patch({ hideIsolated: event.target.checked })}>Hide unconnected addresses</Checkbox>
-      </div>
-      <div className="mt-4 flex items-center gap-1">
-        <Button variant="ghost" onClick={() => patch({ showNative: true, showTokens: true, showCalls: false, minEth: 0 })}>Transfers only</Button>
+        <div className="mt-2 grid grid-cols-3 gap-1" role="radiogroup" aria-label="Labels">
+          {(['any', 'labeled', 'unlabeled'] as const).map((value) => (
+            <Button key={value} variant="ghost" className={cx('h-7 px-1 text-[11px]', filters.labels === value && 'bg-[color-mix(in_srgb,var(--accent)_12%,transparent)] text-accent')} role="radio" aria-checked={filters.labels === value} onClick={() => patch({ labels: value })}>
+              {value === 'any' ? 'Any label' : value === 'labeled' ? 'Labeled' : 'Unlabeled'}
+            </Button>
+          ))}
+        </div>
+      </FilterGroup>
+
+      {model.stats.tagKeys.length > 0 || filters.tag !== '' ? (
+        <FilterGroup title="Tags">
+          <label className="text-xs text-text-secondary" htmlFor="f-tag">Only flows tagged</label>
+          <select
+            id="f-tag"
+            className="h-8 w-full rounded-ui-sm border border-hairline bg-surface-2 px-2 text-xs text-text-primary"
+            value={filters.tag}
+            onChange={(event) => patch({ tag: event.target.value })}
+          >
+            <option value="">Any tag or none</option>
+            {[...new Set(model.stats.tagKeys.map((key) => key.split('.')[0]))].map((category) => (
+              <optgroup key={category} label={category}>
+                <option value={category}>All {category}</option>
+                {model.stats.tagKeys.filter((key) => key.startsWith(`${category}.`)).map((key) => (
+                  <option key={key} value={key}>{key}</option>
+                ))}
+              </optgroup>
+            ))}
+          </select>
+        </FilterGroup>
+      ) : null}
+
+      <FilterGroup title="Structure">
+        <Stepper id="f-degree" label="Min counterparties" value={filters.minDegree} min={0} max={50} format={(value) => (value <= 1 ? 'Any' : String(value))} onChange={(minDegree) => patch({ minDegree })} />
+        <Stepper id="f-link" label="Min txs per flow" value={filters.minLinkTxs} min={0} max={100} format={(value) => (value <= 1 ? 'Any' : String(value))} onChange={(minLinkTxs) => patch({ minLinkTxs })} />
+        <Stepper id="f-hops" label="Max hops from roots" value={filters.maxHops ?? -1} min={-1} max={10} format={(value) => (value < 0 ? 'Any' : String(value))} onChange={(value) => patch({ maxHops: value < 0 ? null : value })} />
+      </FilterGroup>
+
+      <div className="mt-4 flex flex-wrap items-center gap-1">
+        <Button variant="ghost" onClick={() => patch({ showNative: true, showTokens: true, showCalls: false, showDeployments: false, minEth: 0 })}>Transfers only</Button>
         <Button variant="ghost" onClick={onResetFilters}>Reset filters</Button>
       </div>
     </PanelSection>
+  );
+}
+
+function FilterGroup({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div className="mb-4 grid gap-1 border-t border-hairline pt-3">
+      <h3 className="m-0 mb-1 text-[10px] font-semibold uppercase tracking-[0.07em] text-text-muted">{title}</h3>
+      {children}
+    </div>
+  );
+}
+
+function Stepper({ id, label, value, min, max, format, onChange }: {
+  id: string;
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  format: (value: number) => string;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-2 py-[2px] text-xs text-text-secondary">
+      <label htmlFor={id}>{label}</label>
+      <div className="flex items-center">
+        <Button variant="ghost" icon className="size-6" disabled={value <= min} aria-label={`Less ${label}`} onClick={() => onChange(value - 1)}>−</Button>
+        <output id={id} className="w-9 text-center tabular-nums text-text-primary">{format(value)}</output>
+        <Button variant="ghost" icon className="size-6" disabled={value >= max} aria-label={`More ${label}`} onClick={() => onChange(value + 1)}>+</Button>
+      </div>
+    </div>
   );
 }
 
@@ -415,7 +511,7 @@ function StatsPanel({ model }: { model: GraphModel }) {
       <MetaList className="mt-4">
         <div><dt>Token transfers</dt><dd>{formatCount(stats.tokenTransfers)}</dd></div>
         <div><dt>Contract calls</dt><dd>{formatCount(stats.calls)}</dd></div>
-        <div><dt>Blocks</dt><dd>{stats.minBlock ? `${formatCount(stats.minBlock)} – ${formatCount(stats.maxBlock)}` : '—'}</dd></div>
+        <div><dt>Blocks</dt><dd>{stats.minBlock ? <BlockSpanText from={stats.minBlock} to={stats.maxBlock} /> : '—'}</dd></div>
         <div><dt>First tx</dt><dd>{formatTimestamp(stats.firstSeen)}</dd></div>
         <div><dt>Last tx</dt><dd>{formatTimestamp(stats.lastSeen)}</dd></div>
         {stats.failedTxs > 0 && <div><dt>Reverted</dt><dd>{formatCount(stats.failedTxs)} tx</dd></div>}
@@ -443,7 +539,7 @@ function StatsPanel({ model }: { model: GraphModel }) {
 }
 
 function LegendPanel({ counts, showLabels, onShowLabelsChange }: {
-  counts: Record<'eoa' | 'contract' | 'focus', number>;
+  counts: Record<'eoa' | 'contract' | 'root', number>;
   showLabels: boolean;
   onShowLabelsChange: (show: boolean) => void;
 }) {
@@ -451,9 +547,12 @@ function LegendPanel({ counts, showLabels, onShowLabelsChange }: {
     <PanelSection className="border-b-0 px-3 py-4">
       <PanelTitle>Graph legend</PanelTitle>
       <div className="grid gap-2.5">
-        <LegendRow kind="focus" label="Focus wallet" count={counts.focus} />
         <LegendRow kind="eoa" label="Wallet (EOA)" count={counts.eoa} />
         <LegendRow kind="contract" label="Contract" count={counts.contract} square />
+        <div className="flex items-center gap-[9px] text-xs text-text-secondary">
+          <span className="size-3 flex-none rounded-full border-[1.5px] border-text-muted" aria-hidden="true" />
+          Investigation root<span className="ml-auto tabular-nums text-text-muted">{formatCount(counts.root)}</span>
+        </div>
       </div>
       <div className="mt-4 grid gap-2.5 border-t border-hairline pt-4">
         <div className="flex items-center gap-[9px] text-xs text-text-secondary"><span className="h-[3px] w-[14px] flex-none rounded-[2px] bg-series-token" aria-hidden="true" />Token transfer edge</div>
@@ -469,10 +568,10 @@ function LegendPanel({ counts, showLabels, onShowLabelsChange }: {
   );
 }
 
-function LegendRow({ kind, label, count, square }: { kind: 'eoa' | 'contract' | 'focus'; label: string; count: number; square?: boolean }) {
+function LegendRow({ kind, label, count, square }: { kind: 'eoa' | 'contract'; label: string; count: number; square?: boolean }) {
   return (
     <div className="flex items-center gap-[9px] text-xs text-text-secondary">
-      <span className={cx('size-3 flex-none rounded-full border-[1.5px] border-plane shadow-[0_0_0_1px_var(--hairline)]', kind === 'eoa' && 'bg-series-eoa text-series-eoa', kind === 'contract' && 'bg-series-contract text-series-contract', kind === 'focus' && 'bg-series-focus text-series-focus shadow-[0_0_0_1px_currentColor]', square && 'rounded-[3px]')} aria-hidden="true" />
+      <span className={cx('size-3 flex-none rounded-full border-[1.5px] border-plane shadow-[0_0_0_1px_var(--hairline)]', kind === 'eoa' && 'bg-series-eoa text-series-eoa', kind === 'contract' && 'bg-series-contract text-series-contract', square && 'rounded-[3px]')} aria-hidden="true" />
       {label}<span className="ml-auto tabular-nums text-text-muted">{formatCount(count)}</span>
     </div>
   );

@@ -1,18 +1,21 @@
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, Path, State},
+    extract::{DefaultBodyLimit, Path, Query, State},
     http::StatusCode,
-    routing::{delete, get},
+    routing::{delete, get, post},
 };
+use serde::Deserialize;
+use utoipa::IntoParams;
 
-use application::account::{CanvasPatch, NewCanvas};
-use domain::account::{CanvasId, LinkId, UserId};
+use application::account::{CanvasPatch, NewCanvas, OpenAt};
+use domain::account::{CanvasId, CanvasVersionId, LinkId, UserId};
 
 use crate::{
     auth::{CurrentUser, accounts},
     dto::account::{
-        CanvasDocumentResponse, CanvasResponse, CreateCanvasRequest, LinkResponse, NewLinkResponse,
-        PublicCanvasResponse, ShareRequest, ShareResponse, UpdateCanvasRequest, parse_id,
+        AutosaveRequest, CanvasDocumentResponse, CanvasResponse, CreateCanvasRequest, LinkResponse,
+        NewLinkResponse, PublicCanvasResponse, ShareRequest, ShareResponse, UpdateCanvasRequest,
+        VersionResponse, parse_id,
     },
     routes::{ApiError, ErrorResponse},
     state::AppState,
@@ -27,6 +30,12 @@ pub fn router(max_document_bytes: usize) -> Router<AppState> {
             "/canvases/{canvas_id}",
             get(canvas).patch(update_canvas).delete(delete_canvas),
         )
+        .route("/canvases/{canvas_id}/versions", get(versions))
+        .route(
+            "/canvases/{canvas_id}/versions/{version_id}",
+            delete(delete_version),
+        )
+        .route("/canvases/{canvas_id}/autosaves", post(autosave))
         .route("/canvases/{canvas_id}/shares", get(shares).put(share))
         .route("/canvases/{canvas_id}/shares/{user_id}", delete(unshare))
         .route("/canvases/{canvas_id}/links", get(links).post(create_link))
@@ -37,6 +46,21 @@ pub fn router(max_document_bytes: usize) -> Router<AppState> {
 
 fn canvas_id(raw: &str) -> Result<CanvasId, ApiError> {
     parse_id(raw, "canvas")
+}
+
+#[derive(Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct OpenQuery {
+    at: Option<String>,
+}
+
+fn open_at(raw: Option<&str>) -> Result<OpenAt, ApiError> {
+    Ok(match raw {
+        None | Some("") => OpenAt::Preferred,
+        Some("latest") => OpenAt::Latest,
+        Some("snapshot") => OpenAt::Snapshot,
+        Some(version) => OpenAt::Version(parse_id::<CanvasVersionId>(version, "canvas version")?),
+    })
 }
 
 #[utoipa::path(
@@ -92,22 +116,107 @@ pub(crate) async fn create_canvas(
     get,
     path = "/canvases/{canvas_id}",
     tag = "canvases",
-    params(("canvas_id" = String, Path, description = "Canvas id")),
+    params(
+        ("canvas_id" = String, Path, description = "Canvas id"),
+        ("at" = Option<String>, Query, description = "`latest` (newest autosave when it is newer than the last snapshot), `snapshot`, a version id, or empty for the canvas's own choice"),
+    ),
     responses(
-        (status = OK, description = "The canvas with its document", body = CanvasDocumentResponse),
-        (status = NOT_FOUND, description = "No such canvas you can see", body = ErrorResponse),
+        (status = OK, description = "The canvas with its document and the version it came from", body = CanvasDocumentResponse),
+        (status = NOT_FOUND, description = "No such canvas or version you can see", body = ErrorResponse),
     ),
 )]
 pub(crate) async fn canvas(
     State(state): State<AppState>,
     current: CurrentUser,
     Path(raw): Path<String>,
+    Query(query): Query<OpenQuery>,
 ) -> Result<Json<CanvasDocumentResponse>, ApiError> {
-    let (canvas, document) = accounts(&state)?
+    let (canvas, document, opened) = accounts(&state)?
         .canvases
-        .open(&current.user, canvas_id(&raw)?)
+        .open(
+            &current.user,
+            canvas_id(&raw)?,
+            open_at(query.at.as_deref())?,
+        )
         .await?;
-    Ok(Json(CanvasDocumentResponse::new(&canvas, document)))
+    Ok(Json(CanvasDocumentResponse::new(
+        &canvas, document, &opened,
+    )))
+}
+
+#[utoipa::path(
+    get,
+    path = "/canvases/{canvas_id}/versions",
+    tag = "canvases",
+    params(("canvas_id" = String, Path, description = "Canvas id")),
+    responses(
+        (status = OK, description = "Snapshots and autosaves, newest first, without their documents", body = Vec<VersionResponse>),
+        (status = NOT_FOUND, description = "No such canvas you can see", body = ErrorResponse),
+    ),
+)]
+pub(crate) async fn versions(
+    State(state): State<AppState>,
+    current: CurrentUser,
+    Path(raw): Path<String>,
+) -> Result<Json<Vec<VersionResponse>>, ApiError> {
+    let versions = accounts(&state)?
+        .canvases
+        .versions(&current.user, canvas_id(&raw)?)
+        .await?;
+    Ok(Json(versions.iter().map(VersionResponse::from).collect()))
+}
+
+#[utoipa::path(
+    post,
+    path = "/canvases/{canvas_id}/autosaves",
+    tag = "canvases",
+    params(("canvas_id" = String, Path, description = "Canvas id")),
+    request_body = AutosaveRequest,
+    responses(
+        (status = CREATED, description = "The autosave; only the newest ones are kept", body = VersionResponse),
+        (status = FORBIDDEN, description = "You can only view it", body = ErrorResponse),
+    ),
+)]
+pub(crate) async fn autosave(
+    State(state): State<AppState>,
+    current: CurrentUser,
+    Path(raw): Path<String>,
+    Json(request): Json<AutosaveRequest>,
+) -> Result<(StatusCode, Json<VersionResponse>), ApiError> {
+    let version = accounts(&state)?
+        .canvases
+        .autosave(&current.user, canvas_id(&raw)?, request.document)
+        .await?;
+    Ok((StatusCode::CREATED, Json((&version).into())))
+}
+
+#[utoipa::path(
+    delete,
+    path = "/canvases/{canvas_id}/versions/{version_id}",
+    tag = "canvases",
+    params(
+        ("canvas_id" = String, Path, description = "Canvas id"),
+        ("version_id" = String, Path, description = "Snapshot or autosave id"),
+    ),
+    responses(
+        (status = NO_CONTENT, description = "The version is gone"),
+        (status = FORBIDDEN, description = "You can only view it", body = ErrorResponse),
+    ),
+)]
+pub(crate) async fn delete_version(
+    State(state): State<AppState>,
+    current: CurrentUser,
+    Path((raw, version)): Path<(String, String)>,
+) -> Result<StatusCode, ApiError> {
+    accounts(&state)?
+        .canvases
+        .delete_version(
+            &current.user,
+            canvas_id(&raw)?,
+            parse_id(&version, "canvas version")?,
+        )
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[utoipa::path(
@@ -137,6 +246,8 @@ pub(crate) async fn update_canvas(
                 title: request.title,
                 chain_id: request.chain_id,
                 document: request.document,
+                opening: request.opening.map(Into::into),
+                snapshot_label: request.snapshot_label,
             },
             request.version,
         )

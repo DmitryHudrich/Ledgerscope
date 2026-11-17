@@ -1,11 +1,14 @@
 pub mod actor;
+pub mod build;
 pub mod classificator;
 pub mod explorer;
 pub mod index;
+pub mod jobs;
 pub mod lowlevel;
 pub mod ports;
 pub mod scan;
 pub mod store;
+pub mod tags;
 pub mod etherscan_json_labels {
     use std::{collections::HashMap, io, path::Path, str::FromStr};
 
@@ -123,10 +126,11 @@ pub mod etherscan_json_labels {
 }
 
 pub use actor::CachingActorResolver;
+pub use build::{BuildBoard, BuildJob, BuildObserver, BuildStage, NoBuilds};
 pub use etherscan_json_labels::JsonLabelProvider;
 pub use explorer::{
-    AddressGraph, EthExplorer, Exploration, ExploreError, ExploreLimits, ExploreRequest, GraphNode,
-    GraphRoot, RpcPlan,
+    AddressGraph, EthExplorer, Exploration, ExploreError, ExploreLimits, ExploreRequest,
+    ExploreScope, FillPlan, GraphNode, GraphRoot, RpcPlan, SourceChoice, SpanChoice,
 };
 pub use index::FetchingTxIndex;
 pub use lowlevel::{LowLevelGraph, LowLevelNode};
@@ -134,5 +138,5 @@ pub use ports::{
     ActorRepository, ActorResolver, EthRpcSource, EthTxCache, EthTxIndex, EthTxRepository,
     EthTxSource, LabelProvider,
 };
-pub use scan::{NoScans, ScanBoard, ScanJob, ScanObserver};
+pub use scan::{NoScans, ScanBoard, ScanJob, ScanObserver, Transfer, report_transfer};
 pub use store::StoringEthTxSource;

@@ -19,14 +19,14 @@ use utoipa::{IntoParams, OpenApi, ToSchema};
 use utoipa_scalar::{Scalar, Servable};
 
 use application::account::{AccountError, User};
-use application::eth::{Exploration, ExploreError, ExploreRequest, GraphRoot};
+use application::eth::{Exploration, ExploreError, ExploreRequest, GraphRoot, SpanChoice};
 use domain::eth::BlockRange;
 
 use crate::{
     auth::MaybeUser,
     dto::{
-        ChainsResponse, CoverageResponse, GraphRequest, GraphResponse, HistogramResponse,
-        LowLevelGraphResponse, RpcConfirmationResponse, parse_address,
+        ChainsResponse, CoverageResponse, DatasetResponse, GraphRequest, GraphResponse, HistogramResponse,
+        LowLevelGraphResponse, RpcConfirmationResponse, ScopeRequest, parse_address,
     },
     openapi::ApiDoc,
     state::{AppState, ChainState},
@@ -56,6 +56,7 @@ pub fn router(state: AppState) -> Router {
         .route("/graph", post(graph))
         .route("/graph/low-level", post(low_level_graph))
         .route("/coverage", get(coverage))
+        .route("/head", get(head))
         .route("/coverage/histogram", get(histogram))
         .with_state(state)
 }
@@ -254,6 +255,17 @@ async fn ensure_mined(chain: &ChainState, request: &GraphRequest) -> Result<(), 
 
 fn explore_request(request: &GraphRequest) -> Result<ExploreRequest, ApiError> {
     let spans = request_spans(request)?;
+    let choices: Vec<SpanChoice> = request
+        .ranges
+        .iter()
+        .map(|range| SpanChoice {
+            source: range.source.into(),
+            exact: range.exact,
+        })
+        .collect();
+    if let ScopeRequest::Blocks = request.scope {
+        return Ok(ExploreRequest::blocks(spans, request.confirm_rpc).with_choices(choices));
+    }
 
     let mut roots = Vec::with_capacity(request.roots.len());
     for root in &request.roots {
@@ -263,7 +275,7 @@ fn explore_request(request: &GraphRequest) -> Result<ExploreRequest, ApiError> {
         ));
     }
 
-    Ok(ExploreRequest::with_spans(roots, spans, request.confirm_rpc))
+    Ok(ExploreRequest::with_spans(roots, spans, request.confirm_rpc).with_choices(choices))
 }
 
 fn request_spans(request: &GraphRequest) -> Result<Vec<BlockRange>, ApiError> {
@@ -354,6 +366,44 @@ async fn explore_low_level(
 
 #[derive(Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
+pub struct ChainQuery {
+    chain: Option<String>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct HeadResponse {
+    chain_id: u64,
+    head: u64,
+}
+
+#[utoipa::path(
+    get,
+    path = "/head",
+    tag = "coverage",
+    params(ChainQuery),
+    responses(
+        (status = OK, description = "The newest block the chain's nodes report right now", body = HeadResponse),
+        (status = NOT_FOUND, description = "The chain is not served here", body = ErrorResponse),
+        (status = BAD_GATEWAY, description = "No node told its head block", body = ErrorResponse),
+    ),
+)]
+pub(crate) async fn head(
+    State(state): State<AppState>,
+    Query(query): Query<ChainQuery>,
+) -> Result<Json<HeadResponse>, ApiError> {
+    let chain = chain(&state, query.chain.as_deref())?;
+    let head = chain
+        .head_block()
+        .await
+        .ok_or_else(|| ApiError::upstream("no node told its head block"))?;
+    Ok(Json(HeadResponse {
+        chain_id: chain.meta().chain_id,
+        head,
+    }))
+}
+
+#[derive(Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct SpanQuery {
     from_block: Option<u64>,
     to_block: Option<u64>,
@@ -400,12 +450,19 @@ pub(crate) async fn coverage(
         .await
         .map_err(|error| ApiError::upstream(error.to_string()))?;
 
+    let dataset = if chain.explorer().has_dataset() {
+        Some(DatasetResponse::new(chain.explorer().dataset_until().await))
+    } else {
+        None
+    };
+
     Ok(Json(CoverageResponse::new(
         &coverage,
         chain.meta().chain_id,
         chain.explorer().persistent(),
         chain.head_block().await,
         chain.explorer().limits(),
+        dataset,
     )))
 }
 

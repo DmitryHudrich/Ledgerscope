@@ -3,14 +3,22 @@ use std::sync::Arc;
 use time::OffsetDateTime;
 
 use domain::account::{
-    CanvasAccess, CanvasId, CanvasTitle, Email, LinkId, Owner, ShareAccess, UserId, canvas_access,
+    CanvasAccess, CanvasId, CanvasOpening, CanvasTitle, CanvasVersionId, Email, LinkId, Owner,
+    ShareAccess, UserId, VersionKind, canvas_access,
 };
 
 use crate::account::{
     AccountError,
-    model::{Canvas, CanvasRecord, CanvasShare, CanvasSummary, PublicLink, User, VisibleCanvas},
+    model::{
+        Canvas, CanvasRecord, CanvasShare, CanvasSummary, CanvasVersion, Opened, PublicLink, User,
+        VisibleCanvas,
+    },
     ports::{CanvasChange, CanvasStore, TeamStore, TokenMint, UserStore},
 };
+
+pub const KEPT_AUTOSAVES: usize = 20;
+const LABEL_LIMIT: usize = 120;
+const CREATED_LABEL: &str = "Created";
 
 #[derive(Clone, Debug)]
 pub struct NewCanvas {
@@ -25,6 +33,17 @@ pub struct CanvasPatch {
     pub title: Option<String>,
     pub chain_id: Option<u64>,
     pub document: Option<serde_json::Value>,
+    pub opening: Option<CanvasOpening>,
+    pub snapshot_label: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OpenAt {
+    #[default]
+    Preferred,
+    Latest,
+    Snapshot,
+    Version(CanvasVersionId),
 }
 
 pub struct CanvasService {
@@ -95,6 +114,7 @@ impl CanvasService {
             title,
             chain_id: new.chain_id,
             version: 1,
+            opening: CanvasOpening::default(),
             created_by: actor.id,
             updated_by: actor.id,
             created_at: now,
@@ -103,9 +123,17 @@ impl CanvasService {
         self.canvases
             .insert(&Canvas {
                 summary: summary.clone(),
-                document: new.document,
+                document: new.document.clone(),
             })
             .await?;
+        self.record_version(
+            actor,
+            &summary,
+            VersionKind::Snapshot,
+            CREATED_LABEL.to_owned(),
+            &new.document,
+        )
+        .await?;
 
         Ok(VisibleCanvas {
             summary,
@@ -128,14 +156,117 @@ impl CanvasService {
         &self,
         actor: &User,
         id: CanvasId,
-    ) -> Result<(VisibleCanvas, serde_json::Value), AccountError> {
+        at: OpenAt,
+    ) -> Result<(VisibleCanvas, serde_json::Value, Opened), AccountError> {
         let canvas = self.reach(actor, id, CanvasAccess::View).await?;
+        let wanted = match at {
+            OpenAt::Preferred => match canvas.summary.opening {
+                CanvasOpening::Latest => OpenAt::Latest,
+                CanvasOpening::Snapshot => OpenAt::Snapshot,
+            },
+            other => other,
+        };
+
+        let picked = match wanted {
+            OpenAt::Version(version) => Some(
+                self.canvases
+                    .version(id, version)
+                    .await?
+                    .ok_or(AccountError::NotFound("canvas version"))?,
+            ),
+            OpenAt::Latest => {
+                let saved_at = self
+                    .canvases
+                    .versions(id)
+                    .await?
+                    .into_iter()
+                    .find(|version| version.kind == VersionKind::Snapshot)
+                    .map_or(canvas.summary.updated_at, |version| version.created_at);
+                self.canvases
+                    .latest_version(id, VersionKind::Autosave)
+                    .await?
+                    .filter(|(version, _)| version.created_at > saved_at)
+            }
+            OpenAt::Snapshot | OpenAt::Preferred => None,
+        };
+
+        if let Some((version, document)) = picked {
+            return Ok((canvas, document, Opened::Version(version)));
+        }
         let document = self
             .canvases
             .document(id)
             .await?
             .ok_or(AccountError::NotFound("canvas"))?;
-        Ok((canvas, document))
+        Ok((canvas, document, Opened::Head))
+    }
+
+    pub async fn versions(
+        &self,
+        actor: &User,
+        id: CanvasId,
+    ) -> Result<Vec<CanvasVersion>, AccountError> {
+        self.reach(actor, id, CanvasAccess::View).await?;
+        Ok(self.canvases.versions(id).await?)
+    }
+
+    pub async fn autosave(
+        &self,
+        actor: &User,
+        id: CanvasId,
+        document: serde_json::Value,
+    ) -> Result<CanvasVersion, AccountError> {
+        let canvas = self.reach(actor, id, CanvasAccess::Edit).await?;
+        self.check_document(&document)?;
+        let version = self
+            .record_version(
+                actor,
+                &canvas.summary,
+                VersionKind::Autosave,
+                String::new(),
+                &document,
+            )
+            .await?;
+        self.canvases
+            .prune_versions(id, VersionKind::Autosave, KEPT_AUTOSAVES)
+            .await?;
+        Ok(version)
+    }
+
+    pub async fn delete_version(
+        &self,
+        actor: &User,
+        id: CanvasId,
+        version: CanvasVersionId,
+    ) -> Result<(), AccountError> {
+        self.reach(actor, id, CanvasAccess::Edit).await?;
+        if !self.canvases.delete_version(id, version).await? {
+            return Err(AccountError::NotFound("canvas version"));
+        }
+        Ok(())
+    }
+
+    async fn record_version(
+        &self,
+        actor: &User,
+        summary: &CanvasSummary,
+        kind: VersionKind,
+        label: String,
+        document: &serde_json::Value,
+    ) -> Result<CanvasVersion, AccountError> {
+        let version = CanvasVersion {
+            id: CanvasVersionId::new(),
+            canvas: summary.id,
+            kind,
+            label,
+            chain_id: summary.chain_id,
+            canvas_version: summary.version,
+            created_by: actor.id,
+            author: actor.name.as_str().to_owned(),
+            created_at: OffsetDateTime::now_utc(),
+        };
+        self.canvases.insert_version(&version, document).await?;
+        Ok(version)
     }
 
     pub async fn update(
@@ -150,15 +281,22 @@ impl CanvasService {
             self.check_document(document)?;
         }
 
+        let label = snapshot_label(patch.snapshot_label.as_deref())?;
+        let snapshot = patch.document.clone();
         let change = CanvasChange {
             title: patch.title.as_deref().map(CanvasTitle::parse).transpose()?,
             chain_id: patch.chain_id,
             document: patch.document,
+            opening: patch.opening,
         };
         let summary = self
             .canvases
             .update(id, &change, expected_version, actor.id)
             .await?;
+        if let Some(document) = snapshot {
+            self.record_version(actor, &summary, VersionKind::Snapshot, label, &document)
+                .await?;
+        }
 
         Ok(VisibleCanvas { summary, ..canvas })
     }
@@ -311,6 +449,16 @@ impl CanvasService {
         }
         Ok(())
     }
+}
+
+fn snapshot_label(raw: Option<&str>) -> Result<String, AccountError> {
+    let label = raw.unwrap_or_default().trim();
+    if label.chars().count() > LABEL_LIMIT {
+        return Err(AccountError::invalid(format!(
+            "a snapshot name takes at most {LABEL_LIMIT} characters"
+        )));
+    }
+    Ok(label.to_owned())
 }
 
 fn visible(viewer: UserId, record: CanvasRecord) -> Option<VisibleCanvas> {

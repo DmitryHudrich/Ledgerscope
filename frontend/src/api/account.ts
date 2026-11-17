@@ -49,11 +49,26 @@ export interface AuthConfig {
   personal_rpc: boolean;
 }
 
+export type CanvasOpening = 'latest' | 'snapshot';
+export type VersionKind = 'snapshot' | 'autosave';
+
+export interface CanvasVersion {
+  id: string;
+  kind: VersionKind;
+  label: string;
+  chain_id: number;
+  canvas_version: number;
+  created_by: string;
+  author: string;
+  created_at: string;
+}
+
 export interface CanvasInfo {
   id: string;
   title: string;
   chain_id: number;
   version: number;
+  opening: CanvasOpening;
   owner: Owner;
   access: CanvasAccess;
   created_by: string;
@@ -65,6 +80,7 @@ export interface CanvasInfo {
 export interface CanvasWithDocument {
   canvas: CanvasInfo;
   document: unknown;
+  opened: CanvasVersion | null;
 }
 
 export interface PublicCanvas {
@@ -157,10 +173,18 @@ export const teamApi = {
 
 export const canvasApi = {
   list: () => get<CanvasInfo[]>('/canvases'),
-  open: (id: string) => get<CanvasWithDocument>(`/canvases/${id}`),
+  open: (id: string, at?: CanvasOpening | string) =>
+    get<CanvasWithDocument>(`/canvases/${id}${at ? `?at=${encodeURIComponent(at)}` : ''}`),
+  versions: (id: string) => get<CanvasVersion[]>(`/canvases/${id}/versions`),
+  autosave: (id: string, document: unknown) => post<CanvasVersion>(`/canvases/${id}/autosaves`, { document }),
+  deleteVersion: (id: string, versionId: string) => remove(`/canvases/${id}/versions/${versionId}`),
   create: (title: string, chainId: number, owner: OwnerRequest, document: unknown) =>
     post<CanvasInfo>('/canvases', { title, chain_id: chainId, owner, document }),
-  update: (id: string, version: number, change: { title?: string; chain_id?: number; document?: unknown }) =>
+  update: (
+    id: string,
+    version: number,
+    change: { title?: string; chain_id?: number; document?: unknown; opening?: CanvasOpening; snapshot_label?: string },
+  ) =>
     patch<CanvasInfo>(`/canvases/${id}`, { version, ...change }),
   delete: (id: string) => remove(`/canvases/${id}`),
   shares: (id: string) => get<Share[]>(`/canvases/${id}/shares`),

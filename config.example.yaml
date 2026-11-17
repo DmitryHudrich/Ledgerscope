@@ -1,4 +1,4 @@
-proxy: ${ETH_RPC_PROXY-socks5h://127.0.0.1:2080}
+proxy: ${PROXY-}
 
 server:
   bind_addr: ${BIND_ADDR:-127.0.0.1:3000}
@@ -56,6 +56,19 @@ graph:
   max_nodes: ${GRAPH_MAX_NODES:-5000}
   max_edges: ${GRAPH_MAX_EDGES:-20000}
   max_blocks: ${GRAPH_MAX_BLOCKS:-100000}
+
+indexer:
+  window_blocks: ${INDEXER_WINDOW_BLOCKS:-96}
+  parallel_windows: ${INDEXER_PARALLEL_WINDOWS:-0}
+  batch_blocks: ${INDEXER_BATCH_BLOCKS:-10}
+  aws_public:
+    enabled: ${AWS_PUBLIC:-true}
+    base_url: https://aws-public-blockchain.s3.us-east-2.amazonaws.com/
+    prefix: v1.0/eth
+    chains: [1]
+    cache_dir: ${AWS_PUBLIC_CACHE:-cache/aws-public}
+    keep_days: 3
+    window_blocks: 1200
 
 accounts:
   enabled: ${ACCOUNTS_ENABLED:-true}

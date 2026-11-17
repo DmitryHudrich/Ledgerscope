@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { BlockSpanText } from './BlockSpanText';
 
 import type { GraphEdge } from '../api/types';
 import { displayAddress } from '../lib/chain';
@@ -155,7 +156,7 @@ export function GroupsPanel({
                 </div>
                 {numbers.firstBlock !== null && (
                   <div className="text-text-secondary">
-                    Blocks {formatCount(numbers.firstBlock)} – {formatCount(numbers.lastBlock ?? numbers.firstBlock)}
+                    Blocks <BlockSpanText from={numbers.firstBlock} to={numbers.lastBlock ?? numbers.firstBlock} />
                     {numbers.firstTime !== null && (
                       <div className="text-text-muted">{formatTimestamp(numbers.firstTime)} → {formatTimestamp(numbers.lastTime ?? numbers.firstTime)}</div>
                     )}

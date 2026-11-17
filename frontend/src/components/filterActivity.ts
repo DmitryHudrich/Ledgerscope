@@ -1,4 +1,4 @@
-import { formatCompact } from '../lib/format';
+import { formatCompact, formatCount } from '../lib/format';
 import { DEFAULT_FILTERS, type GraphFilters } from '../graph/model';
 import { nativeSymbol } from '../lib/chain';
 
@@ -33,6 +33,18 @@ export function getFilterActivity(
           : 'Contract calls hidden',
     );
   }
+  if (!filters.showDeployments) labels.push('Deployments hidden');
+  if (!filters.showFailed) labels.push('Reverted hidden');
+  if (filters.hideSelfLoops) labels.push('Self transfers hidden');
+  if (!filters.showEoas) labels.push('Wallets hidden');
+  if (!filters.showContracts) labels.push('Contracts hidden');
+  if (filters.asset.trim() !== '') labels.push(`Asset ${filters.asset.trim()}`);
+  if (filters.labels !== 'any') labels.push(filters.labels === 'labeled' ? 'Labeled only' : 'Unlabeled only');
+  if (filters.minDegree > 1) labels.push(`≥ ${filters.minDegree} counterparties`);
+  if (filters.minLinkTxs > 1) labels.push(`≥ ${filters.minLinkTxs} txs per flow`);
+  if (filters.maxHops !== null) labels.push(`≤ ${filters.maxHops} hops`);
+  if (filters.tag.trim() !== '') labels.push(`Tag ${filters.tag.trim()}`);
+  if (filters.window) labels.push(`Blocks ${formatCount(filters.window.from)}–${formatCount(filters.window.to)}`);
   if (filters.hideIsolated !== DEFAULT_FILTERS.hideIsolated) {
     labels.push(filters.hideIsolated ? 'Unconnected hidden' : 'Unconnected shown');
   }

@@ -33,30 +33,70 @@ impl BlockRange {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, PartialOrd, Ord)]
+pub enum BlockSource {
+    #[default]
+    Rpc,
+    Dataset,
+}
+
+impl BlockSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BlockSource::Rpc => "rpc",
+            BlockSource::Dataset => "dataset",
+        }
+    }
+
+    pub fn exact(self) -> bool {
+        self == BlockSource::Rpc
+    }
+}
+
+impl std::str::FromStr for BlockSource {
+    type Err = String;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw {
+            "rpc" => Ok(BlockSource::Rpc),
+            "dataset" => Ok(BlockSource::Dataset),
+            other => Err(format!("{other} is not a block source")),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct IndexCoverage {
     ranges: Vec<BlockRange>,
+    approximate: Vec<BlockRange>,
     tx_count: u64,
 }
 
 impl IndexCoverage {
-    pub fn new(mut ranges: Vec<BlockRange>, tx_count: u64) -> Self {
-        ranges.sort_unstable();
-
-        let mut merged: Vec<BlockRange> = Vec::with_capacity(ranges.len());
-        for range in ranges {
-            match merged.last_mut() {
-                Some(last) if range.from_block <= last.to_block.saturating_add(1) => {
-                    last.to_block = last.to_block.max(range.to_block);
-                }
-                _ => merged.push(range),
-            }
-        }
-
+    pub fn new(ranges: Vec<BlockRange>, tx_count: u64) -> Self {
         Self {
-            ranges: merged,
+            ranges: merged(ranges),
+            approximate: Vec::new(),
             tx_count,
         }
+    }
+
+    pub fn with_approximate(self, approximate: Vec<BlockRange>) -> Self {
+        Self {
+            approximate: merged(approximate),
+            ..self
+        }
+    }
+
+    pub fn approximate(&self) -> &[BlockRange] {
+        &self.approximate
+    }
+
+    pub fn approximate_within(&self, wanted: BlockRange) -> Vec<BlockRange> {
+        self.approximate
+            .iter()
+            .filter_map(|range| overlap(range, &wanted))
+            .collect()
     }
 
     pub fn from_blocks(blocks: &[u64], tx_count: u64) -> Self {
@@ -72,7 +112,11 @@ impl IndexCoverage {
             }
         }
 
-        Self { ranges, tx_count }
+        Self {
+            ranges,
+            approximate: Vec::new(),
+            tx_count,
+        }
     }
 
     pub fn ranges(&self) -> &[BlockRange] {
@@ -168,6 +212,21 @@ impl BlockBucket {
     }
 }
 
+fn merged(mut ranges: Vec<BlockRange>) -> Vec<BlockRange> {
+    ranges.sort_unstable();
+
+    let mut merged: Vec<BlockRange> = Vec::with_capacity(ranges.len());
+    for range in ranges {
+        match merged.last_mut() {
+            Some(last) if range.from_block <= last.to_block.saturating_add(1) => {
+                last.to_block = last.to_block.max(range.to_block);
+            }
+            _ => merged.push(range),
+        }
+    }
+    merged
+}
+
 fn overlap(left: &BlockRange, right: &BlockRange) -> Option<BlockRange> {
     let from = left.from_block.max(right.from_block);
     let to = left.to_block.min(right.to_block);
@@ -226,6 +285,22 @@ mod tests {
         assert_eq!(coverage.gaps(range(10, 20)), vec![range(10, 20)]);
         assert!(!coverage.covers(range(10, 20)));
         assert_eq!(coverage.indexed_within(range(10, 20)), 0);
+    }
+
+    #[test]
+    fn approximate_blocks_are_cut_to_the_span() {
+        let coverage = IndexCoverage::new(vec![range(1, 100)], 0).with_approximate(vec![
+            range(30, 39),
+            range(5, 9),
+            range(40, 45),
+        ]);
+
+        assert_eq!(coverage.approximate(), [range(5, 9), range(30, 45)]);
+        assert_eq!(
+            coverage.approximate_within(range(8, 35)),
+            [range(8, 9), range(30, 35)]
+        );
+        assert!(BlockSource::Rpc.exact() && !BlockSource::Dataset.exact());
     }
 
     #[test]

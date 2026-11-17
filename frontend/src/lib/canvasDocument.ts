@@ -1,4 +1,4 @@
-import type { GraphResponse, GraphRoot } from '../api/types';
+import type { GraphResponse, GraphRoot, GraphScope } from '../api/types';
 import type { Annotation } from '../graph/annotations';
 import type { LabelMode } from '../graph/draw';
 import { DEFAULT_FILTERS, type GraphFilters, type NodePosition } from '../graph/model';
@@ -18,8 +18,10 @@ export interface CanvasDocument {
   kind: typeof CANVAS_KIND;
   version: typeof CANVAS_VERSION;
   chain_id: number;
+  scope: GraphScope;
   roots: GraphRoot[];
   selection: BlockSpan;
+  ranges: BlockSpan[];
   filters: GraphFilters;
   label_mode: LabelMode;
   show_flow: boolean;
@@ -34,8 +36,10 @@ export interface CanvasDocument {
 
 export interface CanvasState {
   chainId: number;
+  scope: GraphScope;
   roots: GraphRoot[];
   selection: BlockSpan;
+  ranges: BlockSpan[];
   filters: GraphFilters;
   labelMode: LabelMode;
   showFlow: boolean;
@@ -64,8 +68,10 @@ export function toDocument(state: CanvasState, withGraph = true): CanvasDocument
     kind: CANVAS_KIND,
     version: CANVAS_VERSION,
     chain_id: state.chainId,
+    scope: state.scope,
     roots: state.roots,
     selection: state.selection,
+    ranges: state.ranges,
     filters: state.filters,
     label_mode: state.labelMode,
     show_flow: state.showFlow,
@@ -82,8 +88,10 @@ export function toDocument(state: CanvasState, withGraph = true): CanvasDocument
 export function fingerprint(state: CanvasState): string {
   return JSON.stringify({
     chain: state.chainId,
+    scope: state.scope,
     roots: state.roots,
     selection: state.selection,
+    ranges: state.ranges,
     filters: state.filters,
     label: state.labelMode,
     flow: state.showFlow,
@@ -135,8 +143,10 @@ export function parseDocument(raw: unknown): CanvasDocument {
     kind: CANVAS_KIND,
     version: CANVAS_VERSION,
     chain_id: Number(raw.chain_id),
+    scope: raw.scope === 'blocks' ? 'blocks' : 'roots',
     roots: raw.roots,
     selection: raw.selection,
+    ranges: Array.isArray(raw.ranges) && raw.ranges.length > 0 && raw.ranges.every(isSpan) ? raw.ranges : [raw.selection],
     filters: isObject(raw.filters) ? { ...DEFAULT_FILTERS, ...(raw.filters as Partial<GraphFilters>) } : DEFAULT_FILTERS,
     label_mode: (typeof raw.label_mode === 'string' ? raw.label_mode : 'auto') as LabelMode,
     show_flow: raw.show_flow !== false,

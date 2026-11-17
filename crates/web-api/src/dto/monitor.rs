@@ -2,7 +2,7 @@ use serde::Serialize;
 use utoipa::ToSchema;
 
 use adapters::eth::{NodeStats, PoolNode, RpcCall};
-use application::eth::ScanJob;
+use application::eth::{BuildJob, ScanJob, Transfer};
 
 use crate::dto::RangeResponse;
 
@@ -104,6 +104,41 @@ impl NodeHealthResponse {
 }
 
 #[derive(Serialize, ToSchema)]
+pub struct BuildResponse {
+    id: u64,
+    chain_id: u64,
+    stage: &'static str,
+    done: u64,
+    total: u64,
+    percent: f64,
+    txs: u64,
+    started_ms: u64,
+    updated_ms: u64,
+    finished_ms: Option<u64>,
+    running: bool,
+    error: Option<String>,
+}
+
+impl From<&BuildJob> for BuildResponse {
+    fn from(job: &BuildJob) -> Self {
+        Self {
+            id: job.id,
+            chain_id: job.chain_id,
+            stage: job.stage.as_str(),
+            done: job.done,
+            total: job.total,
+            percent: job.percent(),
+            txs: job.txs,
+            started_ms: job.started_ms,
+            updated_ms: job.updated_ms,
+            finished_ms: job.finished_ms,
+            running: job.running(),
+            error: job.error.clone(),
+        }
+    }
+}
+
+#[derive(Serialize, ToSchema)]
 pub struct ScanResponse {
     id: u64,
     chain_id: u64,
@@ -119,6 +154,25 @@ pub struct ScanResponse {
     blocks_per_second: Option<f64>,
     eta_ms: Option<u64>,
     error: Option<String>,
+    source: Option<&'static str>,
+    transfer: Option<TransferResponse>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct TransferResponse {
+    label: String,
+    done_bytes: u64,
+    total_bytes: u64,
+}
+
+impl From<&Transfer> for TransferResponse {
+    fn from(transfer: &Transfer) -> Self {
+        Self {
+            label: transfer.label.clone(),
+            done_bytes: transfer.done_bytes,
+            total_bytes: transfer.total_bytes,
+        }
+    }
 }
 
 impl From<&ScanJob> for ScanResponse {
@@ -147,6 +201,8 @@ impl From<&ScanJob> for ScanResponse {
             blocks_per_second: job.blocks_per_second(),
             eta_ms: job.eta_ms(),
             error: job.error.clone(),
+            source: job.source.map(|source| source.as_str()),
+            transfer: job.transfer.as_ref().map(TransferResponse::from),
         }
     }
 }

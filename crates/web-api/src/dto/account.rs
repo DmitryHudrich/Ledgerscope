@@ -3,9 +3,10 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use utoipa::ToSchema;
 
 use application::account::{
-    CanvasShare, Member, Membership, PublicLink, RpcNode, User, VisibleCanvas, VisibleLabel,
+    CanvasShare, CanvasVersion, Member, Membership, Opened, PublicLink, RpcNode, User,
+    VisibleCanvas, VisibleLabel,
 };
-use domain::account::{LabelAccess, Owner, ShareAccess, TeamId, TeamRole};
+use domain::account::{CanvasOpening, LabelAccess, Owner, ShareAccess, TeamId, TeamRole};
 
 use crate::routes::ApiError;
 
@@ -49,6 +50,22 @@ impl From<TeamRole> for RoleDto {
             TeamRole::Admin => Self::Admin,
             TeamRole::Editor => Self::Editor,
             TeamRole::Viewer => Self::Viewer,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum OpeningDto {
+    Latest,
+    Snapshot,
+}
+
+impl From<OpeningDto> for CanvasOpening {
+    fn from(opening: OpeningDto) -> Self {
+        match opening {
+            OpeningDto::Latest => Self::Latest,
+            OpeningDto::Snapshot => Self::Snapshot,
         }
     }
 }
@@ -268,6 +285,41 @@ pub struct UpdateCanvasRequest {
     pub chain_id: Option<u64>,
     #[schema(value_type = Option<Object>)]
     pub document: Option<serde_json::Value>,
+    pub opening: Option<OpeningDto>,
+    pub snapshot_label: Option<String>,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct AutosaveRequest {
+    #[schema(value_type = Object)]
+    pub document: serde_json::Value,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct VersionResponse {
+    id: String,
+    kind: &'static str,
+    label: String,
+    chain_id: u64,
+    canvas_version: i64,
+    created_by: String,
+    author: String,
+    created_at: String,
+}
+
+impl From<&CanvasVersion> for VersionResponse {
+    fn from(version: &CanvasVersion) -> Self {
+        Self {
+            id: version.id.to_string(),
+            kind: version.kind.as_str(),
+            label: version.label.clone(),
+            chain_id: version.chain_id,
+            canvas_version: version.canvas_version,
+            created_by: version.created_by.to_string(),
+            author: version.author.clone(),
+            created_at: stamp(version.created_at),
+        }
+    }
 }
 
 #[derive(Serialize, ToSchema)]
@@ -276,6 +328,7 @@ pub struct CanvasResponse {
     title: String,
     chain_id: u64,
     version: i64,
+    opening: &'static str,
     owner: OwnerResponse,
     access: &'static str,
     created_by: String,
@@ -292,6 +345,7 @@ impl From<&VisibleCanvas> for CanvasResponse {
             title: summary.title.to_string(),
             chain_id: summary.chain_id,
             version: summary.version,
+            opening: summary.opening.as_str(),
             owner: OwnerResponse::new(summary.owner, canvas.team_name.clone()),
             access: canvas.access.as_str(),
             created_by: summary.created_by.to_string(),
@@ -307,13 +361,18 @@ pub struct CanvasDocumentResponse {
     canvas: CanvasResponse,
     #[schema(value_type = Object)]
     document: serde_json::Value,
+    opened: Option<VersionResponse>,
 }
 
 impl CanvasDocumentResponse {
-    pub fn new(canvas: &VisibleCanvas, document: serde_json::Value) -> Self {
+    pub fn new(canvas: &VisibleCanvas, document: serde_json::Value, opened: &Opened) -> Self {
         Self {
             canvas: canvas.into(),
             document,
+            opened: match opened {
+                Opened::Head => None,
+                Opened::Version(version) => Some(version.into()),
+            },
         }
     }
 }

@@ -2,11 +2,13 @@ use std::sync::Arc;
 
 use adapters::account::{Argon2Hasher, PgAccounts, RandomTokens};
 use application::account::{
-    AccountError, AuthService, CanvasPatch, CanvasService, LabelService, NewCanvas, NewLabel,
-    RpcNodeProbe, RpcNodeService, TeamService,
+    AccountError, AuthService, CanvasPatch, CanvasService, KEPT_AUTOSAVES, LabelService, NewCanvas,
+    NewLabel, OpenAt, Opened, RpcNodeProbe, RpcNodeService, TeamService,
 };
 use domain::{
-    account::{CanvasAccess, LabelAccess, Owner, ShareAccess, TeamRole},
+    account::{
+        CanvasAccess, CanvasOpening, LabelAccess, Owner, ShareAccess, TeamRole, VersionKind,
+    },
     eth::EthAddress,
 };
 use serde_json::json;
@@ -246,7 +248,9 @@ async fn accounts_teams_canvases_and_labels_hold_together() {
     assert_eq!(h.canvases.list(&bob.user).await.unwrap().len(), 1);
     assert!(h.canvases.list(&carol.user).await.unwrap().is_empty());
     assert!(matches!(
-        h.canvases.open(&carol.user, personal.summary.id).await,
+        h.canvases
+            .open(&carol.user, personal.summary.id, OpenAt::Preferred)
+            .await,
         Err(AccountError::NotFound(_))
     ));
 
@@ -259,9 +263,9 @@ async fn accounts_teams_canvases_and_labels_hold_together() {
         )
         .await
         .unwrap();
-    let (seen, document) = h
+    let (seen, document, _) = h
         .canvases
-        .open(&carol.user, personal.summary.id)
+        .open(&carol.user, personal.summary.id, OpenAt::Preferred)
         .await
         .unwrap();
     assert_eq!(seen.access, CanvasAccess::View);
@@ -306,6 +310,107 @@ async fn accounts_teams_canvases_and_labels_hold_together() {
             .await,
         Err(AccountError::Conflict(_))
     ));
+
+    let snapshots = h
+        .canvases
+        .versions(&alice.user, personal.summary.id)
+        .await
+        .unwrap();
+    assert_eq!(snapshots.len(), 2);
+    assert!(
+        snapshots
+            .iter()
+            .all(|version| version.kind == VersionKind::Snapshot)
+    );
+    assert_eq!(snapshots[1].label, "Created");
+
+    let drafted = json!({"roots": ["0xabc", "0xdef", "0x123"]});
+    let autosave = h
+        .canvases
+        .autosave(&alice.user, personal.summary.id, drafted.clone())
+        .await
+        .unwrap();
+    assert!(matches!(
+        h.canvases
+            .autosave(&carol.user, personal.summary.id, json!({}))
+            .await,
+        Err(AccountError::Forbidden(_))
+    ));
+    let (_, latest, opened) = h
+        .canvases
+        .open(&alice.user, personal.summary.id, OpenAt::Preferred)
+        .await
+        .unwrap();
+    assert_eq!(latest, drafted);
+    assert!(matches!(opened, Opened::Version(version) if version.id == autosave.id));
+    let (_, saved, opened) = h
+        .canvases
+        .open(&alice.user, personal.summary.id, OpenAt::Snapshot)
+        .await
+        .unwrap();
+    assert_eq!(saved, json!({"roots": ["0xabc", "0xdef"]}));
+    assert!(matches!(opened, Opened::Head));
+    let (_, first, _) = h
+        .canvases
+        .open(
+            &alice.user,
+            personal.summary.id,
+            OpenAt::Version(snapshots[1].id),
+        )
+        .await
+        .unwrap();
+    assert_eq!(first, json!({"roots": ["0xabc"]}));
+
+    for _ in 0..KEPT_AUTOSAVES + 3 {
+        h.canvases
+            .autosave(&alice.user, personal.summary.id, drafted.clone())
+            .await
+            .unwrap();
+    }
+    let kept = h
+        .canvases
+        .versions(&alice.user, personal.summary.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        kept.iter()
+            .filter(|version| version.kind == VersionKind::Autosave)
+            .count(),
+        KEPT_AUTOSAVES
+    );
+
+    let switched = h
+        .canvases
+        .update(
+            &alice.user,
+            personal.summary.id,
+            CanvasPatch {
+                opening: Some(CanvasOpening::Snapshot),
+                ..CanvasPatch::default()
+            },
+            2,
+        )
+        .await
+        .unwrap();
+    assert_eq!(switched.summary.opening, CanvasOpening::Snapshot);
+    let (_, preferred, _) = h
+        .canvases
+        .open(&alice.user, personal.summary.id, OpenAt::Preferred)
+        .await
+        .unwrap();
+    assert_eq!(preferred, json!({"roots": ["0xabc", "0xdef"]}));
+    h.canvases
+        .delete_version(&alice.user, personal.summary.id, snapshots[1].id)
+        .await
+        .unwrap();
+    assert_eq!(
+        h.canvases
+            .versions(&alice.user, personal.summary.id)
+            .await
+            .unwrap()
+            .len(),
+        KEPT_AUTOSAVES + 1
+    );
 
     let (link, token) = h
         .canvases

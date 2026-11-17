@@ -8,12 +8,12 @@ pub mod rpc_nodes;
 pub mod teams;
 
 pub use auth::{AuthService, Session};
-pub use canvases::{CanvasPatch, CanvasService, NewCanvas};
+pub use canvases::{CanvasPatch, CanvasService, KEPT_AUTOSAVES, NewCanvas, OpenAt};
 pub use error::{AccountError, StoreError};
 pub use labels::{LabelService, NewLabel, VisibleLabel};
 pub use model::{
-    Canvas, CanvasRecord, CanvasShare, CanvasSummary, Credentials, Member, Membership, PublicLink,
-    RpcNode, Team, User, UserLabel, VisibleCanvas,
+    Canvas, CanvasRecord, CanvasShare, CanvasSummary, CanvasVersion, Credentials, Member,
+    Membership, Opened, PublicLink, RpcNode, Team, User, UserLabel, VisibleCanvas,
 };
 pub use ports::{
     CanvasStore, LabelStore, PasswordHasher, RpcNodeProbe, RpcNodeStore, SessionStore, TeamStore,

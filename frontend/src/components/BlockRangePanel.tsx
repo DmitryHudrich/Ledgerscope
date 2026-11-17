@@ -1,15 +1,13 @@
-import { useMemo, type CSSProperties } from 'react';
+import { useMemo, useState, type CSSProperties } from 'react';
 
 import type { CoverageResponse, HistogramResponse } from '../api/types';
-import type { BlockLimits } from '../lib/blockRange';
+import { clampRange, indexedWithin, sameRange, type BlockLimits, type BlockSpan, type RangeSource } from '../lib/blockRange';
 import { formatCount } from '../lib/format';
 import { IconClose } from './Icons';
+import { BlockSpanText } from './BlockSpanText';
 import { Button, Input, PanelSection, PanelTitle, cx } from './ui';
 
-export interface BlockSpan {
-  from: number;
-  to: number;
-}
+export type { BlockSpan };
 
 interface Props {
   ranges: BlockSpan[];
@@ -20,6 +18,7 @@ interface Props {
   onActiveChange: (index: number) => void;
   onRangesChange: (ranges: BlockSpan[]) => void;
   onApply: () => void;
+  onLatest: () => Promise<number | null>;
   applyDisabled?: boolean;
 }
 
@@ -40,9 +39,12 @@ export function BlockRangePanel({
   histogram,
   onActiveChange,
   onRangesChange,
+  limits,
   onApply,
+  onLatest,
   applyDisabled,
 }: Props) {
+  const [latestFor, setLatestFor] = useState<number | null>(null);
   const active = ranges[activeIndex] ?? ranges[0] ?? { from: 0, to: 0 };
   const { from, to } = active;
 
@@ -69,8 +71,21 @@ export function BlockRangePanel({
   };
 
   const addRange = () => {
-    onRangesChange([...ranges, { from, to }]);
+    onRangesChange([...ranges, { ...active }]);
     onActiveChange(ranges.length);
+  };
+
+  const toLatest = async (index: number) => {
+    setLatestFor(index);
+    try {
+      const head = await onLatest();
+      const range = ranges[index];
+      if (head === null || !range) return;
+      const moved = clampRange({ ...range, to: head }, { ...limits, head }, 'to');
+      onRangesChange(ranges.map((item, idx) => (idx === index ? moved : item)));
+    } finally {
+      setLatestFor(null);
+    }
   };
 
   const selectedCount = to - from + 1;
@@ -88,11 +103,14 @@ export function BlockRangePanel({
       <div className="grid gap-1">
         {ranges.map((range, index) => {
           const isActive = index === activeIndex;
+          const inverted = range.from > range.to;
           return (
             <div
               key={index}
+              title={inverted ? 'The start is above the end: the range is read backwards, from the smaller block to the bigger one' : undefined}
               className={cx(
                 'flex items-center gap-1.5 rounded-ui-sm px-1.5 py-1',
+                inverted && 'outline outline-1 outline-critical',
                 isActive ? 'bg-[color-mix(in_srgb,var(--accent)_12%,transparent)]' : 'hover:bg-[color-mix(in_srgb,var(--text-primary)_5%,transparent)]',
               )}
               onPointerDown={() => onActiveChange(index)}
@@ -114,6 +132,15 @@ export function BlockRangePanel({
               />
               <Button
                 variant="ghost"
+                className="h-6 flex-none px-1.5 text-[10px] uppercase tracking-wide"
+                title="Set the end to the newest block the nodes report now"
+                disabled={latestFor !== null}
+                onClick={() => void toLatest(index)}
+              >
+                {latestFor === index ? '…' : 'latest'}
+              </Button>
+              <Button
+                variant="ghost"
                 icon
                 className="size-6 flex-none"
                 aria-label="Remove range"
@@ -129,6 +156,27 @@ export function BlockRangePanel({
       <Button variant="ghost" className="mt-1.5 h-7 px-2 text-xs" onClick={addRange}>
         + Add range
       </Button>
+
+      <RangeSettings
+        range={active}
+        coverage={coverage}
+        onChange={(patch) => patchRange(activeIndex, patch)}
+      />
+
+      <IndexedRanges
+        coverage={coverage}
+        maxBlocks={limits.maxBlocks}
+        ranges={ranges}
+        onUse={(range) => patchRange(activeIndex, range)}
+        onAdd={(range) => {
+          onRangesChange([...ranges, range]);
+          onActiveChange(ranges.length);
+        }}
+        onUseAll={(picked) => {
+          onRangesChange(picked);
+          onActiveChange(0);
+        }}
+      />
 
       <section className="mt-3 border-t border-hairline pt-3" aria-label="Indexed coverage">
         <div className="mb-1.5 flex items-center justify-between text-[10px] uppercase tracking-[0.07em] text-text-muted">
@@ -174,5 +222,165 @@ export function BlockRangePanel({
         </Button>
       </div>
     </PanelSection>
+  );
+}
+
+const SHOWN_INDEXED = 12;
+
+function IndexedRanges({ coverage, maxBlocks, ranges, onUse, onAdd, onUseAll }: {
+  coverage: CoverageResponse | null;
+  maxBlocks: number;
+  ranges: BlockSpan[];
+  onUse: (range: BlockSpan) => void;
+  onAdd: (range: BlockSpan) => void;
+  onUseAll: (ranges: BlockSpan[]) => void;
+}) {
+  const indexed = useMemo(
+    () => [...(coverage?.ranges ?? [])].sort((a, b) => b.to_block - a.to_block),
+    [coverage],
+  );
+  if (indexed.length === 0) return null;
+
+  const all = indexedWithin(indexed, maxBlocks);
+  const total = indexed.reduce((sum, range) => sum + range.block_count, 0);
+  const clipped = all.reduce((sum, range) => sum + range.to - range.from + 1, 0) < total;
+  const usingAll = all.length === ranges.length && all.every((range, index) => sameRange(range, ranges[index]));
+
+  return (
+    <section className="mt-3 border-t border-hairline pt-3" aria-label="Indexed ranges">
+      <div className="mb-1.5 flex items-center justify-between gap-2">
+        <span className="text-[10px] uppercase tracking-[0.07em] text-text-muted">
+          Already indexed · {formatCount(total)} blocks
+        </span>
+        <Button
+          variant="ghost"
+          className="h-6 px-2 text-[11px]"
+          disabled={usingAll}
+          title={clipped ? `Newest ${formatCount(maxBlocks)} indexed blocks, the per-graph limit` : 'Every indexed range, no RPC needed'}
+          onClick={() => onUseAll(all)}
+        >
+          {clipped ? 'Use newest' : 'Use all'}
+        </Button>
+      </div>
+      <div className="grid gap-0.5">
+        {indexed.slice(0, SHOWN_INDEXED).map((range) => {
+          const span = { from: range.from_block, to: Math.min(range.to_block, range.from_block + maxBlocks - 1) };
+          const picked = ranges.some((current) => sameRange(current, span));
+          return (
+            <div key={range.from_block} className="flex items-center gap-1 rounded-ui-sm px-1.5 py-0.5 text-[11px] hover:bg-[color-mix(in_srgb,var(--text-primary)_5%,transparent)]">
+              <span className={cx('size-1.5 flex-none rounded-full', picked ? 'bg-accent' : 'bg-hairline-strong')} aria-hidden="true" />
+              <span className="min-w-0 flex-1 truncate font-mono-ui tabular-nums text-text-secondary">
+                <BlockSpanText from={range.from_block} to={range.to_block} />
+              </span>
+              <span className="tabular-nums text-text-muted">{formatCount(range.block_count)}</span>
+              <Button variant="ghost" className="h-6 px-1.5 text-[11px]" disabled={picked} title="Put into the active range" onClick={() => onUse(span)}>Use</Button>
+              <Button variant="ghost" className="h-6 px-1.5 text-[11px]" disabled={picked} title="Add as another range" onClick={() => onAdd(span)}>+</Button>
+            </div>
+          );
+        })}
+        {indexed.length > SHOWN_INDEXED && (
+          <p className="m-0 px-1.5 text-[11px] text-text-muted">and {formatCount(indexed.length - SHOWN_INDEXED)} older ranges</p>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function covered(ranges: Array<{ from_block: number; to_block: number }>, span: BlockSpan): number {
+  return ranges.reduce((sum, range) => {
+    const low = Math.max(range.from_block, span.from);
+    const high = Math.min(range.to_block, span.to);
+    return sum + (high >= low ? high - low + 1 : 0);
+  }, 0);
+}
+
+const SOURCE_TITLE: Record<RangeSource, string> = {
+  auto: 'Auto',
+  rpc: 'RPC',
+  dataset: 'AWS dataset',
+};
+
+function RangeSettings({ range, coverage, onChange }: {
+  range: BlockSpan;
+  coverage: CoverageResponse | null;
+  onChange: (patch: Partial<BlockSpan>) => void;
+}) {
+  const total = range.to - range.from + 1;
+  const indexed = covered(coverage?.ranges ?? [], range);
+  const approximate = covered(coverage?.approximate ?? [], range);
+  const exact = indexed - approximate;
+  const missing = Math.max(total - indexed, 0);
+  const dataset = coverage?.dataset ?? null;
+  const reach = dataset?.available_until ?? null;
+  const fromDataset = reach === null ? 0 : covered([{ from_block: 0, to_block: reach }], range);
+  const source = range.source ?? 'auto';
+
+  const share = (count: number) => `${total > 0 ? Math.round((count / total) * 100) : 0}%`;
+
+  return (
+    <section className="mt-3 grid gap-2 border-t border-hairline pt-3" aria-label="Active range settings">
+      <div className="text-[10px] uppercase tracking-[0.07em] text-text-muted">Active range scan</div>
+      <div className="flex items-center gap-2 text-xs text-text-secondary">
+        <span className="w-14 flex-none">Source</span>
+        <div className="flex flex-1 rounded-ui-sm border border-hairline p-0.5" role="radiogroup" aria-label="Where missing blocks come from">
+          {(['auto', 'rpc', 'dataset'] as const).map((value) => (
+            <button
+              key={value}
+              type="button"
+              role="radio"
+              aria-checked={source === value}
+              disabled={value === 'dataset' && !dataset}
+              title={
+                value === 'auto'
+                  ? dataset ? 'The dataset for blocks it already has, the RPC for newer ones' : 'The RPC, no dataset is configured'
+                  : value === 'rpc'
+                    ? 'Every missing block from the RPC nodes, exact values'
+                    : dataset ? 'The AWS public dataset, values in wei are approximate' : 'No dataset is configured on the server'
+              }
+              className={cx(
+                'h-6 flex-1 cursor-pointer rounded-[4px] border-0 bg-transparent px-1 text-[11px] disabled:cursor-default disabled:opacity-40',
+                source === value ? 'bg-[color-mix(in_srgb,var(--accent)_14%,transparent)] text-accent' : 'text-text-secondary',
+              )}
+              onClick={() => onChange({ source: value })}
+            >
+              {SOURCE_TITLE[value]}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <dl className="m-0 grid grid-cols-[1fr_auto_auto] gap-x-2 gap-y-0.5 text-[11px]">
+        <dt className="text-text-secondary">Exact, from RPC</dt>
+        <dd className="m-0 text-right tabular-nums">{formatCount(exact)}</dd>
+        <dd className="m-0 w-9 text-right tabular-nums text-text-muted">{share(exact)}</dd>
+        <dt className="text-text-secondary">Approximate, from dataset</dt>
+        <dd className={cx('m-0 text-right tabular-nums', approximate > 0 && 'text-series-focus')}>{formatCount(approximate)}</dd>
+        <dd className="m-0 w-9 text-right tabular-nums text-text-muted">{share(approximate)}</dd>
+        <dt className="text-text-secondary">Not indexed</dt>
+        <dd className="m-0 text-right tabular-nums">{formatCount(missing)}</dd>
+        <dd className="m-0 w-9 text-right tabular-nums text-text-muted">{share(missing)}</dd>
+      </dl>
+
+      {dataset && (
+        <p className="m-0 text-[11px] leading-relaxed text-text-muted">
+          The dataset reaches block {reach === null ? 'unknown' : formatCount(reach)}
+          {fromDataset > 0 && fromDataset < total ? `, ${formatCount(fromDataset)} of these blocks` : fromDataset >= total ? ', the whole range' : ', none of this range'}.
+          Its ETH amounts are doubles, so the last digits in wei can be off.
+        </p>
+      )}
+
+      <label className="flex cursor-pointer items-start gap-2 text-xs text-text-secondary">
+        <input
+          type="checkbox"
+          className="mt-0.5 accent-accent"
+          checked={range.exact ?? false}
+          onChange={(event) => onChange({ exact: event.target.checked })}
+        />
+        <span>
+          Exact wei: fetch dataset blocks of this range again over RPC
+          {approximate > 0 && <span className="text-text-muted"> ({formatCount(approximate)} blocks on Apply)</span>}
+        </span>
+      </label>
+    </section>
   );
 }

@@ -1,8 +1,12 @@
 import { formatCount } from './format';
 
+export type RangeSource = 'auto' | 'rpc' | 'dataset';
+
 export interface BlockSpan {
   from: number;
   to: number;
+  source?: RangeSource;
+  exact?: boolean;
 }
 
 export interface BlockLimits {
@@ -31,7 +35,7 @@ export function clampRange(next: BlockSpan, limits: BlockLimits, edited: RangeEd
     else from = Math.max(to - span + 1, 0);
   }
 
-  return { from, to };
+  return { ...next, from, to };
 }
 
 export function sameRange(a: BlockSpan, b: BlockSpan): boolean {
@@ -49,4 +53,16 @@ export function rangeProblem(next: BlockSpan, limits: BlockLimits): string | nul
     return `At most ${formatCount(limits.maxBlocks)} blocks per graph, this range has ${formatCount(next.to - next.from + 1)}.`;
   }
   return null;
+}
+
+export function indexedWithin(ranges: Array<{ from_block: number; to_block: number }>, maxBlocks: number): BlockSpan[] {
+  const picked: BlockSpan[] = [];
+  let room = Math.max(maxBlocks, 0);
+  for (const range of [...ranges].sort((a, b) => b.to_block - a.to_block)) {
+    if (room <= 0) break;
+    const from = Math.max(range.from_block, range.to_block - room + 1);
+    picked.push({ from, to: range.to_block });
+    room -= range.to_block - from + 1;
+  }
+  return picked.sort((a, b) => a.from - b.from);
 }

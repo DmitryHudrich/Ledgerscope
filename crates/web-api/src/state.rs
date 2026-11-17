@@ -1,3 +1,4 @@
+mod dataset;
 mod networks;
 
 use std::{collections::BTreeMap, path::Path, sync::Arc, time::Duration};
@@ -16,8 +17,8 @@ use application::account::{
 };
 use application::observe::{ObservationStore, TlsCorrelationConfig};
 use application::eth::{
-    CachingActorResolver, EthExplorer, ExploreLimits, FetchingTxIndex, JsonLabelProvider,
-    ScanBoard, StoringEthTxSource,
+    BuildBoard, CachingActorResolver, EthExplorer, ExploreLimits, FetchingTxIndex, FillPlan,
+    JsonLabelProvider, ScanBoard, StoringEthTxSource,
     classificator::FulliestEthTxClassificator,
     ports::{
         ActorRepository, EthRpcSource, EthTxCache, EthTxIndex, EthTxRepository, EthTxSource,
@@ -31,7 +32,7 @@ pub use networks::Network;
 
 use crate::{
     auth::LoginThrottle,
-    config::{AccountsConfig, Config, GraphConfig, StorageConfig},
+    config::{AccountsConfig, Config, GraphConfig, IndexerConfig, StorageConfig},
 };
 
 const DEFAULT_NATIVE_SYMBOL: &str = "ETH";
@@ -153,6 +154,7 @@ pub struct AppState {
     accounts: Option<Arc<Accounts>>,
     monitor: Arc<RpcMonitor>,
     scans: Arc<ScanBoard>,
+    builds: Arc<BuildBoard>,
     storage: Option<ClickhouseTxRepository>,
     started_at: OffsetDateTime,
 }
@@ -174,7 +176,7 @@ impl AppState {
     pub async fn from_config(config: &Config) -> anyhow::Result<Self> {
         let proxy = config.proxy.trim();
         let proxy_url = (!proxy.is_empty()).then(|| proxy.to_owned());
-        let http_client = get_http_client(proxy_url)?;
+        let http_client = get_http_client(proxy_url, &config.no_proxy)?;
 
         let chainlist = chainlist(config, &http_client).await?;
         let plans = networks::plan(config, chainlist.as_deref(), &http_client).await;
@@ -216,6 +218,7 @@ impl AppState {
 
         let monitor = Arc::new(RpcMonitor::default());
         let scans = Arc::new(ScanBoard::default());
+        let builds = Arc::new(BuildBoard::default());
 
         let mut chains = BTreeMap::new();
         for meta in metas {
@@ -224,7 +227,7 @@ impl AppState {
                 .pool(chain_id)
                 .expect("every chain got a pool in the fleet");
             pool.watch(monitor.clone());
-            let (tx_source, rpc_source) = sources(meta.family, pool.clone());
+            let (tx_source, rpc_source) = sources(meta.family, pool.clone(), &config.indexer);
             let storage = if meta.network == Network::Devnet {
                 storage(&SharedStorage::none(), chain_id, tx_source)
             } else {
@@ -247,8 +250,14 @@ impl AppState {
                 Arc::new(FetchingTxIndex::new(storage.source.clone())) as Arc<dyn EthTxIndex>
             });
 
-            let explorer = Arc::new(
-                EthExplorer::new(
+            let dataset = dataset::source(
+                &config.indexer.aws_public,
+                &http_client,
+                chain_id,
+                |upstream| stored(&shared, chain_id, upstream),
+            );
+
+            let explorer = EthExplorer::new(
                     index,
                     storage.source,
                     classificator.clone(),
@@ -256,8 +265,16 @@ impl AppState {
                     label_provider,
                     limits(&config.graph),
                 )
-                .with_scans(scans.for_chain(chain_id)),
-            );
+                .with_scans(scans.for_chain(chain_id))
+                .with_builds(builds.for_chain(chain_id))
+                .with_fill(FillPlan {
+                    window_blocks: config.indexer.window_blocks.max(1),
+                    parallel_windows: config.indexer.parallel_windows,
+                });
+            let explorer = Arc::new(match dataset {
+                Some(dataset) => explorer.with_dataset(dataset),
+                None => explorer,
+            });
 
             chains.insert(
                 chain_id,
@@ -282,6 +299,7 @@ impl AppState {
             accounts: accounts(&config.accounts, &fleet, &http_client).await,
             monitor,
             scans,
+            builds,
             storage: shared.repository.clone(),
             started_at: OffsetDateTime::now_utc(),
         })
@@ -315,6 +333,10 @@ impl AppState {
 
     pub fn scans(&self) -> &ScanBoard {
         &self.scans
+    }
+
+    pub fn builds(&self) -> &BuildBoard {
+        &self.builds
     }
 
     pub fn storage(&self) -> Option<&ClickhouseTxRepository> {
@@ -374,10 +396,14 @@ async fn chainlist(
     }
 }
 
-fn sources(family: Family, pool: Arc<RpcPool>) -> (Arc<dyn EthTxSource>, Arc<dyn EthRpcSource>) {
+fn sources(
+    family: Family,
+    pool: Arc<RpcPool>,
+    indexer: &IndexerConfig,
+) -> (Arc<dyn EthTxSource>, Arc<dyn EthRpcSource>) {
     match family {
         Family::Evm => {
-            let source = Arc::new(RpcTxSource::new(pool));
+            let source = Arc::new(RpcTxSource::new(pool).with_batch_blocks(indexer.batch_blocks));
             (source.clone(), source)
         }
         Family::Tron => {
@@ -658,6 +684,19 @@ async fn shared_storage(storage: &StorageConfig) -> anyhow::Result<SharedStorage
     })
 }
 
+fn stored(
+    shared: &SharedStorage,
+    chain_id: u64,
+    upstream: Arc<dyn EthTxSource>,
+) -> Option<StoringEthTxSource> {
+    let repository = shared.repository.as_ref()?.for_chain(chain_id);
+    let cache = shared
+        .cache
+        .as_ref()
+        .map(|cache| Arc::new(cache.for_chain(chain_id)) as Arc<dyn EthTxCache>);
+    Some(StoringEthTxSource::new(upstream, Arc::new(repository), cache))
+}
+
 fn storage(shared: &SharedStorage, chain_id: u64, upstream: Arc<dyn EthTxSource>) -> Storage {
     let Some(repository) = &shared.repository else {
         return Storage {
@@ -697,14 +736,17 @@ async fn tx_cache(url: &str) -> Option<RedisTxCache> {
     }
 }
 
-fn get_http_client(proxy_url: Option<String>) -> anyhow::Result<reqwest::Client> {
+fn get_http_client(proxy_url: Option<String>, no_proxy: &str) -> anyhow::Result<reqwest::Client> {
     let mut client = reqwest::ClientBuilder::new();
 
     if let Some(proxy_url) = proxy_url {
+        tracing::info!(
+            "every outgoing request goes through the proxy, except {LOCAL_HOSTS},{no_proxy}"
+        );
         client = client.proxy(
             Proxy::all(&proxy_url)
                 .with_context(|| format!("proxy is not a valid proxy URL: {}", proxy_url))?
-                .no_proxy(NoProxy::from_string(LOCAL_HOSTS)),
+                .no_proxy(NoProxy::from_string(&format!("{LOCAL_HOSTS},{no_proxy}"))),
         );
     }
 

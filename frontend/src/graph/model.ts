@@ -5,11 +5,11 @@ import {
   edgeTransfer,
   type EdgeTransfer,
 } from '../api/edges';
-import type { AddressLabel, GraphEdge, GraphResponse } from '../api/types';
+import type { AddressLabel, GraphEdge, GraphResponse, GraphTag } from '../api/types';
 import { weiToEth } from '../lib/format';
 import { nativeSymbol } from '../lib/chain';
 
-export type NodeKind = 'focus' | 'contract' | 'eoa';
+export type NodeKind = 'contract' | 'eoa';
 
 export type LinkTone = 'eth' | 'token' | 'mixed' | 'call';
 
@@ -26,6 +26,8 @@ export interface GraphNode {
   id: string;
   systemLabels: AddressLabel[];
   kind: NodeKind;
+  root: boolean;
+  tags: GraphTag[];
   depth: number;
   expanded: boolean;
   inCount: number;
@@ -59,6 +61,7 @@ export interface GraphLink {
   source: GraphNode;
   target: GraphNode;
   txs: GraphEdge[];
+  tags: GraphTag[];
   count: number;
 
   value: bigint;
@@ -94,6 +97,14 @@ export interface GraphStats {
   hiddenNodes: number;
   hiddenTxs: number;
   failedTxs: number;
+  tagKeys: string[];
+}
+
+export type LabelFilter = 'any' | 'labeled' | 'unlabeled';
+
+export interface BlockWindow {
+  from: number;
+  to: number;
 }
 
 export interface GraphFilters {
@@ -107,7 +118,31 @@ export interface GraphFilters {
 
   showCalls: boolean;
 
+  showDeployments: boolean;
+
+  showFailed: boolean;
+
+  showEoas: boolean;
+
+  showContracts: boolean;
+
+  asset: string;
+
+  minDegree: number;
+
+  minLinkTxs: number;
+
+  maxHops: number | null;
+
+  labels: LabelFilter;
+
+  hideSelfLoops: boolean;
+
+  tag: string;
+
   hideIsolated: boolean;
+
+  window: BlockWindow | null;
 }
 
 export interface GraphModel {
@@ -151,6 +186,7 @@ export const EMPTY_MODEL: GraphModel = {
     hiddenNodes: 0,
     hiddenTxs: 0,
     failedTxs: 0,
+    tagKeys: [],
   },
 };
 
@@ -160,18 +196,32 @@ export const DEFAULT_FILTERS: GraphFilters = {
   showNative: true,
   showTokens: true,
   showCalls: true,
+  showDeployments: true,
+  showFailed: true,
+  showEoas: true,
+  showContracts: true,
+  asset: '',
+  minDegree: 0,
+  minLinkTxs: 0,
+  maxHops: null,
+  labels: 'any',
+  hideSelfLoops: false,
+  tag: '',
   hideIsolated: true,
+  window: null,
 };
 
 const NODE_MIN_R = 4.5;
 const NODE_MAX_GROWTH = 13;
 const FOCUS_BONUS = 3;
 
-function blank(id: string, kind: NodeKind): GraphNode {
+function blank(id: string, kind: NodeKind, root: boolean): GraphNode {
   return {
     id,
     systemLabels: [],
     kind,
+    root,
+    tags: [],
     depth: 0,
     expanded: false,
     inCount: 0,
@@ -259,14 +309,50 @@ export function buildGraph(
     for (const address of contractAddressesOf(edge)) contracts.add(address.toLowerCase());
   }
 
-  const kindOf = (id: string): NodeKind =>
-    id === focus || roots.has(id) ? 'focus' : contracts.has(id) ? 'contract' : 'eoa';
+  const kindOf = (id: string): NodeKind => (contracts.has(id) ? 'contract' : 'eoa');
+  const isRoot = (id: string) => id === focus || roots.has(id);
+  const asset = filters.asset.trim().toLowerCase();
+  const span = filters.window;
+
+  const addressTags = new Map<string, GraphTag[]>();
+  const txTags = new Map<string, GraphTag[]>();
+  for (const tag of response.tags ?? []) {
+    const into = tag.subject_kind === 'address' ? addressTags : txTags;
+    const id = tag.subject.toLowerCase();
+    const list = into.get(id);
+    if (list) list.push(tag);
+    else into.set(id, [tag]);
+  }
+  const wantedTag = filters.tag.trim();
+  const tagged = (tags: GraphTag[] | undefined) =>
+    tags?.some((tag) => tag.key === wantedTag || tag.key.startsWith(`${wantedTag}.`)) ?? false;
+
+  const nodeAllowed = (id: string): boolean => {
+    if (isRoot(id)) return true;
+    const kind = kindOf(id);
+    if (kind === 'eoa' && !filters.showEoas) return false;
+    if (kind === 'contract' && !filters.showContracts) return false;
+    const seen = walked.get(id);
+    if (filters.maxHops !== null && (seen?.depth ?? 0) > filters.maxHops) return false;
+    if (filters.labels !== 'any') {
+      const labeled = (seen?.labels ?? []).some((label) => label.value.trim() !== '');
+      if (labeled !== (filters.labels === 'labeled')) return false;
+    }
+    return true;
+  };
+
+  const assetAllowed = (edge: GraphEdge): boolean => {
+    if (asset === '') return true;
+    const transfer = edgeTransfer(edge);
+    if (!transfer) return false;
+    return transfer.symbol.toLowerCase().includes(asset) || transfer.key.toLowerCase() === asset;
+  };
 
   const byId = new Map<string, GraphNode>();
   const touch = (id: string): GraphNode => {
     let node = byId.get(id);
     if (!node) {
-      node = blank(id, kindOf(id));
+      node = blank(id, kindOf(id), isRoot(id));
       const seed = previous?.get(id);
       if (seed) {
         node.x = seed.x;
@@ -295,19 +381,31 @@ export function buildGraph(
     }
 
     const flavor = edgeFlavor(edge);
+    const from = endpoints.from.toLowerCase();
+    const to = endpoints.to.toLowerCase();
     const allowed =
-      flavor === 'native'
+      (flavor === 'native'
         ? filters.showNative
         : flavor === 'token'
           ? filters.showTokens
-          : filters.showCalls;
+          : flavor === 'deployment'
+            ? filters.showDeployments
+            : filters.showCalls)
+      && (edge.succeeded || filters.showFailed)
+      && (!span || (edge.block_number >= span.from && edge.block_number <= span.to))
+      && !(filters.hideSelfLoops && from === to)
+      && assetAllowed(edge)
+      && (wantedTag === ''
+        || tagged(txTags.get(edge.tx_hash.toLowerCase()))
+        || tagged(addressTags.get(from))
+        || tagged(addressTags.get(to)))
+      && nodeAllowed(from)
+      && nodeAllowed(to);
     if (!allowed) {
       hiddenTxs += 1;
       continue;
     }
 
-    const from = endpoints.from.toLowerCase();
-    const to = endpoints.to.toLowerCase();
     const key = `${from}>${to}`;
     let bundle = bundles.get(key);
     if (!bundle) {
@@ -316,6 +414,7 @@ export function buildGraph(
         source: touch(from),
         target: touch(to),
         txs: [],
+        tags: [],
         count: 0,
         value: 0n,
         assets: [],
@@ -333,6 +432,7 @@ export function buildGraph(
     }
 
     bundle.txs.push(edge);
+    bundle.tags.push(...(txTags.get(edge.tx_hash.toLowerCase()) ?? []));
     bundle.count += 1;
     if (!edge.succeeded) bundle.failed += 1;
 
@@ -351,11 +451,14 @@ export function buildGraph(
     }
   }
 
-  const links: GraphLink[] = [];
+  let links: GraphLink[] = [];
   for (const bundle of bundles.values()) {
     const flows = bundleAssets.get(bundle.id)!;
     const carriesToken = [...flows.values()].some((flow) => !flow.native);
-    if (minWei > 0n && !carriesToken && bundle.value < minWei) {
+    if (
+      (minWei > 0n && !carriesToken && bundle.value < minWei)
+      || bundle.count < filters.minLinkTxs
+    ) {
       hiddenTxs += bundle.count;
       continue;
     }
@@ -367,6 +470,25 @@ export function buildGraph(
       bundle.transfers,
     );
     links.push(bundle);
+  }
+
+  if (filters.minDegree > 1) {
+    const peers = new Map<string, Set<string>>();
+    const meet = (a: string, b: string) => {
+      if (a === b) return;
+      const set = peers.get(a);
+      if (set) set.add(b);
+      else peers.set(a, new Set([b]));
+    };
+    for (const link of links) {
+      meet(link.source.id, link.target.id);
+      meet(link.target.id, link.source.id);
+    }
+    const weak = (node: GraphNode) => !node.root && (peers.get(node.id)?.size ?? 0) < filters.minDegree;
+    const kept = links.filter((link) => !weak(link.source) && !weak(link.target));
+    hiddenTxs += links.reduce((sum, link) => sum + link.count, 0) - kept.reduce((sum, link) => sum + link.count, 0);
+    for (const [id, node] of byId) if (weak(node)) byId.delete(id);
+    links = kept;
   }
 
   const kept = new Set<string>();
@@ -426,10 +548,13 @@ export function buildGraph(
 
   if (filters.hideIsolated) {
     for (const [id, node] of byId) {
-      if (!kept.has(id) && node.kind !== 'focus') byId.delete(id);
+      if (!kept.has(id) && !node.root) byId.delete(id);
     }
   } else {
-    for (const raw of response.nodes) touch(raw.address.toLowerCase());
+    for (const raw of response.nodes) {
+      const id = raw.address.toLowerCase();
+      if (nodeAllowed(id)) touch(id);
+    }
   }
 
   for (const id of roots) touch(id);
@@ -438,6 +563,7 @@ export function buildGraph(
   for (const node of nodes) {
     const seen = walked.get(node.id);
     node.systemLabels = seen?.labels ?? [];
+    node.tags = addressTags.get(node.id) ?? [];
     node.depth = seen?.depth ?? 0;
     node.expanded = seen?.expanded ?? false;
   }
@@ -469,7 +595,7 @@ export function buildGraph(
     node.r =
       NODE_MIN_R +
       NODE_MAX_GROWTH * Math.max(byValue, byDegree * 0.7, byTxs * 0.55) +
-      (node.kind === 'focus' ? FOCUS_BONUS : 0);
+      (node.root ? FOCUS_BONUS : 0);
   }
   for (const link of links) {
     const byValue = maxLinkWeight > 0 ? Math.sqrt(link.weight / maxLinkWeight) : 0;
@@ -513,6 +639,7 @@ export function buildGraph(
       hiddenNodes,
       hiddenTxs,
       failedTxs: links.reduce((sum, link) => sum + link.failed, 0),
+      tagKeys: [...new Set((response.tags ?? []).map((tag) => tag.key))].sort(),
     },
   };
 }

@@ -102,9 +102,23 @@ export interface LowLevelGraphResponse {
   truncated: boolean;
 }
 
+export type TagSourceKind = 'heuristic' | 'provider' | 'user' | 'agent';
+
+export interface GraphTag {
+  subject_kind: 'address' | 'tx';
+  subject: string;
+  key: string;
+  category: string;
+  confidence: number;
+  source: { kind: TagSourceKind; name: string; version: number };
+  evidence: string[];
+  note: string;
+}
+
 export interface GraphResponse {
   nodes: GraphNode[];
   edges: GraphEdge[];
+  tags?: GraphTag[];
   span: BlockRangeSpan;
   filled_from_rpc: BlockRangeSpan[];
   truncated: boolean;
@@ -135,12 +149,15 @@ export interface ChainsResponse {
   chains: ChainInfo[];
 }
 
+export type GraphScope = 'roots' | 'blocks';
+
 export interface GraphQuery {
   chain?: number;
+  scope?: GraphScope;
   roots: GraphRoot[];
   from_block: number;
   to_block: number;
-  ranges?: Array<{ from_block: number; to_block: number }>;
+  ranges?: Array<{ from_block: number; to_block: number; source?: 'auto' | 'rpc' | 'dataset'; exact?: boolean }>;
   confirm_rpc?: boolean;
 }
 
@@ -151,6 +168,8 @@ export interface RpcConfirmation {
   missing: BlockRangeSpan[];
   missing_blocks: number;
   indexed_blocks: number;
+  dataset_blocks: number;
+  exact_blocks: number;
 }
 
 export interface GraphLimits {
@@ -170,7 +189,20 @@ export interface CoverageResponse {
   block_count: number;
   tx_count: number;
   ranges: BlockRangeSpan[];
+  approximate: BlockRangeSpan[];
+  dataset: DatasetInfo | null;
   limits: GraphLimits;
+}
+
+export interface DatasetInfo {
+  name: string;
+  exact_values: boolean;
+  available_until: number | null;
+}
+
+export interface HeadResponse {
+  chain_id: number;
+  head: number;
 }
 
 export interface HistogramBucket {

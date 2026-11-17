@@ -12,7 +12,7 @@ use tokio::sync::broadcast::error::RecvError;
 use utoipa::IntoParams;
 
 use crate::{
-    dto::monitor::{CallResponse, NodeHealthResponse, ScanResponse},
+    dto::monitor::{BuildResponse, CallResponse, NodeHealthResponse, ScanResponse},
     routes::{ApiError, ErrorResponse, chain},
     state::AppState,
 };
@@ -146,7 +146,7 @@ fn event<T: serde::Serialize>(name: &str, payload: &T) -> Event {
     path = "/monitor/stream",
     tag = "monitor",
     params(MonitorQuery),
-    responses((status = OK, description = "Server-sent events: `call` per rpc attempt, `scan` per scan progress, `lagged` when the client fell behind", content_type = "text/event-stream")),
+    responses((status = OK, description = "Server-sent events: `call` per rpc attempt, `scan` per scan progress, `build` per graph build stage, `lagged` when the client fell behind", content_type = "text/event-stream")),
 )]
 pub(crate) async fn stream(
     State(state): State<AppState>,
@@ -155,6 +155,7 @@ pub(crate) async fn stream(
     let chain_id = chain_filter(&state, query.chain.as_deref())?;
     let mut calls = state.monitor().subscribe();
     let mut scans = state.scans().subscribe();
+    let mut builds = state.builds().subscribe();
     let wanted = move |id: u64| chain_id.is_none_or(|chain_id| chain_id == id);
 
     let events = async_stream::stream! {
@@ -168,6 +169,12 @@ pub(crate) async fn stream(
                 },
                 job = scans.recv() => match job {
                     Ok(job) if wanted(job.chain_id) => yield Ok(event("scan", &ScanResponse::from(&job))),
+                    Ok(_) => {}
+                    Err(RecvError::Lagged(_)) => {}
+                    Err(RecvError::Closed) => break,
+                },
+                job = builds.recv() => match job {
+                    Ok(job) if wanted(job.chain_id) => yield Ok(event("build", &BuildResponse::from(&job))),
                     Ok(_) => {}
                     Err(RecvError::Lagged(_)) => {}
                     Err(RecvError::Closed) => break,

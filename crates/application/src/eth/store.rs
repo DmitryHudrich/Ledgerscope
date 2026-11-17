@@ -3,7 +3,7 @@ use std::{collections::HashSet, io, ops::RangeInclusive, sync::Arc};
 use futures::StreamExt;
 use rangemap::RangeInclusiveSet;
 
-use domain::eth::MinedTx;
+use domain::eth::{BlockRange, BlockSource, MinedTx};
 
 use crate::{
     BoxStream,
@@ -14,6 +14,7 @@ pub struct StoringEthTxSource {
     upstream: Arc<dyn EthTxSource>,
     repository: Arc<dyn EthTxRepository>,
     cache: Option<Arc<dyn EthTxCache>>,
+    source: BlockSource,
 }
 
 impl StoringEthTxSource {
@@ -26,7 +27,12 @@ impl StoringEthTxSource {
             upstream,
             repository,
             cache,
+            source: BlockSource::Rpc,
         }
+    }
+
+    pub fn with_source(self, source: BlockSource) -> Self {
+        Self { source, ..self }
     }
 
     async fn indexed_blocks(&self, lower_block: u64, highest_block: u64) -> Vec<u64> {
@@ -79,7 +85,7 @@ impl StoringEthTxSource {
     async fn persist(&self, range: &RangeInclusive<u64>, txs: &[MinedTx]) {
         if let Err(error) = self
             .repository
-            .save(*range.start(), *range.end(), txs)
+            .save(*range.start(), *range.end(), txs, self.source)
             .await
         {
             tracing::warn!(
@@ -97,6 +103,51 @@ impl StoringEthTxSource {
 
 #[async_trait::async_trait]
 impl EthTxSource for StoringEthTxSource {
+    fn parallelism(&self) -> Option<usize> {
+        self.upstream.parallelism()
+    }
+
+    async fn windows(&self, span: BlockRange) -> Option<Vec<BlockRange>> {
+        self.upstream.windows(span).await
+    }
+
+    async fn available_until(&self) -> Option<u64> {
+        self.upstream.available_until().await
+    }
+
+    async fn refresh(
+        &self,
+        lower_block: u64,
+        highest_block: u64,
+    ) -> BoxStream<'_, Result<MinedTx, io::Error>> {
+        let range = lower_block..=highest_block;
+
+        Box::pin(async_stream::stream! {
+            let mut fetched = Vec::new();
+            let mut failed = false;
+            let mut upstream = self.upstream.txs(lower_block, highest_block).await;
+
+            while let Some(item) = upstream.next().await {
+                match item {
+                    Ok(tx) => {
+                        fetched.push(tx.clone());
+                        yield Ok(tx);
+                    }
+                    Err(error) => {
+                        failed = true;
+                        yield Err(error);
+                    }
+                }
+            }
+
+            drop(upstream);
+
+            if !failed {
+                self.persist(&range, &fetched).await;
+            }
+        })
+    }
+
     async fn txs(
         &self,
         lower_block: u64,
@@ -223,6 +274,7 @@ mod tests {
     struct FakeRepository {
         stored: Mutex<Vec<MinedTx>>,
         indexed: Mutex<Vec<u64>>,
+        sources: Mutex<Vec<BlockSource>>,
     }
 
     #[async_trait::async_trait]
@@ -267,7 +319,9 @@ mod tests {
             lower_block: u64,
             highest_block: u64,
             txs: &[MinedTx],
+            source: BlockSource,
         ) -> Result<(), io::Error> {
+            self.sources.lock().unwrap().push(source);
             self.stored.lock().unwrap().extend(txs.iter().cloned());
             self.indexed
                 .lock()
@@ -335,6 +389,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_refresh_asks_the_upstream_again_and_keeps_its_source() {
+        let upstream = Arc::new(FakeUpstream::default());
+        let repository = Arc::new(FakeRepository::default());
+        let source = StoringEthTxSource::new(upstream.clone(), repository.clone(), None)
+            .with_source(BlockSource::Dataset);
+
+        collect(&source, 10, 11).await;
+        upstream.calls.lock().unwrap().clear();
+        let refreshed: Vec<u64> = source
+            .refresh(10, 11)
+            .await
+            .map(|tx| tx.unwrap().tx().block_number())
+            .collect()
+            .await;
+
+        assert_eq!(refreshed, vec![10, 11]);
+        assert_eq!(upstream.calls.lock().unwrap().clone(), vec![(10, 11)]);
+        assert_eq!(
+            repository.sources.lock().unwrap().clone(),
+            vec![BlockSource::Dataset, BlockSource::Dataset]
+        );
+    }
+
+    #[tokio::test]
     async fn a_stored_range_never_reaches_the_upstream() {
         let upstream = Arc::new(FakeUpstream::default());
         let repository = Arc::new(FakeRepository::default());
@@ -370,14 +448,15 @@ mod tests {
                 lower_block: u64,
                 highest_block: u64,
                 txs: &[MinedTx],
+                source: BlockSource,
             ) -> Result<(), io::Error> {
-                self.0.save(lower_block, highest_block, txs).await
+                self.0.save(lower_block, highest_block, txs, source).await
             }
         }
 
         let inner = Arc::new(FakeRepository::default());
         inner
-            .save(20, 21, &[mined(20, 1), mined(21, 2)])
+            .save(20, 21, &[mined(20, 1), mined(21, 2)], BlockSource::Rpc)
             .await
             .unwrap();
 

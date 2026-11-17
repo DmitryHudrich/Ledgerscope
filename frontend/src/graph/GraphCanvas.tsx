@@ -8,6 +8,7 @@ import {
   forceY,
   type Simulation,
 } from 'd3-force';
+import { marqueeModeOf, modeOf, type SelectMode } from '../lib/selection';
 
 import { formatCount, formatEth, formatUnits, shortAddress } from '../lib/format';
 import type { VizPalette } from '../lib/theme';
@@ -64,9 +65,9 @@ interface Props {
   restoredLayoutVersion?: number;
   groups?: GraphGroup[];
   fade?: SceneFade | null;
-  onSelect: (id: string | null, additive?: boolean) => void;
+  onSelect: (id: string | null, mode?: SelectMode) => void;
   onSelectLink: (id: string | null) => void;
-  onSelectMany: (ids: Set<string>) => void;
+  onSelectMany: (ids: Set<string>, mode?: SelectMode) => void;
   handle: RefObject<GraphHandle | null>;
 }
 
@@ -178,6 +179,11 @@ function drawAnnotationSelection(ctx: CanvasRenderingContext2D, item: Annotation
   ctx.fillStyle = color; ctx.fillRect(x + w - 4, y + h - 4, 8, 8); ctx.restore();
 }
 
+const RESHAPE_SHARE = 0.15;
+const RESHAPE_TICKS = 30;
+const FLOW_FRAME_MS = 50;
+const HUGE_GRAPH = 2000;
+
 export function GraphCanvas({
   model,
   palette,
@@ -263,8 +269,10 @@ export function GraphCanvas({
   useEffect(() => {
     const nodes = model.nodes;
     const previous = renderedModel.current;
+    const fresh = previous ? nodes.filter((node) => !previous.byId.has(node.id)).length : nodes.length;
+    const reshaped = previous !== null && previous.nodes.length > 0 && fresh <= nodes.length * RESHAPE_SHARE;
     const preserveExisting =
-      incrementalLayoutVersion !== handledLayoutVersion.current && previous !== null;
+      (incrementalLayoutVersion !== handledLayoutVersion.current || reshaped) && previous !== null;
     handledLayoutVersion.current = incrementalLayoutVersion;
     const restoring = restoredLayoutVersion !== handledRestoredVersion.current;
     handledRestoredVersion.current = restoredLayoutVersion;
@@ -291,6 +299,7 @@ export function GraphCanvas({
       }
     }
 
+    const huge = nodes.length > HUGE_GRAPH;
     const sim = forceSimulation<GraphNode, GraphLink>(nodes)
       .force(
         'link',
@@ -302,9 +311,10 @@ export function GraphCanvas({
         'charge',
         forceManyBody<GraphNode>()
           .strength((node) => -110 - node.r * 14)
-          .distanceMax(1200),
+          .distanceMax(1200)
+          .theta(huge ? 1.3 : 0.9),
       )
-      .force('collide', forceCollide<GraphNode>((node) => node.r + 7).iterations(2))
+      .force('collide', forceCollide<GraphNode>((node) => node.r + 7).iterations(huge ? 1 : 2))
       .force('x', forceX(0).strength(0.035))
       .force('y', forceY(0).strength(0.035))
       .velocityDecay(0.42)
@@ -312,8 +322,9 @@ export function GraphCanvas({
       .alphaMin(0.01);
 
     sim.stop();
-    if (restoring) sim.alpha(0);
-    const budget = restoring ? 0 : preserveExisting
+    if (restoring || (reshaped && fresh === 0)) sim.alpha(0);
+    else if (reshaped) sim.alpha(0.3);
+    const budget = restoring || (reshaped && fresh === 0) ? 0 : reshaped ? RESHAPE_TICKS : preserveExisting
       ? nodes.length > 1200
         ? 45
         : nodes.length > 400
@@ -414,6 +425,7 @@ export function GraphCanvas({
     const ctx = canvas?.getContext('2d');
     if (!canvas || !ctx) return;
 
+    let lastFlowFrame = 0;
     let frame = requestAnimationFrame(function render(time: number) {
       frame = requestAnimationFrame(render);
       const { width, height, dpr } = size.current;
@@ -422,7 +434,6 @@ export function GraphCanvas({
       const state = live.current;
       const active = hoveredNode.current?.id ?? state.selectedId;
       const hoverLink = hoveredLink.current;
-      const settling = (simulation.current?.alpha() ?? 0) > 0.005 && !frozen;
 
       if (fitMode.current === 'once' && state.model.nodes.length > 0) {
         const settled = ease(transform.current, fitTarget(state.model, size.current));
@@ -458,7 +469,9 @@ export function GraphCanvas({
       }
 
       const flowing = state.showFlow && !!sets && sets.links.size > 0;
-      if (!dirty.current && !settling && !fading && !flowing) return;
+      if (!dirty.current && !fading && !flowing) return;
+      if (!dirty.current && !fading && state.model.links.length > HUGE_GRAPH && time - lastFlowFrame < FLOW_FRAME_MS) return;
+      lastFlowFrame = time;
       dirty.current = false;
 
       drawScene(ctx, {
@@ -631,11 +644,11 @@ export function GraphCanvas({
           : [node];
         dragOrigin = world;
         dragPositions = dragNodes.map((candidate) => ({ node: candidate, x: candidate.x, y: candidate.y }));
+        simulation.current?.stop();
         for (const candidate of dragNodes) {
           candidate.fx = candidate.x;
           candidate.fy = candidate.y;
         }
-        if (!frozen) simulation.current?.alphaTarget(0.28).restart();
         canvas.style.cursor = 'grabbing';
       } else if (event.button === 2) {
         selecting = true;
@@ -724,6 +737,10 @@ export function GraphCanvas({
         for (const position of dragPositions) {
           position.node.fx = position.x + dx;
           position.node.fy = position.y + dy;
+          position.node.x = position.x + dx;
+          position.node.y = position.y + dy;
+          position.node.vx = 0;
+          position.node.vy = 0;
         }
         moved += Math.abs(event.movementX) + Math.abs(event.movementY);
         placeTooltip(point);
@@ -817,14 +834,12 @@ export function GraphCanvas({
       }
 
       if (dragNodes) {
-        if (!frozen) simulation.current?.alphaTarget(0);
-
         if (wasClick) {
           for (const node of dragNodes) {
             node.fx = null;
             node.fy = null;
           }
-          onSelect(dragNodes[0].id, event.shiftKey);
+          onSelect(dragNodes[0].id, modeOf(event));
         }
         dragNodes = null;
         dragOrigin = null;
@@ -860,7 +875,7 @@ export function GraphCanvas({
               .filter((node) => node.x >= start.x && node.x <= end.x && node.y >= start.y && node.y <= end.y)
               .map((node) => node.id),
           );
-          onSelectMany(ids);
+          onSelectMany(ids, marqueeModeOf(event));
         }
         selecting = false;
         selectionStart = null;
@@ -885,7 +900,6 @@ export function GraphCanvas({
       if (!node) return;
       node.fx = null;
       node.fy = null;
-      if (!frozen) simulation.current?.alpha(0.3).restart();
       dirty.current = true;
     };
 
@@ -956,7 +970,6 @@ export function GraphCanvas({
           node.fx = null;
           node.fy = null;
         }
-        simulation.current?.alpha(0.5).restart();
         dirty.current = true;
       },
       exportPng(filename: string) {
@@ -1007,7 +1020,6 @@ export function GraphCanvas({
 }
 
 const KIND_LABEL: Record<GraphNode['kind'], string> = {
-  focus: 'Focus wallet',
   contract: 'Contract',
   eoa: 'Wallet',
 };
@@ -1036,7 +1048,7 @@ function NodeTip({ node, ips }: { node: GraphNode; ips?: IpWalletLink[] }) {
       <div className="flex items-center gap-[6px]">
         <Dot tone={node.kind} />
         <span className="text-[10px] uppercase tracking-[0.07em] text-text-muted">
-          {KIND_LABEL[node.kind]}
+          {KIND_LABEL[node.kind]}{node.root && ' · root'}
         </span>
       </div>
       {systemLabel && (

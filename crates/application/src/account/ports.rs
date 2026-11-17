@@ -4,8 +4,9 @@ use time::OffsetDateTime;
 
 use domain::{
     account::{
-        CanvasId, CanvasTitle, DisplayName, Email, LabelId, LabelValue, LinkId, RpcNodeId,
-        ShareAccess, TeamId, TeamName, TeamRole, UserId,
+        CanvasId, CanvasOpening, CanvasTitle, CanvasVersionId, DisplayName, Email, LabelId,
+        LabelValue, LinkId, RpcNodeId, ShareAccess, TeamId, TeamName, TeamRole, UserId,
+        VersionKind,
     },
     eth::EthAddress,
 };
@@ -13,8 +14,8 @@ use domain::{
 use crate::account::{
     StoreError,
     model::{
-        Canvas, CanvasRecord, CanvasShare, CanvasSummary, Credentials, Member, Membership,
-        PublicLink, RpcNode, Team, User, UserLabel,
+        Canvas, CanvasRecord, CanvasShare, CanvasSummary, CanvasVersion, Credentials, Member,
+        Membership, PublicLink, RpcNode, Team, User, UserLabel,
     },
 };
 
@@ -83,6 +84,7 @@ pub struct CanvasChange {
     pub title: Option<CanvasTitle>,
     pub chain_id: Option<u64>,
     pub document: Option<serde_json::Value>,
+    pub opening: Option<CanvasOpening>,
 }
 
 #[async_trait::async_trait]
@@ -129,6 +131,39 @@ pub trait CanvasStore: Send + Sync {
     ) -> Result<bool, io::Error>;
 
     async fn by_link(&self, digest: &[u8]) -> Result<Option<Canvas>, io::Error>;
+
+    async fn insert_version(
+        &self,
+        version: &CanvasVersion,
+        document: &serde_json::Value,
+    ) -> Result<(), io::Error>;
+
+    async fn versions(&self, canvas: CanvasId) -> Result<Vec<CanvasVersion>, io::Error>;
+
+    async fn version(
+        &self,
+        canvas: CanvasId,
+        id: CanvasVersionId,
+    ) -> Result<Option<(CanvasVersion, serde_json::Value)>, io::Error>;
+
+    async fn latest_version(
+        &self,
+        canvas: CanvasId,
+        kind: VersionKind,
+    ) -> Result<Option<(CanvasVersion, serde_json::Value)>, io::Error>;
+
+    async fn prune_versions(
+        &self,
+        canvas: CanvasId,
+        kind: VersionKind,
+        keep: usize,
+    ) -> Result<(), io::Error>;
+
+    async fn delete_version(
+        &self,
+        canvas: CanvasId,
+        id: CanvasVersionId,
+    ) -> Result<bool, io::Error>;
 }
 
 #[async_trait::async_trait]
