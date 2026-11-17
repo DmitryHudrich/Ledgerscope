@@ -8,11 +8,18 @@ function sharedPrefix(left: string, right: string): number {
   return index;
 }
 
+function significant(text: string, cut: number): number {
+  let index = cut;
+  while (index < text.length - 1 && /[0\D]/.test(text[index])) index += 1;
+  return index;
+}
+
 function Split({ text, cut }: { text: string; cut: number }) {
+  const from = significant(text, cut);
   return (
     <span>
-      {cut > 0 && <span className="opacity-45">{text.slice(0, cut)}</span>}
-      <span className="font-semibold">{text.slice(cut)}</span>
+      {from > 0 && <span className="opacity-45">{text.slice(0, from)}</span>}
+      <span className="font-semibold">{text.slice(from)}</span>
     </span>
   );
 }

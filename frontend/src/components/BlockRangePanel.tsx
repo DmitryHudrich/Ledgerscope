@@ -103,11 +103,14 @@ export function BlockRangePanel({
       <div className="grid gap-1">
         {ranges.map((range, index) => {
           const isActive = index === activeIndex;
+          const inverted = range.from > range.to;
           return (
             <div
               key={index}
+              title={inverted ? 'The start is above the end: the range is read backwards, from the smaller block to the bigger one' : undefined}
               className={cx(
                 'flex items-center gap-1.5 rounded-ui-sm px-1.5 py-1',
+                inverted && 'outline outline-1 outline-critical',
                 isActive ? 'bg-[color-mix(in_srgb,var(--accent)_12%,transparent)]' : 'hover:bg-[color-mix(in_srgb,var(--text-primary)_5%,transparent)]',
               )}
               onPointerDown={() => onActiveChange(index)}
