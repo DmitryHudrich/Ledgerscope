@@ -1,109 +1,109 @@
 # Ledgerscope
 
-Анализ транзакций EVM и Tron: граф адресов, метки и классификация акторов, плюс пассивный TLS-наблюдатель.
+EVM and Tron transaction analysis: address graph, labels and actor classification, plus a passive TLS observer.
 
-## TODO: трассировщик (свопы, DEX, метки)
+## TODO: tracer (swaps, DEX, labels)
 
-Контекст: разбор экспорта LedgerScope (Ethereum, блоки 26306142–26323955). В экспорте только ERC-20 трансферы и упавшие вызовы, поэтому свопы и протоколы надо восстанавливать самим. Экспорт обрезан лимитом в 20 000 транзакций (покрыто ~55% диапазона).
+Context: analysis of a LedgerScope export (Ethereum, blocks 26306142–26323955). The export only contains ERC-20 transfers and failed calls, so swaps and protocols have to be reconstructed by us. The export is capped at 20,000 transactions (~55% of the range covered).
 
-### 0. Что уже есть в LedgerScope
+### 0. What LedgerScope already has
 
-#### Загрузка и хранение
+#### Loading and storage
 
-- [x] Пул RPC-узлов: ротация, лимит на узел, ретраи, мониторинг вызовов, персональные узлы пользователя
-- [x] Блоки через batch `eth_getBlockByNumber` + `eth_getBlockReceipts` (10 блоков в пачке)
-- [x] Параллельная загрузка окнами, запись в ClickHouse пачками, кэш проиндексированных блоков в Redis
-- [x] AWS public blockchain dataset (S3, parquet): дисковый кэш дней, включается конфигом и cargo-feature `aws-public`
-- [x] Источник каждого блока в индексе (rpc / dataset), повторная загрузка через RPC ради точных wei
-- [x] Покрытие и гистограмма индекса, подтверждение перед загрузкой недостающих блоков
-- [x] Прогресс: скан RPC и датасета (со скачиванием файлов в МБ), стадии сборки графа, остановка загрузки
-- [x] Мультичейн: EVM и L2 из chainlist, TRON
-- [ ] AWS: качать оба файла дня параллельно и заранее, разбирать день один раз, разбор parquet в отдельных потоках
+- [x] RPC node pool: rotation, per-node limits, retries, call monitoring, user's own nodes
+- [x] Blocks via batched `eth_getBlockByNumber` + `eth_getBlockReceipts` (10 blocks per batch)
+- [x] Parallel windowed loading, batched writes to ClickHouse, indexed-block cache in Redis
+- [x] AWS public blockchain dataset (S3, parquet): on-disk day cache, enabled via config and the `aws-public` cargo feature
+- [x] Per-block source in the index (rpc / dataset), re-fetch via RPC for exact wei
+- [x] Index coverage and histogram, confirmation before loading missing blocks
+- [x] Progress: RPC and dataset scan (with file download in MB), graph build stages, stop loading
+- [x] Multichain: EVM and L2s from chainlist, TRON
+- [ ] AWS: download both daily files in parallel and ahead of time, parse each day once, parse parquet on separate threads
 
-#### Граф
+#### Graph
 
-- [x] Граф от адресов с глубиной обхода
-- [x] Режим «все транзакции в диапазоне блоков»
-- [x] Несколько диапазонов блоков: у каждого свой источник, статистика (точные / приблизительные / не проиндексированы) и кнопка latest
-- [x] Подстановка уже проиндексированных диапазонов
-- [x] Фильтры: типы транзакций, reverted, переводы себе, минимальная сумма, один актив, кошельки / контракты, метки, минимум контрагентов, минимум транзакций в потоке, максимум хопов от корня, теги
-- [x] Таймлайн: окно отображения по блокам слайдером и вводом границ
-- [x] Поиск кошельков на канвасе: адрес, часть адреса, TRON base58, метки, теги
-- [x] Выделение с хоткеями: узел с соседями, рост и сужение, соседи, связная компонента, инверсия
-- [x] Группы, скрытие узлов и транзакций, фокус и затемнение, аннотации
-- [x] Таблица транзакций, инспекторы узла и ребра, экспорт PNG и JSON
-- [x] Быстрая отрисовка больших графов
+- [x] Graph from addresses with traversal depth
+- [x] "All transactions in block range" mode
+- [x] Multiple block ranges: each with its own source, stats (exact / approximate / not indexed) and a latest button
+- [x] Autofill of already indexed ranges
+- [x] Filters: transaction types, reverted, self-transfers, minimum amount, single asset, wallets / contracts, labels, minimum counterparties, minimum transactions per flow, maximum hops from root, tags
+- [x] Timeline: block display window via slider and bound inputs
+- [x] Wallet search on canvas: address, partial address, TRON base58, labels, tags
+- [x] Selection with hotkeys: node with neighbors, grow and shrink, neighbors, connected component, invert
+- [x] Groups, hiding nodes and transactions, focus and dimming, annotations
+- [x] Transaction table, node and edge inspectors, PNG and JSON export
+- [x] Fast rendering of large graphs
 
-#### Метки и эвристики
+#### Labels and heuristics
 
-- [x] Метки адресов: etherscan-json, пользовательские, командные
-- [x] Ядро тегов: у каждого тега источник (эвристика / провайдер / пользователь / агент), версия, уверенность, транзакции-доказательства
-- [x] Эвристики: аренда энергии TRON, пополнение газа и газовый спонсор, fan-in / fan-out, депозитные адреса бирж, категории по ключевым словам меток (биржа, мост, миксер, DEX, lending, санкции)
-- [x] IP ↔ кошелёк по TLS-наблюдениям
-- [ ] Хранение тегов в Postgres (сейчас считаются на лету при каждом запросе)
-- [ ] Внешний API идентификации адресов (выбрать: Etherscan, Arkham, открытые наборы меток)
-- [ ] Claude через MCP: `get_graph`, `get_tags`, `explain_address`, `propose_tag`, теги с источником «агент»
-- [ ] Производные теги потоков: «вход на биржу», «через мост»
+- [x] Address labels: etherscan-json, user, team
+- [x] Tag core: every tag has a source (heuristic / provider / user / agent), version, confidence, evidence transactions
+- [x] Heuristics: TRON energy rental, gas top-up and gas sponsor, fan-in / fan-out, exchange deposit addresses, categories from label keywords (exchange, bridge, mixer, DEX, lending, sanctions)
+- [x] IP ↔ wallet from TLS observations
+- [ ] Store tags in Postgres (currently computed on the fly per request)
+- [ ] External address identification API (choose: Etherscan, Arkham, open label sets)
+- [ ] Claude via MCP: `get_graph`, `get_tags`, `explain_address`, `propose_tag`, tags with the "agent" source
+- [ ] Derived flow tags: "exchange inflow", "via bridge"
 
-#### Аккаунты и канвасы
+#### Accounts and canvases
 
-- [x] Аккаунты, команды, роли
-- [x] Сохранённые канвасы, шаринг, публичные ссылки
-- [x] Снапшоты и автосейвы (последние 20), открытие по настройке канваса или конкретной версии
-- [x] Стартовый экран: последний канвас, локальная сессия или вход в аккаунт
+- [x] Accounts, teams, roles
+- [x] Saved canvases, sharing, public links
+- [x] Snapshots and autosaves (last 20), open by canvas setting or a specific version
+- [x] Start screen: last canvas, local session or account sign-in
 
-### 1. Данные (сначала это)
+### 1. Data (do this first)
 
-- [ ] Нативный ETH через трейсы (`trace_block` / `debug_traceTransaction`)
-- [ ] Метаданные транзакции: `tx.from`, `tx.to`, селектор из input, газ, nonce, `logIndex`
+- [ ] Native ETH via traces (`trace_block` / `debug_traceTransaction`)
+- [ ] Transaction metadata: `tx.from`, `tx.to`, selector from input, gas, nonce, `logIndex`
 - [ ] WETH `Deposit` / `Withdrawal` (wrap/unwrap)
-- [ ] Цены в USD на момент блока
-- [x] Источник: свой Erigon/Reth, RPC-провайдер или BigQuery `crypto_ethereum.logs` / `traces` (сейчас: пул публичных и своих RPC + AWS public dataset)
+- [ ] USD prices at block time
+- [x] Source: own Erigon/Reth, RPC provider or BigQuery `crypto_ethereum.logs` / `traces` (currently: pool of public and own RPCs + AWS public dataset)
 
-### 2. Декодеры свопов
+### 2. Swap decoders
 
-- [ ] Реестр адресов: контракт → протокол, тип, токены, комиссия, фабрика
-- [ ] Нормализованная запись: `{tx, logIndex, protocol, pool, trader, tokenIn, amountIn, tokenOut, amountOut}`
-- [ ] Uniswap v2 + Sushi и форки (`Swap`, проверка через `factory` / `getPair`)
+- [ ] Address registry: contract → protocol, type, tokens, fee, factory
+- [ ] Normalized record: `{tx, logIndex, protocol, pool, trader, tokenIn, amountIn, tokenOut, amountOut}`
+- [ ] Uniswap v2 + Sushi and forks (`Swap`, verify via `factory` / `getPair`)
 - [ ] Uniswap v3 (`Swap`, `factory.getPool`)
-- [ ] Uniswap v4 (PoolManager `0x000000000004444c5dc75cb358380d2e3de08a90`, `Swap`, пул по `id` из `Initialize`)
-- [ ] Curve (`TokenExchange`, `TokenExchangeUnderlying`, MetaRegistry для индексов монет)
+- [ ] Uniswap v4 (PoolManager `0x000000000004444c5dc75cb358380d2e3de08a90`, `Swap`, pool by `id` from `Initialize`)
+- [ ] Curve (`TokenExchange`, `TokenExchangeUnderlying`, MetaRegistry for coin indices)
 - [ ] Balancer v2 (Vault, `Swap`, `poolId`)
-- [ ] CoW Protocol (GPv2Settlement, `Trade`, трейдер = `owner`, а не солвер)
-- [ ] Агрегаторы (1inch и др.): список роутеров по `tx.to`, маршрут как цепочка свопов в одной tx, без двойного счёта хопов
-- [ ] RFQ (Bebop, Hashflow, 0x RFQ, UniswapX): события контрактов расчётов + эвристика «встречные трансферы без пула»
-- [ ] Неизвестные пулы: пробовать `token0()`, `token1()`, `factory()`
-- [ ] Сверка с Dune `dex.trades`
+- [ ] CoW Protocol (GPv2Settlement, `Trade`, trader = `owner`, not the solver)
+- [ ] Aggregators (1inch etc.): router list by `tx.to`, route as a chain of swaps within one tx, no double-counting of hops
+- [ ] RFQ (Bebop, Hashflow, 0x RFQ, UniswapX): settlement contract events + "opposing transfers without a pool" heuristic
+- [ ] Unknown pools: try `token0()`, `token1()`, `factory()`
+- [ ] Cross-check against Dune `dex.trades`
 
-### 3. Другие протоколы
+### 3. Other protocols
 
-- [ ] Мосты (Across, Stargate, LayerZero, Wormhole, нативные L2)
-- [ ] ERC-4337 (бандлер ≠ пользователь) и Safe-мультисиги
-- [ ] EIP-7702: делегированные EOA ломают простое деление EOA / контракт
-- [ ] Lending / стейкинг: Aave, Compound, Morpho, Lido (ребейзящие токены, stETH)
-- [ ] Permit2, NFT (ERC-721/1155), flash loans
-- [ ] Миксеры (Tornado Cash и др.)
+- [ ] Bridges (Across, Stargate, LayerZero, Wormhole, native L2 bridges)
+- [ ] ERC-4337 (bundler ≠ user) and Safe multisigs
+- [ ] EIP-7702: delegated EOAs break the simple EOA / contract split
+- [ ] Lending / staking: Aave, Compound, Morpho, Lido (rebasing tokens, stETH)
+- [ ] Permit2, NFTs (ERC-721/1155), flash loans
+- [ ] Mixers (Tornado Cash etc.)
 
-### 4. Сущности и метки
+### 4. Entities and labels
 
-- [ ] Метки адресов: CEX-кошельки, пулы, роутеры, мосты, боты, санкционные списки (частично: категории по ключевым словам меток провайдера)
-- [ ] Кластеризация: общий источник газа, переиспользование депозитных адресов, синхронность действий (частично: эвристики `gas_top_up` и `deposit_sweep`)
-- [ ] Классификация узлов: пул / роутер / пользователь / бот / транзитный контракт
+- [ ] Address labels: CEX wallets, pools, routers, bridges, bots, sanctions lists (partial: categories from provider label keywords)
+- [ ] Clustering: common gas source, deposit address reuse, synchronized activity (partial: `gas_top_up` and `deposit_sweep` heuristics)
+- [ ] Node classification: pool / router / user / bot / transit contract
 
-### 5. Надёжность
+### 5. Reliability
 
-- [ ] Фильтр спам-токенов и address poisoning
-- [ ] Пагинация и явный признак «выгрузка неполная» (лимит 20 000 tx)
-- [ ] Реорги, дедупликация по `(tx, logIndex)`, инкрементальная индексация и кэш (частично: инкрементальная индексация, кэш и дедупликация транзакций в ClickHouse есть, реоргов нет)
+- [ ] Spam token and address poisoning filter
+- [ ] Pagination and an explicit "export incomplete" flag (20,000 tx limit)
+- [ ] Reorgs, dedup by `(tx, logIndex)`, incremental indexing and cache (partial: incremental indexing, cache and transaction dedup in ClickHouse exist, reorgs do not)
 
-### 6. Анализ и граф
+### 6. Analysis and graph
 
-- [ ] Taint-анализ (FIFO / haircut)
-- [ ] Свёртка транзитных узлов (скрывать пулы и роутеры, показывать поток трейдер → трейдер)
-- [ ] Поиск путей между адресами и временные окна
-- [ ] Мультичейн: тот же адрес на L2
+- [ ] Taint analysis (FIFO / haircut)
+- [ ] Collapse transit nodes (hide pools and routers, show trader → trader flow)
+- [ ] Path finding between addresses and time windows
+- [ ] Multichain: same address on L2s
 
-### Заметки по разобранному графу
+### Notes on the analyzed graph
 
-- Главный узел `0xd661623947ef2ead12d577b47021c167d163b0c5`: EOA, ~19 000 трансферов за 33 часа, ~$72 млн оборота в WETH/USDC. Похоже на маркетмейкера или арбитражёра, меток в экспорте нет.
-- `0x2192bc3b4028acc1113f2cd9ac2cba70c36520db`: контракт-посредник, USDC и WETH проходят через него почти в ноль; 413 упавших вызовов с `0x7405…` и `0x0927…`, причина не ясна.
+- Main node `0xd661623947ef2ead12d577b47021c167d163b0c5`: EOA, ~19,000 transfers in 33 hours, ~$72M turnover in WETH/USDC. Looks like a market maker or arbitrageur; no labels in the export.
+- `0x2192bc3b4028acc1113f2cd9ac2cba70c36520db`: intermediary contract, USDC and WETH pass through it at near-zero balance; 413 failed calls from `0x7405…` and `0x0927…`, reason unclear.
