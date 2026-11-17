@@ -15,8 +15,16 @@ fn trains_and_classifies_parsed_segments() {
     let mut up = header(23, 1500);
     up.extend(header(23, 400));
     let packets = vec![
-        Packet { time: 0.0, dir: Direction::Up, payload: up },
-        Packet { time: 0.1, dir: Direction::Down, payload: header(23, 250) },
+        Packet {
+            time: 0.0,
+            dir: Direction::Up,
+            payload: up,
+        },
+        Packet {
+            time: 0.1,
+            dir: Direction::Down,
+            payload: header(23, 250),
+        },
     ];
 
     let verdict = classifier.classify_packets(&packets).unwrap();

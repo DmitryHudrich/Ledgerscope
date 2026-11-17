@@ -1,6 +1,6 @@
 use alloy_primitives::{TxHash, U256};
 
-use crate::eth::{ActorHint, EthAddress, EthReceipt, EthTx, IssuedAsset};
+use crate::eth::{ActorHint, EthAddress, EthReceipt, EthTx, IssuedAsset, Swap};
 
 #[derive(Clone, Debug)]
 pub enum ContractAction {
@@ -11,6 +11,7 @@ pub enum ContractAction {
 
         amount: U256,
     },
+    Swap(Swap),
     Other,
 }
 
@@ -23,6 +24,10 @@ pub struct NativeTransfer {
 }
 
 impl NativeTransfer {
+    pub fn new(from: EthAddress, to: EthAddress, amount: U256) -> Self {
+        Self { from, to, amount }
+    }
+
     pub fn from(&self) -> &EthAddress {
         &self.from
     }
@@ -133,6 +138,7 @@ impl InteractionKind {
                 contract_interaction_type,
             } => match contract_interaction_type {
                 ContractAction::Erc20Transfer { from, to, .. } => Some((from, to)),
+                ContractAction::Swap(swap) => Some((interactor, swap.pool().address())),
                 ContractAction::Other => Some((interactor, contract_address)),
             },
         }
@@ -161,8 +167,20 @@ impl InteractionKind {
                     (*contract_address, ActorHint::Contract),
                 ];
 
-                if let ContractAction::Erc20Transfer { token, .. } = contract_interaction_type {
-                    hints.push((*token, ActorHint::Erc20));
+                match contract_interaction_type {
+                    ContractAction::Erc20Transfer { token, .. } => {
+                        hints.push((*token, ActorHint::Erc20));
+                    }
+                    ContractAction::Swap(swap) => {
+                        hints.push((*swap.pool().address(), ActorHint::Contract));
+                        hints.extend(
+                            swap.tokens()
+                                .into_iter()
+                                .filter(|token| **token != EthAddress::ZERO)
+                                .map(|token| (*token, ActorHint::Erc20)),
+                        );
+                    }
+                    ContractAction::Other => {}
                 }
 
                 hints

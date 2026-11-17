@@ -12,11 +12,23 @@ impl<L: Copy + PartialEq> Knn<L> {
         let column = |d: usize| train.iter().map(move |(x, _)| x[d]);
         let mean: Vec<f64> = (0..dims).map(|d| column(d).sum::<f64>() / n).collect();
         let scale = (0..dims)
-            .map(|d| (column(d).map(|v| (v - mean[d]).powi(2)).sum::<f64>() / n).sqrt().max(1e-9))
+            .map(|d| {
+                (column(d).map(|v| (v - mean[d]).powi(2)).sum::<f64>() / n)
+                    .sqrt()
+                    .max(1e-9)
+            })
             .collect();
 
-        let mut model = Self { k: k.clamp(1, train.len()), mean, scale, samples: Vec::new() };
-        model.samples = train.iter().map(|(x, label)| (model.normalize(x), *label)).collect();
+        let mut model = Self {
+            k: k.clamp(1, train.len()),
+            mean,
+            scale,
+            samples: Vec::new(),
+        };
+        model.samples = train
+            .iter()
+            .map(|(x, label)| (model.normalize(x), *label))
+            .collect();
         model
     }
 
@@ -29,7 +41,16 @@ impl<L: Copy + PartialEq> Knn<L> {
         let mut nearest: Vec<(f64, L)> = self
             .samples
             .iter()
-            .map(|(s, label)| (s.iter().zip(&x).map(|(a, b)| (a - b).powi(2)).sum::<f64>().sqrt(), *label))
+            .map(|(s, label)| {
+                (
+                    s.iter()
+                        .zip(&x)
+                        .map(|(a, b)| (a - b).powi(2))
+                        .sum::<f64>()
+                        .sqrt(),
+                    *label,
+                )
+            })
             .collect();
         nearest.select_nth_unstable_by(self.k - 1, |a, b| a.0.total_cmp(&b.0));
 
@@ -51,6 +72,10 @@ impl<L: Copy + PartialEq> Knn<L> {
     }
 
     fn normalize(&self, x: &[f64]) -> Vec<f64> {
-        x.iter().zip(&self.mean).zip(&self.scale).map(|((v, m), s)| (v - m) / s).collect()
+        x.iter()
+            .zip(&self.mean)
+            .zip(&self.scale)
+            .map(|((v, m), s)| (v - m) / s)
+            .collect()
     }
 }

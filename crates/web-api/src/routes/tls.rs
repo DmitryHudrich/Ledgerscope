@@ -43,7 +43,10 @@ pub struct CorrelateQuery {
 
 fn storage_failed(error: io::Error) -> ApiError {
     tracing::error!("tls observation storage failed: {error}");
-    ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "storage failed, try again")
+    ApiError::new(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "storage failed, try again",
+    )
 }
 
 fn bearer(headers: &HeaderMap) -> Option<String> {
@@ -102,8 +105,13 @@ pub(crate) async fn ingest(
     })?;
     let confidence = request.confidence.clamp(0.0, 1.0);
 
-    let observation =
-        TlsObservation::new(src_ip, request.chain_id, intent, confidence, request.observed_at);
+    let observation = TlsObservation::new(
+        src_ip,
+        request.chain_id,
+        intent,
+        confidence,
+        request.observed_at,
+    );
     store.insert(&observation).await.map_err(storage_failed)?;
     Ok(StatusCode::ACCEPTED)
 }
@@ -184,7 +192,9 @@ pub(crate) async fn correlate(
     let run = service
         .correlate(chain_id, query.from_block, up_to_block)
         .await
-        .map_err(|error| ApiError::upstream(format!("correlation could not read the index: {error}")))?;
+        .map_err(|error| {
+            ApiError::upstream(format!("correlation could not read the index: {error}"))
+        })?;
     Ok(Json(run.into()))
 }
 
@@ -210,6 +220,9 @@ pub(crate) async fn reset(
         .as_ref()
         .ok_or_else(|| ApiError::unavailable("tls observer is off on this server"))?;
     let chain = chain(&state, query.chain.as_deref())?;
-    store.reset(chain.meta().chain_id).await.map_err(storage_failed)?;
+    store
+        .reset(chain.meta().chain_id)
+        .await
+        .map_err(storage_failed)?;
     Ok(StatusCode::NO_CONTENT)
 }

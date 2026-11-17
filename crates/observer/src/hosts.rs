@@ -39,11 +39,15 @@ impl HostMatcher {
     pub fn find(&self, host: &str) -> Option<Match> {
         let host = host.trim().to_ascii_lowercase();
         if let Some(chain_id) = self.exact.get(&host) {
-            return Some(Match { chain_id: *chain_id });
+            return Some(Match {
+                chain_id: *chain_id,
+            });
         }
         for (suffix, chain_id) in &self.suffixes {
             if host.ends_with(suffix.as_str()) {
-                return Some(Match { chain_id: *chain_id });
+                return Some(Match {
+                    chain_id: *chain_id,
+                });
             }
         }
         None
@@ -69,9 +73,15 @@ mod tests {
             group("tron", 728_126_428, &["*.trongrid.io", "api.trongrid.io"]),
         ]);
 
-        assert_eq!(matcher.find("polygon-mainnet.infura.io").unwrap().chain_id, 1);
+        assert_eq!(
+            matcher.find("polygon-mainnet.infura.io").unwrap().chain_id,
+            1
+        );
         assert_eq!(matcher.find("cloudflare-eth.com").unwrap().chain_id, 1);
-        assert_eq!(matcher.find("api.nile.trongrid.io").unwrap().chain_id, 728_126_428);
+        assert_eq!(
+            matcher.find("api.nile.trongrid.io").unwrap().chain_id,
+            728_126_428
+        );
         assert_eq!(matcher.find("trongrid.io").unwrap().chain_id, 728_126_428);
         assert!(matcher.find("example.com").is_none());
     }

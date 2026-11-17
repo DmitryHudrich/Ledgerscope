@@ -1,23 +1,26 @@
 mod actor_row;
+mod pool_row;
 mod row;
 
 use std::{collections::HashMap, io};
 
-use application::eth::ports::{ActorRepository, EthTxIndex, EthTxRepository};
+use application::eth::ports::{ActorRepository, EthTxIndex, EthTxRepository, PoolRepository};
 use domain::eth::{
-    Actor, BlockBucket, BlockRange, BlockSource, EthAddress, IndexCoverage, MinedTx,
+    Actor, BlockBucket, BlockRange, BlockSource, EthAddress, IndexCoverage, MinedTx, PoolInfo,
+    PoolKey,
 };
 use reqwest::{Client, Url, header::CONTENT_LENGTH};
 use serde::{Deserialize, Serialize};
 
 use crate::eth::{
     chainlist::ETHEREUM,
-    clickhouse::{actor_row::ActorRow, row::TxRow},
+    clickhouse::{actor_row::ActorRow, pool_row::PoolRow, row::TxRow},
 };
 
 const TXS_TABLE: &str = "txs";
 const BLOCKS_TABLE: &str = "indexed_blocks";
 const ACTORS_TABLE: &str = "actors";
+const POOLS_TABLE: &str = "pools";
 
 const TXS_COLUMNS: &str = "tx_hash, block_number, timestamp, amount, from_address, to_address, \
     data, succeeded, contract_address, log_addresses, log_topics, log_data";
@@ -71,6 +74,20 @@ const ACTORS_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS actors (
     symbol String,
     decimals UInt8
 ) ENGINE = ReplacingMergeTree ORDER BY (chain_id, address)";
+
+const POOLS_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS pools (
+    chain_id UInt64,
+    address String,
+    pool_id String,
+    family LowCardinality(String),
+    protocol String,
+    tokens Array(String),
+    fee Nullable(UInt32),
+    factory Nullable(String),
+    source_kind LowCardinality(String),
+    source_name String,
+    source_version UInt32
+) ENGINE = ReplacingMergeTree ORDER BY (chain_id, address, pool_id)";
 
 #[derive(Clone)]
 pub struct ClickhouseTxRepository {
@@ -160,6 +177,7 @@ impl ClickhouseTxRepository {
         )
         .await?;
         self.execute(ACTORS_SCHEMA, String::new()).await?;
+        self.execute(POOLS_SCHEMA, String::new()).await?;
 
         for (legacy, table, columns) in LEGACY_TABLES {
             self.adopt_legacy(legacy, table, columns).await?;
@@ -209,7 +227,7 @@ impl ClickhouseTxRepository {
                         sum(data_uncompressed_bytes) AS uncompressed_bytes \
                  FROM system.parts \
                  WHERE active AND database = currentDatabase() \
-                   AND table IN ('{TXS_TABLE}', '{BLOCKS_TABLE}', '{ACTORS_TABLE}') \
+                   AND table IN ('{TXS_TABLE}', '{BLOCKS_TABLE}', '{ACTORS_TABLE}', '{POOLS_TABLE}') \
                  GROUP BY table ORDER BY bytes_on_disk DESC"
             ))
             .await?;
@@ -426,9 +444,10 @@ impl EthTxIndex for ClickhouseTxRepository {
         &self,
         addresses: &[EthAddress],
         span: BlockRange,
+        limit: usize,
     ) -> Result<Vec<MinedTx>, io::Error> {
         let chain = self.chain_id;
-        if addresses.is_empty() {
+        if addresses.is_empty() || limit == 0 {
             return Ok(Vec::new());
         }
 
@@ -449,7 +468,7 @@ impl EthTxIndex for ClickhouseTxRepository {
                      OR to_address IN ({plain}) \
                      OR contract_address IN ({plain}) \
                      OR arrayExists(topics -> hasAny(topics, [{words}]), log_topics) \
-                 ) ORDER BY block_number"
+                 ) ORDER BY block_number, tx_hash LIMIT {limit}"
             ))
             .await?;
 
@@ -514,6 +533,65 @@ impl ActorRepository for ClickhouseTxRepository {
 
         self.execute(
             &format!("INSERT INTO {ACTORS_TABLE} FORMAT JSONEachRow"),
+            body,
+        )
+        .await?;
+
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl PoolRepository for ClickhouseTxRepository {
+    async fn pools(&self, keys: &[PoolKey]) -> Result<Vec<PoolInfo>, io::Error> {
+        let chain = self.chain_id;
+        if keys.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let wanted = keys
+            .iter()
+            .map(|key| {
+                format!(
+                    "('{}','{}')",
+                    key.address(),
+                    key.pool_id().map(|id| id.to_string()).unwrap_or_default()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+
+        let rows: Vec<PoolRow> = self
+            .rows(&format!(
+                "SELECT address, pool_id, family, protocol, tokens, fee, factory, \
+                        source_kind, source_name, source_version \
+                 FROM {POOLS_TABLE} FINAL \
+                 WHERE chain_id = {chain} AND (address, pool_id) IN ({wanted})"
+            ))
+            .await?;
+
+        rows.into_iter().map(PoolRow::into_pool).collect()
+    }
+
+    async fn remember(&self, pools: &[PoolInfo]) -> Result<(), io::Error> {
+        let mut body = String::new();
+
+        for pool in pools {
+            let row = PoolRow::from_pool(pool);
+            let line = serde_json::to_string(&self.on_chain(&row)).map_err(|error| {
+                io::Error::other(format!("failed to encode {}: {error}", row.address))
+            })?;
+
+            body.push_str(&line);
+            body.push('\n');
+        }
+
+        if body.is_empty() {
+            return Ok(());
+        }
+
+        self.execute(
+            &format!("INSERT INTO {POOLS_TABLE} FORMAT JSONEachRow"),
             body,
         )
         .await?;

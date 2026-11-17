@@ -1,12 +1,12 @@
-
 use std::collections::HashMap;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::sim::rng::Rng;
 
 const BASE58: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
-pub const TRANSFER_TOPIC: &str = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+pub const TRANSFER_TOPIC: &str =
+    "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 
 pub fn hex_raw(rng: &mut Rng, bytes: usize) -> String {
     let mut buf = vec![0u8; bytes];
@@ -23,7 +23,9 @@ pub fn quantity(value: u64) -> String {
 }
 
 pub fn tron_address(rng: &mut Rng) -> String {
-    let body: String = (0..33).map(|_| BASE58[rng.below(BASE58.len() as u64) as usize] as char).collect();
+    let body: String = (0..33)
+        .map(|_| BASE58[rng.below(BASE58.len() as u64) as usize] as char)
+        .collect();
     format!("T{body}")
 }
 
@@ -39,7 +41,10 @@ pub struct TestNode {
 
 impl TestNode {
     pub fn new(rng: &mut Rng) -> Self {
-        Self { block: 6_000_000 + rng.below(1_000_000), pending: HashMap::new() }
+        Self {
+            block: 6_000_000 + rng.below(1_000_000),
+            pending: HashMap::new(),
+        }
     }
 
     pub fn handle(&mut self, path: &str, request: &Value, rng: &mut Rng) -> (Value, f64) {
@@ -48,7 +53,10 @@ impl TestNode {
             ("/", Value::Array(batch)) => {
                 let replies: Vec<_> = batch.iter().map(|r| self.eth(r, rng)).collect();
                 let ms = replies.iter().map(|(_, ms)| ms).sum();
-                (Value::Array(replies.into_iter().map(|(v, _)| v).collect()), ms)
+                (
+                    Value::Array(replies.into_iter().map(|(v, _)| v).collect()),
+                    ms,
+                )
             }
             ("/", single) => self.eth(single, rng),
             (path, body) => self.tron(path, body, rng),
@@ -62,21 +70,37 @@ impl TestNode {
             "eth_chainId" => (json!("0xaa36a7"), 1.0),
             "eth_blockNumber" => (json!(quantity(self.block)), 1.0),
             "eth_getTransactionCount" => (json!(quantity(rng.below(500))), 3.0),
-            "eth_maxPriorityFeePerGas" | "eth_gasPrice" => (json!(quantity(1_000_000_000 + rng.below(2_000_000_000))), 2.0),
+            "eth_maxPriorityFeePerGas" | "eth_gasPrice" => (
+                json!(quantity(1_000_000_000 + rng.below(2_000_000_000))),
+                2.0,
+            ),
             "eth_getBalance" => (json!(quantity(rng.next_u64() >> 4)), 4.0),
             "eth_call" => (json!(hex(rng, 32)), 8.0),
             "eth_estimateGas" => {
-                let gas = if params[0]["data"].is_string() { 45_000 + rng.below(20_000) } else { 21_000 };
+                let gas = if params[0]["data"].is_string() {
+                    45_000 + rng.below(20_000)
+                } else {
+                    21_000
+                };
                 (json!(quantity(gas)), 12.0)
             }
             "eth_getBlockByNumber" => (self.eth_block(rng), 15.0),
             "eth_sendRawTransaction" => {
                 let contract = params[0].as_str().map_or(0, str::len) > 300;
                 let hash = hex(rng, 32);
-                self.pending.insert(hash.clone(), Pending { polls_left: rng.below(4), contract });
+                self.pending.insert(
+                    hash.clone(),
+                    Pending {
+                        polls_left: rng.below(4),
+                        contract,
+                    },
+                );
                 (json!(hash), 30.0)
             }
-            "eth_getTransactionReceipt" => (self.eth_receipt(params[0].as_str().unwrap_or_default(), rng), 5.0),
+            "eth_getTransactionReceipt" => (
+                self.eth_receipt(params[0].as_str().unwrap_or_default(), rng),
+                5.0,
+            ),
             "eth_getLogs" => {
                 let n = 5 + rng.below(80);
                 let logs: Vec<_> = (0..n).map(|_| self.eth_log(&hex(rng, 32), rng)).collect();
@@ -84,10 +108,16 @@ impl TestNode {
             }
             other => {
                 let error = json!({"code": -32601, "message": format!("the method {other} does not exist/is not available")});
-                return (json!({"jsonrpc": "2.0", "id": request["id"], "error": error}), 1.0);
+                return (
+                    json!({"jsonrpc": "2.0", "id": request["id"], "error": error}),
+                    1.0,
+                );
             }
         };
-        (json!({"jsonrpc": "2.0", "id": request["id"], "result": result}), ms)
+        (
+            json!({"jsonrpc": "2.0", "id": request["id"], "result": result}),
+            ms,
+        )
     }
 
     fn eth_block(&self, rng: &mut Rng) -> Value {
@@ -114,8 +144,14 @@ impl TestNode {
     }
 
     fn eth_receipt(&mut self, hash: &str, rng: &mut Rng) -> Value {
-        let Some(contract) = self.poll(hash) else { return Value::Null };
-        let logs = if contract { vec![self.eth_log(hash, rng)] } else { vec![] };
+        let Some(contract) = self.poll(hash) else {
+            return Value::Null;
+        };
+        let logs = if contract {
+            vec![self.eth_log(hash, rng)]
+        } else {
+            vec![]
+        };
         json!({
             "transactionHash": hash, "transactionIndex": quantity(rng.below(200)), "blockHash": hex(rng, 32),
             "blockNumber": quantity(self.block), "from": hex(rng, 20), "to": hex(rng, 20),
@@ -138,7 +174,9 @@ impl TestNode {
         match path {
             "/wallet/getnowblock" => (self.tron_block_header(rng), 3.0),
             "/wallet/getaccount" => {
-                let assets: Vec<_> = (0..rng.below(6)).map(|i| json!({"key": format!("100{i:04}"), "value": rng.below(1 << 40)})).collect();
+                let assets: Vec<_> = (0..rng.below(6))
+                    .map(|i| json!({"key": format!("100{i:04}"), "value": rng.below(1 << 40)}))
+                    .collect();
                 let account = json!({
                     "address": request["address"], "balance": rng.below(50_000_000_000),
                     "create_time": 1_700_000_000_000u64 + rng.below(1 << 36), "latest_opration_time": 1_790_000_000_000u64,
@@ -166,8 +204,15 @@ impl TestNode {
                 (self.tron_tx("TransferContract", value, 106, rng), 10.0)
             }
             "/wallet/triggersmartcontract" | "/wallet/triggerconstantcontract" => {
-                let selector = if request["function_selector"] == "balanceOf(address)" { "70a08231" } else { "a9059cbb" };
-                let data = format!("{selector}{}", request["parameter"].as_str().unwrap_or_default());
+                let selector = if request["function_selector"] == "balanceOf(address)" {
+                    "70a08231"
+                } else {
+                    "a9059cbb"
+                };
+                let data = format!(
+                    "{selector}{}",
+                    request["parameter"].as_str().unwrap_or_default()
+                );
                 let value = json!({"data": data, "owner_address": request["owner_address"], "contract_address": request["contract_address"]});
                 let mut reply = json!({"result": {"result": true}, "transaction": self.tron_tx("TriggerSmartContract", value, 172, rng)});
                 if path.ends_with("constantcontract") {
@@ -179,10 +224,19 @@ impl TestNode {
             "/wallet/broadcasttransaction" => {
                 let txid = request["txID"].as_str().unwrap_or_default().to_owned();
                 let contract = request["raw_data"]["contract"][0]["type"] == "TriggerSmartContract";
-                self.pending.insert(txid.clone(), Pending { polls_left: rng.below(3), contract });
+                self.pending.insert(
+                    txid.clone(),
+                    Pending {
+                        polls_left: rng.below(3),
+                        contract,
+                    },
+                );
                 (json!({"result": true, "txid": txid}), 40.0)
             }
-            "/wallet/gettransactioninfobyid" => (self.tron_info(request["value"].as_str().unwrap_or_default(), rng), 5.0),
+            "/wallet/gettransactioninfobyid" => (
+                self.tron_info(request["value"].as_str().unwrap_or_default(), rng),
+                5.0,
+            ),
             _ => (json!({"Error": format!("{path} not found")}), 1.0),
         }
     }
@@ -211,7 +265,9 @@ impl TestNode {
     }
 
     fn tron_info(&mut self, txid: &str, rng: &mut Rng) -> Value {
-        let Some(contract) = self.poll(txid) else { return json!({}) };
+        let Some(contract) = self.poll(txid) else {
+            return json!({});
+        };
         let mut info = json!({
             "id": txid, "blockNumber": self.block, "blockTimeStamp": 1_790_000_000_000u64 + self.block * 3000,
             "contractResult": [""], "receipt": {"net_usage": 260 + rng.below(80)},

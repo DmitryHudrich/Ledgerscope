@@ -32,6 +32,8 @@ export interface VizPalette {
   contract: string;
   focus: string;
   token: string;
+  swap: string;
+  taint: string;
   edge: string;
 }
 
@@ -46,6 +48,8 @@ const ROLES: Record<keyof VizPalette, string> = {
   contract: '--series-contract',
   focus: '--series-focus',
   token: '--series-token',
+  swap: '--series-swap',
+  taint: '--series-taint',
   edge: '--edge',
 };
 

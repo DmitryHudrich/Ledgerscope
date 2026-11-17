@@ -3,8 +3,12 @@ use crate::tls::{ContentType, Direction, Record};
 const PREFIX: usize = 16;
 
 pub fn extract(records: &[Record]) -> Vec<f64> {
-    let data: Vec<&Record> = records.iter().filter(|r| r.kind == ContentType::ApplicationData).collect();
-    let (up, down): (Vec<&Record>, Vec<&Record>) = data.iter().partition(|r| r.dir == Direction::Up);
+    let data: Vec<&Record> = records
+        .iter()
+        .filter(|r| r.kind == ContentType::ApplicationData)
+        .collect();
+    let (up, down): (Vec<&Record>, Vec<&Record>) =
+        data.iter().partition(|r| r.dir == Direction::Up);
     let bytes = |rs: &[&Record]| rs.iter().map(|r| r.len).sum::<usize>();
     let duration = match (data.first(), data.last()) {
         (Some(first), Some(last)) => last.time - first.time,

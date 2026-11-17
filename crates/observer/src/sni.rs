@@ -65,10 +65,7 @@ fn host_name(extension: &[u8]) -> Option<String> {
 }
 
 fn be16(bytes: &[u8], at: usize) -> Option<u16> {
-    Some(u16::from_be_bytes([
-        *bytes.get(at)?,
-        *bytes.get(at + 1)?,
-    ]))
+    Some(u16::from_be_bytes([*bytes.get(at)?, *bytes.get(at + 1)?]))
 }
 
 pub fn record_from(buffer: &[u8]) -> Option<&[u8]> {

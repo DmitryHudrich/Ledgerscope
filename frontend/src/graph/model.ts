@@ -1,17 +1,20 @@
 import {
+  ETH_ASSET,
   contractAddressesOf,
   edgeEndpoints,
   edgeFlavor,
   edgeTransfer,
   type EdgeTransfer,
 } from '../api/edges';
-import type { AddressLabel, GraphEdge, GraphResponse, GraphTag } from '../api/types';
+import type { AddressLabel, GraphEdge, GraphResponse, GraphTag, TaintAsset } from '../api/types';
 import { weiToEth } from '../lib/format';
 import { nativeSymbol } from '../lib/chain';
 
 export type NodeKind = 'contract' | 'eoa';
 
-export type LinkTone = 'eth' | 'token' | 'mixed' | 'call';
+export type LinkTone = 'eth' | 'token' | 'mixed' | 'swap' | 'call';
+
+export type TaintRole = 'seed' | 'holder' | 'sink' | 'transit' | 'touched';
 
 export interface AssetFlow {
   key: string;
@@ -39,6 +42,10 @@ export interface GraphNode {
   assetsOut: Map<string, AssetFlow>;
 
   turnover: number;
+  taint: TaintRole | null;
+  taintStep: number;
+  taintIn: Map<string, bigint>;
+  taintHeld: Map<string, bigint>;
 
   degree: number;
   firstBlock: number;
@@ -68,8 +75,10 @@ export interface GraphLink {
   assets: AssetFlow[];
 
   weight: number;
+  taint: number;
 
   transfers: number;
+  swaps: number;
   calls: number;
   failed: number;
   tone: LinkTone;
@@ -88,6 +97,7 @@ export interface GraphStats {
   assets: AssetFlow[];
   transfers: number;
   tokenTransfers: number;
+  swaps: number;
   calls: number;
   minBlock: number;
   maxBlock: number;
@@ -115,6 +125,8 @@ export interface GraphFilters {
   showNative: boolean;
 
   showTokens: boolean;
+
+  showSwaps: boolean;
 
   showCalls: boolean;
 
@@ -152,6 +164,7 @@ export interface GraphModel {
   linksByNode: Map<string, GraphLink[]>;
   neighbors: Map<string, Set<string>>;
   stats: GraphStats;
+  taint: boolean;
 }
 
 export interface NodePosition {
@@ -169,6 +182,7 @@ export const EMPTY_MODEL: GraphModel = {
   byId: new Map(),
   linksByNode: new Map(),
   neighbors: new Map(),
+  taint: false,
   stats: {
     nodes: 0,
     links: 0,
@@ -178,6 +192,7 @@ export const EMPTY_MODEL: GraphModel = {
     assets: [],
     transfers: 0,
     tokenTransfers: 0,
+    swaps: 0,
     calls: 0,
     minBlock: 0,
     maxBlock: 0,
@@ -195,6 +210,7 @@ export const DEFAULT_FILTERS: GraphFilters = {
   minEth: 0,
   showNative: true,
   showTokens: true,
+  showSwaps: true,
   showCalls: true,
   showDeployments: true,
   showFailed: true,
@@ -231,6 +247,10 @@ function blank(id: string, kind: NodeKind, root: boolean): GraphNode {
     assetsIn: new Map(),
     assetsOut: new Map(),
     turnover: 0,
+    taint: null,
+    taintStep: -1,
+    taintIn: new Map(),
+    taintHeld: new Map(),
     degree: 0,
     firstBlock: Number.POSITIVE_INFINITY,
     lastBlock: 0,
@@ -281,7 +301,8 @@ export function sortedAssets(flows: Iterable<AssetFlow>): AssetFlow[] {
   });
 }
 
-function toneOf(ethCount: number, tokenCount: number, transfers: number): LinkTone {
+function toneOf(ethCount: number, tokenCount: number, transfers: number, swaps: number): LinkTone {
+  if (swaps > 0) return 'swap';
   if (transfers === 0) return 'call';
   if (ethCount > 0 && tokenCount > 0) return 'mixed';
   return tokenCount > 0 ? 'token' : 'eth';
@@ -348,11 +369,17 @@ export function buildGraph(
     return transfer.symbol.toLowerCase().includes(asset) || transfer.key.toLowerCase() === asset;
   };
 
+  const taint = taintIndex(response);
+
   const byId = new Map<string, GraphNode>();
   const touch = (id: string): GraphNode => {
     let node = byId.get(id);
     if (!node) {
       node = blank(id, kindOf(id), isRoot(id));
+      node.taint = taint?.roles.get(id) ?? null;
+      node.taintStep = taint?.steps.get(id) ?? -1;
+      node.taintIn = taint?.received.get(id) ?? new Map();
+      node.taintHeld = taint?.held.get(id) ?? new Map();
       const seed = previous?.get(id);
       if (seed) {
         node.x = seed.x;
@@ -388,9 +415,11 @@ export function buildGraph(
         ? filters.showNative
         : flavor === 'token'
           ? filters.showTokens
-          : flavor === 'deployment'
-            ? filters.showDeployments
-            : filters.showCalls)
+          : flavor === 'swap'
+            ? filters.showSwaps
+            : flavor === 'deployment'
+              ? filters.showDeployments
+              : filters.showCalls)
       && (edge.succeeded || filters.showFailed)
       && (!span || (edge.block_number >= span.from && edge.block_number <= span.to))
       && !(filters.hideSelfLoops && from === to)
@@ -419,7 +448,9 @@ export function buildGraph(
         value: 0n,
         assets: [],
         weight: 0,
+        taint: 0,
         transfers: 0,
+        swaps: 0,
         calls: 0,
         failed: 0,
         tone: 'call',
@@ -432,6 +463,8 @@ export function buildGraph(
     }
 
     bundle.txs.push(edge);
+    const share = taint?.shares.get(`${edge.tx_hash.toLowerCase()}|${from}>${to}`) ?? 0;
+    if (share > bundle.taint) bundle.taint = share;
     bundle.tags.push(...(txTags.get(edge.tx_hash.toLowerCase()) ?? []));
     bundle.count += 1;
     if (!edge.succeeded) bundle.failed += 1;
@@ -446,6 +479,8 @@ export function buildGraph(
         tokenCounts.set(key, (tokenCounts.get(key) ?? 0) + 1);
       }
       bump(bundleAssets.get(key)!, transfer);
+    } else if (flavor === 'swap') {
+      bundle.swaps += 1;
     } else {
       bundle.calls += 1;
     }
@@ -468,6 +503,7 @@ export function buildGraph(
       ethCounts.get(bundle.id) ?? 0,
       tokenCounts.get(bundle.id) ?? 0,
       bundle.transfers,
+      bundle.swaps,
     );
     links.push(bundle);
   }
@@ -622,6 +658,7 @@ export function buildGraph(
     byId,
     linksByNode,
     neighbors,
+    taint: taint !== null,
     stats: {
       nodes: nodes.length,
       links: links.length,
@@ -631,6 +668,7 @@ export function buildGraph(
       assets: sortedAssets(totalAssets.values()),
       transfers,
       tokenTransfers,
+      swaps: links.reduce((sum, link) => sum + link.swaps, 0),
       calls: links.reduce((sum, link) => sum + link.calls, 0),
       minBlock: Number.isFinite(minBlock) ? minBlock : 0,
       maxBlock,
@@ -642,6 +680,81 @@ export function buildGraph(
       tagKeys: [...new Set((response.tags ?? []).map((tag) => tag.key))].sort(),
     },
   };
+}
+
+interface TaintIndex {
+  roles: Map<string, TaintRole>;
+  steps: Map<string, number>;
+  shares: Map<string, number>;
+  received: Map<string, Map<string, bigint>>;
+  held: Map<string, Map<string, bigint>>;
+}
+
+export function taintAssetKey(asset: TaintAsset): string {
+  if (asset.kind === 'native') return ETH_ASSET;
+  if (asset.kind === 'issued') return `asset:${asset.id ?? ''}`;
+  return (asset.id ?? '').toLowerCase();
+}
+
+function addTo(into: Map<string, Map<string, bigint>>, address: string, key: string, amount: bigint): void {
+  let byAsset = into.get(address);
+  if (!byAsset) {
+    byAsset = new Map();
+    into.set(address, byAsset);
+  }
+  byAsset.set(key, (byAsset.get(key) ?? 0n) + amount);
+}
+
+function parseAmount(raw: string): bigint {
+  try {
+    return BigInt(raw);
+  } catch {
+    return 0n;
+  }
+}
+
+function taintIndex(response: GraphResponse): TaintIndex | null {
+  const info = response.taint;
+  if (!info) return null;
+
+  const roles = new Map<string, TaintRole>();
+  const steps = new Map<string, number>();
+  const shares = new Map<string, number>();
+  const received = new Map<string, Map<string, bigint>>();
+  const held = new Map<string, Map<string, bigint>>();
+  const flows = [...info.flows].sort(
+    (left, right) => left.block_number - right.block_number || left.slot - right.slot,
+  );
+
+  for (const flow of flows) roles.set(flow.to.toLowerCase(), 'touched');
+  for (const holding of info.holdings) {
+    const amount = parseAmount(holding.tainted);
+    if (amount <= 0n) continue;
+    roles.set(holding.address.toLowerCase(), 'holder');
+    addTo(held, holding.address.toLowerCase(), taintAssetKey(holding.asset), amount);
+  }
+  for (const address of info.transit) roles.set(address.toLowerCase(), 'transit');
+  for (const address of info.sinks) roles.set(address.toLowerCase(), 'sink');
+  for (const address of info.seeds) {
+    roles.set(address.toLowerCase(), 'seed');
+    steps.set(address.toLowerCase(), 0);
+  }
+
+  for (const flow of flows) {
+    const from = flow.from.toLowerCase();
+    const to = flow.to.toLowerCase();
+    const key = `${flow.tx_hash.toLowerCase()}|${from}>${to}`;
+    shares.set(key, Math.max(shares.get(key) ?? 0, flow.share_bps / 10_000));
+    addTo(received, to, taintAssetKey(flow.asset), parseAmount(flow.tainted));
+
+    const before = steps.get(from);
+    if (before === undefined) continue;
+    const next = before + 1;
+    const known = steps.get(to);
+    if (known === undefined || known > next) steps.set(to, next);
+  }
+
+  return { roles, steps, shares, received, held };
 }
 
 /** Hides nodes only in the current canvas; API data and investigation roots stay untouched. */

@@ -15,16 +15,16 @@ use adapters::observe::PgObservations;
 use application::account::{
     AuthService, CanvasService, LabelService, RpcNodeService, TeamService, User,
 };
-use application::observe::{ObservationStore, TlsCorrelationConfig};
 use application::eth::{
-    BuildBoard, CachingActorResolver, EthExplorer, ExploreLimits, FetchingTxIndex, FillPlan,
-    JsonLabelProvider, ScanBoard, StoringEthTxSource,
+    BuildBoard, CachingActorResolver, ChainPoolRegistry, EthExplorer, ExploreLimits,
+    FetchingTxIndex, FillPlan, JsonLabelProvider, ScanBoard, StoringEthTxSource,
     classificator::FulliestEthTxClassificator,
     ports::{
         ActorRepository, EthRpcSource, EthTxCache, EthTxIndex, EthTxRepository, EthTxSource,
-        LabelProvider,
+        LabelProvider, PoolRepository,
     },
 };
+use application::observe::{ObservationStore, TlsCorrelationConfig};
 use reqwest::{NoProxy, Proxy, Url};
 use time::OffsetDateTime;
 
@@ -45,6 +45,7 @@ struct Storage {
     source: Arc<dyn EthTxSource>,
     index: Option<Arc<dyn EthTxIndex>>,
     actors: Option<Arc<dyn ActorRepository>>,
+    pools: Option<Arc<dyn PoolRepository>>,
     repository: Option<Arc<dyn EthTxRepository>>,
 }
 
@@ -214,7 +215,6 @@ impl AppState {
 
         let shared = shared_storage(&config.storage).await?;
         let mut labels = labels(config, &metas)?;
-        let classificator = Arc::new(FulliestEthTxClassificator::new());
 
         let monitor = Arc::new(RpcMonitor::default());
         let scans = Arc::new(ScanBoard::default());
@@ -239,6 +239,10 @@ impl AppState {
                     .unwrap_or_else(JsonLabelProvider::empty),
             ) as Arc<dyn LabelProvider>;
 
+            let classificator = Arc::new(FulliestEthTxClassificator::with_pools(Arc::new(
+                ChainPoolRegistry::new(rpc_source.clone(), storage.pools),
+            )));
+
             let actor_resolver = Arc::new(CachingActorResolver::new(
                 rpc_source.clone(),
                 storage.actors,
@@ -258,19 +262,19 @@ impl AppState {
             );
 
             let explorer = EthExplorer::new(
-                    index,
-                    storage.source,
-                    classificator.clone(),
-                    actor_resolver,
-                    label_provider,
-                    limits(&config.graph),
-                )
-                .with_scans(scans.for_chain(chain_id))
-                .with_builds(builds.for_chain(chain_id))
-                .with_fill(FillPlan {
-                    window_blocks: config.indexer.window_blocks.max(1),
-                    parallel_windows: config.indexer.parallel_windows,
-                });
+                index,
+                storage.source,
+                classificator.clone(),
+                actor_resolver,
+                label_provider,
+                limits(&config.graph),
+            )
+            .with_scans(scans.for_chain(chain_id))
+            .with_builds(builds.for_chain(chain_id))
+            .with_fill(FillPlan {
+                window_blocks: config.indexer.window_blocks.max(1),
+                parallel_windows: config.indexer.parallel_windows,
+            });
             let explorer = Arc::new(match dataset {
                 Some(dataset) => explorer.with_dataset(dataset),
                 None => explorer,
@@ -566,9 +570,9 @@ async fn accounts(
     }
 
     let observer = &config.observer;
-    let observations = observer.enabled.then(|| {
-        Arc::new(PgObservations::new(store.pool().clone())) as Arc<dyn ObservationStore>
-    });
+    let observations = observer
+        .enabled
+        .then(|| Arc::new(PgObservations::new(store.pool().clone())) as Arc<dyn ObservationStore>);
     let observer_token = observer
         .enabled
         .then(|| observer.token.trim().to_owned())
@@ -694,7 +698,11 @@ fn stored(
         .cache
         .as_ref()
         .map(|cache| Arc::new(cache.for_chain(chain_id)) as Arc<dyn EthTxCache>);
-    Some(StoringEthTxSource::new(upstream, Arc::new(repository), cache))
+    Some(StoringEthTxSource::new(
+        upstream,
+        Arc::new(repository),
+        cache,
+    ))
 }
 
 fn storage(shared: &SharedStorage, chain_id: u64, upstream: Arc<dyn EthTxSource>) -> Storage {
@@ -703,6 +711,7 @@ fn storage(shared: &SharedStorage, chain_id: u64, upstream: Arc<dyn EthTxSource>
             source: upstream,
             index: None,
             actors: None,
+            pools: None,
             repository: None,
         };
     };
@@ -717,7 +726,8 @@ fn storage(shared: &SharedStorage, chain_id: u64, upstream: Arc<dyn EthTxSource>
         source: Arc::new(StoringEthTxSource::new(upstream, repository.clone(), cache)),
         index: Some(repository.clone() as Arc<dyn EthTxIndex>),
         repository: Some(repository.clone() as Arc<dyn EthTxRepository>),
-        actors: Some(repository as Arc<dyn ActorRepository>),
+        actors: Some(repository.clone() as Arc<dyn ActorRepository>),
+        pools: Some(repository as Arc<dyn PoolRepository>),
     }
 }
 

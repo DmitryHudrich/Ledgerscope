@@ -143,7 +143,7 @@ export function parseDocument(raw: unknown): CanvasDocument {
     kind: CANVAS_KIND,
     version: CANVAS_VERSION,
     chain_id: Number(raw.chain_id),
-    scope: raw.scope === 'blocks' ? 'blocks' : 'roots',
+    scope: raw.scope === 'blocks' || raw.scope === 'taint' ? raw.scope : 'roots',
     roots: raw.roots,
     selection: raw.selection,
     ranges: Array.isArray(raw.ranges) && raw.ranges.length > 0 && raw.ranges.every(isSpan) ? raw.ranges : [raw.selection],

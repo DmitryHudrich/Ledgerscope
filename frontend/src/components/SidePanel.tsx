@@ -395,6 +395,7 @@ function FiltersPanel({ filters, onFiltersChange, model, search, onSearchChange,
       <FilterGroup title="Transactions">
         <Checkbox checked={filters.showNative} onChange={(event) => patch({ showNative: event.target.checked })}>{nativeSymbol()} transfers</Checkbox>
         <Checkbox checked={filters.showTokens} onChange={(event) => patch({ showTokens: event.target.checked })}>Token transfers</Checkbox>
+        <Checkbox checked={filters.showSwaps} onChange={(event) => patch({ showSwaps: event.target.checked })}>Swaps</Checkbox>
         <Checkbox checked={filters.showCalls} onChange={(event) => patch({ showCalls: event.target.checked })}>Contract calls</Checkbox>
         <Checkbox checked={filters.showDeployments} onChange={(event) => patch({ showDeployments: event.target.checked })}>Deployments</Checkbox>
         <Checkbox checked={filters.showFailed} onChange={(event) => patch({ showFailed: event.target.checked })}>Reverted transactions</Checkbox>
@@ -461,7 +462,7 @@ function FiltersPanel({ filters, onFiltersChange, model, search, onSearchChange,
       </FilterGroup>
 
       <div className="mt-4 flex flex-wrap items-center gap-1">
-        <Button variant="ghost" onClick={() => patch({ showNative: true, showTokens: true, showCalls: false, showDeployments: false, minEth: 0 })}>Transfers only</Button>
+        <Button variant="ghost" onClick={() => patch({ showNative: true, showTokens: true, showSwaps: false, showCalls: false, showDeployments: false, minEth: 0 })}>Transfers only</Button>
         <Button variant="ghost" onClick={onResetFilters}>Reset filters</Button>
       </div>
     </PanelSection>
@@ -510,6 +511,7 @@ function StatsPanel({ model }: { model: GraphModel }) {
       </StatGrid>
       <MetaList className="mt-4">
         <div><dt>Token transfers</dt><dd>{formatCount(stats.tokenTransfers)}</dd></div>
+        <div><dt>Swaps</dt><dd>{formatCount(stats.swaps)}</dd></div>
         <div><dt>Contract calls</dt><dd>{formatCount(stats.calls)}</dd></div>
         <div><dt>Blocks</dt><dd>{stats.minBlock ? <BlockSpanText from={stats.minBlock} to={stats.maxBlock} /> : '—'}</dd></div>
         <div><dt>First tx</dt><dd>{formatTimestamp(stats.firstSeen)}</dd></div>

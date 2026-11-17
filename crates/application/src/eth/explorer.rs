@@ -23,6 +23,10 @@ use crate::eth::{
     tags::TagEngine,
 };
 
+mod trace;
+
+pub use trace::{TaintGraph, TraceRequest};
+
 const ASKING_CHUNK: usize = 128;
 const CLASSIFY_CONCURRENCY: usize = 20;
 const PROGRESS_STEP: u64 = 256;
@@ -802,10 +806,9 @@ impl EthExplorer {
             let mut found: HashSet<EthAddress> = HashSet::new();
 
             for chunk in asking.chunks(ASKING_CHUNK) {
-                let mut mined_txs = Vec::new();
-                for span in request.spans() {
-                    mined_txs.extend(self.index.txs_touching(chunk, *span).await?);
-                }
+                let room = self.limits.max_edges.saturating_sub(edges.len());
+                let (mined_txs, cut) = self.touching(chunk, request.spans(), room).await?;
+                truncated |= cut;
                 for mined in mined_txs {
                     let Ok(interaction) = LowLevelInteraction::try_from(&mined) else {
                         continue;
@@ -900,6 +903,29 @@ impl EthExplorer {
             truncated |= batch.len() > room;
             run.advance(1, batch.len().min(room) as u64);
             txs.extend(batch.into_iter().take(room));
+        }
+
+        Ok((txs, truncated))
+    }
+
+    async fn touching(
+        &self,
+        chunk: &[EthAddress],
+        spans: &[BlockRange],
+        room: usize,
+    ) -> Result<(Vec<MinedTx>, bool), io::Error> {
+        let mut txs = Vec::new();
+        let mut truncated = false;
+
+        for span in spans {
+            let left = room.saturating_sub(txs.len());
+            if left == 0 {
+                truncated = true;
+                break;
+            }
+            let batch = self.index.txs_touching(chunk, *span, left + 1).await?;
+            truncated |= batch.len() > left;
+            txs.extend(batch.into_iter().take(left));
         }
 
         Ok((txs, truncated))
@@ -1012,10 +1038,9 @@ impl EthExplorer {
             let mut found: HashSet<EthAddress> = HashSet::new();
 
             for chunk in asking.chunks(ASKING_CHUNK) {
-                let mut txs = Vec::new();
-                for span in request.spans() {
-                    txs.extend(self.index.txs_touching(chunk, *span).await?);
-                }
+                let room = self.limits.max_edges.saturating_sub(edges.len());
+                let (txs, cut) = self.touching(chunk, request.spans(), room).await?;
+                truncated |= cut;
                 run.advance(chunk.len() as u64, txs.len() as u64);
 
                 for (meta, slot, interaction) in self.classify(txs, None).await {

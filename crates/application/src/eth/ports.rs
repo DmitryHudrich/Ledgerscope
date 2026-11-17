@@ -5,7 +5,7 @@ use futures::stream::BoxStream;
 
 use domain::eth::{
     Actor, ActorHint, AddressLabel, BlockBucket, BlockRange, BlockRef, BlockSource, EthAddress,
-    EthReceipt, IndexCoverage, MinedTx,
+    EthReceipt, IndexCoverage, MinedTx, PoolCandidate, PoolInfo, PoolKey,
 };
 
 #[async_trait::async_trait]
@@ -72,6 +72,7 @@ pub trait EthTxIndex: Send + Sync {
         &self,
         addresses: &[EthAddress],
         span: BlockRange,
+        limit: usize,
     ) -> Result<Vec<MinedTx>, io::Error>;
 
     async fn txs_within(&self, span: BlockRange, limit: usize) -> Result<Vec<MinedTx>, io::Error>;
@@ -123,4 +124,16 @@ pub trait EthRpcSource: Send + Sync {
     async fn code(&self, address: &EthAddress, block: BlockRef) -> Result<Bytes, io::Error>;
 
     async fn receipt(&self, tx_hash: &TxHash) -> Result<Option<EthReceipt>, io::Error>;
+}
+
+#[async_trait::async_trait]
+pub trait PoolRegistry: Send + Sync {
+    async fn resolve(&self, wanted: &[PoolCandidate]) -> HashMap<PoolKey, PoolInfo>;
+}
+
+#[async_trait::async_trait]
+pub trait PoolRepository: Send + Sync {
+    async fn pools(&self, keys: &[PoolKey]) -> Result<Vec<PoolInfo>, io::Error>;
+
+    async fn remember(&self, pools: &[PoolInfo]) -> Result<(), io::Error>;
 }

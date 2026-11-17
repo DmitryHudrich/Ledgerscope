@@ -1,4 +1,3 @@
-
 pub const HEADER_LEN: usize = 5;
 pub const MAX_PLAINTEXT: usize = 1 << 14;
 pub const MAX_CIPHERTEXT: usize = MAX_PLAINTEXT + 256;
@@ -62,7 +61,8 @@ impl StreamReader {
         let Some(header) = self.buf.get(..HEADER_LEN) else {
             return Ok(None);
         };
-        let kind = ContentType::from_byte(header[0]).ok_or(ParseError::UnknownContentType(header[0]))?;
+        let kind =
+            ContentType::from_byte(header[0]).ok_or(ParseError::UnknownContentType(header[0]))?;
         let version = u16::from_be_bytes([header[1], header[2]]);
         if !(0x0301..=0x0304).contains(&version) {
             return Err(ParseError::BadVersion(version));
@@ -86,7 +86,12 @@ pub fn parse_records(packets: &[Packet]) -> Result<Vec<Record>, ParseError> {
         let stream = &mut streams[packet.dir as usize];
         stream.buf.extend_from_slice(&packet.payload);
         while let Some((kind, len)) = stream.next_record()? {
-            records.push(Record { time: packet.time, dir: packet.dir, kind, len });
+            records.push(Record {
+                time: packet.time,
+                dir: packet.dir,
+                kind,
+                len,
+            });
         }
     }
     Ok(records)
@@ -104,7 +109,11 @@ mod tests {
     }
 
     fn packet(time: f64, dir: Direction, payload: &[u8]) -> Packet {
-        Packet { time, dir, payload: payload.to_vec() }
+        Packet {
+            time,
+            dir,
+            payload: payload.to_vec(),
+        }
     }
 
     #[test]
@@ -113,11 +122,18 @@ mod tests {
         stream.extend(record(21, 19));
         let (a, b) = stream.split_at(1448);
         let (b, c) = b.split_at(2);
-        let packets = [packet(0.0, Direction::Down, a), packet(0.1, Direction::Down, b), packet(0.2, Direction::Down, c)];
+        let packets = [
+            packet(0.0, Direction::Down, a),
+            packet(0.1, Direction::Down, b),
+            packet(0.2, Direction::Down, c),
+        ];
 
         let records = parse_records(&packets).unwrap();
         assert_eq!(records.len(), 2);
-        assert_eq!((records[0].kind, records[0].len, records[0].time), (ContentType::ApplicationData, 3000, 0.2));
+        assert_eq!(
+            (records[0].kind, records[0].len, records[0].time),
+            (ContentType::ApplicationData, 3000, 0.2)
+        );
         assert_eq!((records[1].kind, records[1].len), (ContentType::Alert, 19));
     }
 
@@ -131,12 +147,18 @@ mod tests {
             packet(0.2, Direction::Up, &up[50..]),
         ];
         let records = parse_records(&packets).unwrap();
-        assert_eq!(records.iter().map(|r| (r.dir, r.len)).collect::<Vec<_>>(), [(Direction::Down, 200), (Direction::Up, 100)]);
+        assert_eq!(
+            records.iter().map(|r| (r.dir, r.len)).collect::<Vec<_>>(),
+            [(Direction::Down, 200), (Direction::Up, 100)]
+        );
     }
 
     #[test]
     fn rejects_garbage() {
         let packets = [packet(0.0, Direction::Up, b"GET / HTTP/1.1\r\n")];
-        assert_eq!(parse_records(&packets).unwrap_err(), ParseError::UnknownContentType(b'G'));
+        assert_eq!(
+            parse_records(&packets).unwrap_err(),
+            ParseError::UnknownContentType(b'G')
+        );
     }
 }

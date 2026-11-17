@@ -99,13 +99,10 @@ impl TronTxSource {
                 .post_json("wallet/getblockbynum", &body, |answer| {
                     answer.get("blockID").is_some()
                 }),
-            self.pool.post_json(
-                "wallet/gettransactioninfobyblocknum",
-                &body,
-                |answer| {
+            self.pool
+                .post_json("wallet/gettransactioninfobyblocknum", &body, |answer| {
                     answer.is_array() || answer.as_object().is_some_and(|map| map.is_empty())
-                },
-            ),
+                }),
         )
         .await?;
 

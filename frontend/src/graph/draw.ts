@@ -75,6 +75,8 @@ export function nodeColor(node: GraphNode, palette: VizPalette): string {
 }
 
 export function linkColor(link: GraphLink, palette: VizPalette, lit: boolean): string {
+  if (link.taint > 0) return palette.taint;
+  if (link.tone === 'swap') return palette.swap;
   if (link.tone === 'token' || link.tone === 'mixed') return palette.token;
   if (link.tone === 'call') return palette.edge;
   return lit ? nodeColor(link.source, palette) : palette.edge;
@@ -332,7 +334,7 @@ const MIN_BORDER_SCREEN_RADIUS = 2.5;
 interface StrokeBatch {
   style: string;
   width: number;
-  dashed: boolean;
+  pattern: 'solid' | 'dash' | 'dot';
   path: Path2D;
 }
 
@@ -350,14 +352,15 @@ function drawLinks(
 
   for (const link of links) {
     const color = linkColor(link, palette, lit);
-    const tinted = !lit && (link.tone === 'token' || link.tone === 'mixed');
-    const style = withAlpha(color, alpha * (lit ? 0.92 : tinted ? 0.52 : 0.62));
+    const tinted = !lit && (link.tone === 'token' || link.tone === 'mixed' || link.tone === 'swap');
+    const strength = link.taint > 0 ? 0.35 + 0.6 * link.taint : lit ? 0.92 : tinted ? 0.52 : 0.62;
+    const style = withAlpha(color, alpha * (lit ? Math.max(strength, 0.92) : strength));
     const width = Math.round(Math.max(link.width, lit ? 1.6 : 1) * 2) / 2;
-    const dashed = link.tone === 'call';
-    const key = `${style}|${width}|${dashed ? 1 : 0}`;
+    const pattern = link.tone === 'call' ? 'dash' : link.tone === 'swap' ? 'dot' : 'solid';
+    const key = `${style}|${width}|${pattern}`;
     let batch = strokes.get(key);
     if (!batch) {
-      batch = { style, width, dashed, path: new Path2D() };
+      batch = { style, width, pattern, path: new Path2D() };
       strokes.set(key, batch);
     }
 
@@ -396,10 +399,11 @@ function drawLinks(
   }
 
   const dash = [6 / t.k, 5 / t.k];
+  const dot = [1.5 / t.k, 4 / t.k];
   for (const batch of strokes.values()) {
     ctx.strokeStyle = batch.style;
     ctx.lineWidth = batch.width / t.k;
-    ctx.setLineDash(batch.dashed ? dash : []);
+    ctx.setLineDash(batch.pattern === 'dash' ? dash : batch.pattern === 'dot' ? dot : []);
     ctx.stroke(batch.path);
   }
   ctx.setLineDash([]);
@@ -461,6 +465,16 @@ function drawNode(
     ctx.beginPath();
     ctx.arc(node.x, node.y, node.r + 4 / t.k, 0, Math.PI * 2);
     ctx.stroke();
+  }
+
+  if (node.taint === 'seed' || node.taint === 'holder' || node.taint === 'sink') {
+    ctx.strokeStyle = withAlpha(palette.taint, alpha * 0.9);
+    ctx.lineWidth = (node.taint === 'seed' ? 2.5 : 2) / t.k;
+    ctx.setLineDash(node.taint === 'sink' ? [3 / t.k, 2.5 / t.k] : []);
+    ctx.beginPath();
+    ctx.arc(node.x, node.y, node.r + (node.root ? 7.5 : 4) / t.k, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
   }
 
   if (matched || isSelected) {

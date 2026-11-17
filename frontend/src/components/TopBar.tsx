@@ -1,7 +1,7 @@
-import { useState, type FormEvent, type ReactNode } from 'react';
+import { useState, type ClipboardEvent, type FormEvent, type ReactNode } from 'react';
 
 import type { ChainInfo, GraphRoot, GraphScope } from '../api/types';
-import { addressHint, displayAddress, parseAddressInput } from '../lib/chain';
+import { addressHint, displayAddress, parseAddressList } from '../lib/chain';
 import type { Theme } from '../lib/theme';
 import type { BlockBounds } from './Timeline';
 import { IconChevron, IconLogo, IconMoon, IconSun } from './Icons';
@@ -20,7 +20,7 @@ interface Props {
   scope: GraphScope;
   onScopeChange: (next: GraphScope) => void;
   selection: BlockBounds;
-  onSubmit: (address: string | null) => void;
+  onSubmit: (addresses: string[]) => void;
   loading: boolean;
   advancedOpen: boolean;
   onAdvancedOpenChange: (next: boolean) => void;
@@ -52,23 +52,43 @@ export function TopBar({
 }: Props) {
   const [draft, setDraft] = useState(roots[0] ? displayAddress(roots[0].address) : '');
 
-  const raw = draft.trim();
-  const parsed = raw.length > 0 ? parseAddressInput(raw) : null;
-  const typed = parsed ?? '';
-  const invalid = raw.length > 0 && parsed === null;
-  const known = roots.some((root) => root.address === typed);
-  const full = roots.length >= maxRoots && !known;
+  const { addresses: typed, invalid: rejected } = parseAddressList(draft);
+  const invalid = rejected.length > 0;
+  const fresh = typed.filter((address) => !roots.some((root) => root.address === address));
+  const room = Math.max(0, maxRoots - roots.length);
+  const full = fresh.length > room;
   const sweeping = scope === 'blocks';
-  const canBuild = sweeping || roots.length > 0 || (parsed !== null && !full);
+  const canBuild = sweeping || roots.length > 0 || (typed.length > 0 && !full);
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
     if (sweeping) {
-      if (!loading) onSubmit(null);
+      if (!loading) onSubmit([]);
       return;
     }
-    if (!loading && canBuild && !invalid) onSubmit(typed || null);
+    if (!loading && canBuild && !invalid && !full) onSubmit(typed);
   };
+
+  const paste = (event: ClipboardEvent<HTMLInputElement>) => {
+    const text = event.clipboardData.getData('text');
+    if (!/[\r\n]/.test(text)) return;
+    event.preventDefault();
+    const input = event.currentTarget;
+    const start = input.selectionStart ?? draft.length;
+    const end = input.selectionEnd ?? draft.length;
+    const joined = text.trim().replace(/\s+/g, ' ');
+    setDraft(`${draft.slice(0, start)}${joined}${draft.slice(end)}`);
+  };
+
+  const hint = sweeping
+    ? null
+    : invalid
+      ? `Not an address: ${rejected[0]}${rejected.length > 1 ? ` and ${rejected.length - 1} more` : ''}`
+      : full
+        ? `Only ${room} more root${room === 1 ? '' : 's'} fit (limit ${maxRoots})`
+        : fresh.length > 1
+          ? `${fresh.length} new addresses`
+          : null;
 
   return (
     <header className="relative z-20 flex min-h-[58px] items-center gap-3 border-b border-hairline bg-surface-1 px-4 py-2 max-[1100px]:flex-wrap max-[1100px]:gap-x-3 max-[1100px]:px-3">
@@ -91,20 +111,26 @@ export function TopBar({
         onSubmit={submit}
       >
         <div className="flex h-9 flex-none items-center rounded-ui-sm border border-hairline p-0.5" role="radiogroup" aria-label="Graph scope">
-          {(['roots', 'blocks'] as const).map((value) => (
+          {(['roots', 'taint', 'blocks'] as const).map((value) => (
             <button
               key={value}
               type="button"
               role="radio"
               aria-checked={scope === value}
-              title={value === 'roots' ? 'Walk out from the addresses you add' : 'Every transaction inside the block range'}
+              title={
+                value === 'roots'
+                  ? 'Walk out from the addresses you add'
+                  : value === 'taint'
+                    ? 'Follow tainted funds out of the addresses you add, in time order'
+                    : 'Every transaction inside the block range'
+              }
               className={cx(
                 'h-full cursor-pointer rounded-[5px] border-0 bg-transparent px-2.5 text-xs font-medium text-text-muted',
                 scope === value && 'bg-[color-mix(in_srgb,var(--accent)_14%,transparent)] text-accent',
               )}
               onClick={() => onScopeChange(value)}
             >
-              {value === 'roots' ? 'Addresses' : 'All txs'}
+              {value === 'roots' ? 'Addresses' : value === 'taint' ? 'Taint' : 'All txs'}
             </button>
           ))}
         </div>
@@ -112,14 +138,21 @@ export function TopBar({
         <Input
           id="q-wallet"
           className="h-9 min-w-[18ch] flex-1 font-mono-ui text-[13px]"
-          invalid={!sweeping && invalid}
+          invalid={!sweeping && (invalid || full)}
+          title={hint ?? undefined}
           value={sweeping ? '' : draft}
           disabled={sweeping}
           spellCheck={false}
           autoComplete="off"
-          placeholder={sweeping ? 'Every transaction in the block range' : `Search or paste ${chain?.name ?? 'Ethereum'} ${addressHint()}`}
+          placeholder={sweeping ? 'Every transaction in the block range' : `Paste one or more ${chain?.name ?? 'Ethereum'} ${addressHint()}`}
           onChange={(event) => setDraft(event.target.value)}
+          onPaste={paste}
         />
+        {hint && (
+          <span className={cx('flex-none whitespace-nowrap text-xs', invalid || full ? 'text-critical' : 'text-text-muted')} role="status">
+            {hint}
+          </span>
+        )}
         <Button className="h-9 px-4" variant="primary" type="submit" disabled={!canBuild || (!sweeping && (invalid || full)) || loading}>
           {loading ? 'Building…' : 'Build graph'}
         </Button>

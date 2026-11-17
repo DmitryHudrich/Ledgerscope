@@ -1,7 +1,7 @@
 import { useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react';
 import { CopyAddress } from './CopyAddress';
 
-import { edgeEndpoints, edgeLabel, edgeTransfer, type EdgeTransfer } from '../api/edges';
+import { edgeEndpoints, edgeLabel, edgeSwap, edgeTransfer, swapAmounts, type EdgeTransfer } from '../api/edges';
 import type { GraphEdge } from '../api/types';
 import type { GraphModel } from '../graph/model';
 import {
@@ -273,6 +273,7 @@ export function TxSheet({ model, scope, linkScope, open, height, onOpenChange, o
             <tbody>
               {rows.slice(0, ROW_LIMIT).map(({ tx, transfer }, index) => {
                 const endpoints = edgeEndpoints(tx);
+                const swap = edgeSwap(tx);
                 return (
                   <tr
                     key={`${tx.tx_hash}:${index}`}
@@ -320,10 +321,15 @@ export function TxSheet({ model, scope, linkScope, open, height, onOpenChange, o
                       )}
                     </td>
                     <td className="text-right tabular-nums">
-                      {transfer ? formatUnits(transfer.amount, transfer.decimals) : '—'}
+                      {transfer ? formatUnits(transfer.amount, transfer.decimals) : swap ? swapAmounts(swap) : '—'}
                     </td>
                     <td>
-                      {transfer ? (
+                      {swap ? (
+                        <Tag title={swap.pool}>
+                          <Dot tone="swap" />
+                          <code className="font-mono-ui">{swap.fee ? `${swap.protocol} ${swap.fee}` : swap.protocol}</code>
+                        </Tag>
+                      ) : transfer ? (
                         <Tag title={transfer.native ? nativeSymbol() : transfer.key}>
                           <Dot tone={transfer.native ? 'focus' : 'token'} />
                           <code className="font-mono-ui">{transfer.symbol}</code>

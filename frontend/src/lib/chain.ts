@@ -81,6 +81,21 @@ export function parseAddressInput(raw: string): string | null {
   return null;
 }
 
+export function parseAddressList(raw: string): { addresses: string[]; invalid: string[] } {
+  const addresses: string[] = [];
+  const invalid: string[] = [];
+  for (const token of raw.split(/[\s,;]+/)) {
+    if (!token) continue;
+    const parsed = parseAddressInput(token);
+    if (parsed === null) {
+      if (!invalid.includes(token)) invalid.push(token);
+    } else if (!addresses.includes(parsed)) {
+      addresses.push(parsed);
+    }
+  }
+  return { addresses, invalid };
+}
+
 export function addressHint(): string {
   return family === 'tron' ? 'T… or 0x… address' : '0x… address';
 }

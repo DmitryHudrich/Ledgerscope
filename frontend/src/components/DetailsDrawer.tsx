@@ -11,7 +11,7 @@ import {
   shortAddress,
   weiToEth,
 } from '../lib/format';
-import { assetLabel, sortedAssets, type GraphModel, type GraphNode } from '../graph/model';
+import { assetLabel, sortedAssets, type GraphModel, type GraphNode, type TaintRole } from '../graph/model';
 import { getPrimarySystemLabel } from '../graph/labels';
 import { IconChevron, IconClose, IconCopy, IconTable, IconTarget } from './Icons';
 import { TagList } from './TagList';
@@ -45,6 +45,22 @@ interface Props {
   actionsSlot?: ReactNode;
   onPickTag?: (key: string) => void;
 }
+
+const TAINT_ROLE: Record<TaintRole, string> = {
+  seed: 'source',
+  holder: 'holds tainted funds',
+  sink: 'exit, not followed',
+  transit: 'pool, converts in the same tx',
+  touched: 'passed through',
+};
+
+const TAINT_HINT: Record<TaintRole, string> = {
+  seed: 'Everything this address sends counts as tainted.',
+  holder: 'Tainted funds arrived here.',
+  sink: 'A labeled address: taint stops here.',
+  transit: 'Tainted funds were swapped here within one transaction.',
+  touched: 'Tainted funds passed through here.',
+};
 
 const KIND_LABEL: Record<GraphNode['kind'], string> = {
   contract: 'Contract',
@@ -83,6 +99,20 @@ export function DetailsDrawer({
   const [showAllAssets, setShowAllAssets] = useState(false);
   const [peersOpen, setPeersOpen] = useState(false);
   const [copied, setCopied] = useState(false);
+  const taintRows = useMemo(() => {
+    const keys = new Set([...node.taintIn.keys(), ...node.taintHeld.keys()]);
+    return [...keys].map((key) => {
+      const flow = node.assetsIn.get(key) ?? node.assetsOut.get(key) ?? model.stats.assets.find((asset) => asset.key === key);
+      return {
+        key,
+        symbol: flow ? assetLabel(flow) : shortAddress(key),
+        decimals: flow?.decimals ?? 18,
+        received: node.taintIn.get(key) ?? 0n,
+        held: node.taintHeld.get(key) ?? 0n,
+      };
+    });
+  }, [node, model]);
+
   const serverLabels = useMemo(
     () => node.systemLabels.filter((label) => !isUserLabelSource(label.source)),
     [node.systemLabels],
@@ -207,6 +237,39 @@ export function DetailsDrawer({
             )}
           </PanelSection>
         )}
+        {node.taint && (
+          <PanelSection>
+            <PanelTitle>Taint · {TAINT_ROLE[node.taint]}</PanelTitle>
+            {taintRows.length > 0 ? (
+              <table className="w-full border-collapse text-xs [&_td]:border-t [&_td]:border-hairline [&_td]:py-[6px] [&_th]:pb-1.5 [&_th]:text-left [&_th]:text-[10px] [&_th]:font-medium [&_th]:uppercase [&_th]:tracking-[0.06em] [&_th]:text-text-muted [&_.num]:text-right [&_.num]:tabular-nums">
+                <thead>
+                  <tr>
+                    <th>Asset</th>
+                    <th className="num">Tainted in</th>
+                    <th className="num">Still held</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {taintRows.map((row) => (
+                    <tr key={row.key}>
+                      <td title={row.key}>
+                        <Dot tone="focus" className="mr-[6px] align-middle" />
+                        <span className="inline-block max-w-[92px] overflow-hidden text-ellipsis whitespace-nowrap align-middle font-mono-ui">
+                          {row.symbol}
+                        </span>
+                      </td>
+                      <td className="num">{formatUnits(row.received, row.decimals)}</td>
+                      <td className="num">{row.held > 0n ? formatUnits(row.held, row.decimals) : '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : (
+              <p className="m-0 text-xs text-text-muted">{TAINT_HINT[node.taint]}</p>
+            )}
+          </PanelSection>
+        )}
+
         <PanelSection>
           <PanelTitle>Assets · {formatCount(assets.length)}</PanelTitle>
           {assets.length > 0 ? (

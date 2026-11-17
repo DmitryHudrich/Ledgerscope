@@ -29,6 +29,7 @@ import { assetLabel, netFlow, type GraphLink, type GraphModel, type GraphNode } 
 import type { Annotation, AnnotationKind, AnnotationStyle, AnnotationTool } from './annotations';
 import { getPrimarySystemLabel } from './labels';
 import { nativeSymbol } from '../lib/chain';
+import { edgeSwap, swapSummary } from '../api/edges';
 import { useAddressForm } from '../lib/useAddressForm';
 import type { IpWalletLink } from '../api/tls';
 
@@ -183,6 +184,7 @@ const RESHAPE_SHARE = 0.15;
 const RESHAPE_TICKS = 30;
 const FLOW_FRAME_MS = 50;
 const HUGE_GRAPH = 2000;
+const TAINT_STEP_GAP = 220;
 
 export function GraphCanvas({
   model,
@@ -300,6 +302,9 @@ export function GraphCanvas({
     }
 
     const huge = nodes.length > HUGE_GRAPH;
+    const lastStep = nodes.reduce((last, node) => Math.max(last, node.taintStep), 0);
+    const column = (node: GraphNode) =>
+      node.taintStep >= 0 ? (node.taintStep - lastStep / 2) * TAINT_STEP_GAP : (lastStep / 2 + 1) * TAINT_STEP_GAP;
     const sim = forceSimulation<GraphNode, GraphLink>(nodes)
       .force(
         'link',
@@ -315,7 +320,7 @@ export function GraphCanvas({
           .theta(huge ? 1.3 : 0.9),
       )
       .force('collide', forceCollide<GraphNode>((node) => node.r + 7).iterations(huge ? 1 : 2))
-      .force('x', forceX(0).strength(0.035))
+      .force('x', model.taint ? forceX<GraphNode>(column).strength(0.3) : forceX(0).strength(0.035))
       .force('y', forceY(0).strength(0.035))
       .velocityDecay(0.42)
       .alphaDecay(0.045)
@@ -1032,6 +1037,8 @@ function toneLabel(tone: GraphLink['tone']): string {
       return 'Token transfers';
     case 'mixed':
       return `${nativeSymbol()} + token transfers`;
+    case 'swap':
+      return 'Swaps';
     case 'call':
       return 'Contract interactions';
   }
@@ -1114,10 +1121,11 @@ function NodeTip({ node, ips }: { node: GraphNode; ips?: IpWalletLink[] }) {
 }
 
 function LinkTip({ link }: { link: GraphLink }) {
+  const swaps = link.txs.flatMap((tx) => edgeSwap(tx) ?? []);
   return (
     <>
       <div className="flex items-center gap-[6px]">
-        <Dot tone={link.tone === 'call' ? 'eoa' : 'token'} />
+        <Dot tone={link.tone === 'call' ? 'eoa' : link.tone === 'swap' ? 'swap' : 'token'} />
         <span className="text-[10px] uppercase tracking-[0.07em] text-text-muted">
           {toneLabel(link.tone)}
         </span>
@@ -1126,6 +1134,17 @@ function LinkTip({ link }: { link: GraphLink }) {
         {shortAddress(link.source.id, 8, 4)} → {shortAddress(link.target.id, 8, 4)}
       </div>
       <dl className="m-0 grid gap-[3px] text-xs [&>div]:flex [&>div]:justify-between [&>div]:gap-3 [&_dd]:m-0 [&_dd]:tabular-nums [&_dt]:text-text-muted">
+        {swaps.slice(0, TIP_ASSETS).map((swap, index) => (
+          <div key={index}>
+            <dt>{swapSummary(swap)}</dt>
+          </div>
+        ))}
+        {swaps.length > TIP_ASSETS && (
+          <div>
+            <dt>…</dt>
+            <dd>+{formatCount(swaps.length - TIP_ASSETS)} swaps</dd>
+          </div>
+        )}
         {link.assets.slice(0, TIP_ASSETS).map((flow) => (
           <div key={flow.key}>
             <dt>{assetLabel(flow)}</dt>

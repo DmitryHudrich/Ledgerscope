@@ -1,7 +1,6 @@
-
 use crate::sim::rng::Rng;
-use crate::tls::{ContentType, Direction, Packet, MAX_PLAINTEXT};
 use crate::sim::wallet::Exchange;
+use crate::tls::{ContentType, Direction, MAX_PLAINTEXT, Packet};
 
 const MSS: usize = 1448;
 const AEAD_TAG: usize = 16;
@@ -30,7 +29,11 @@ pub fn capture(exchanges: &[Exchange], defense: Defense, rng: &mut Rng) -> Vec<P
         let bytes = encrypt(size, defense.block(), rng);
         let mut t = t;
         for segment in bytes.chunks(MSS) {
-            packets.push(Packet { time: t, dir, payload: segment.to_vec() });
+            packets.push(Packet {
+                time: t,
+                dir,
+                payload: segment.to_vec(),
+            });
             t += segment.len() as f64 / bandwidth;
         }
         t
@@ -66,8 +69,8 @@ fn encrypt(plaintext: usize, block: usize, rng: &mut Rng) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sim::wallet::{Transaction, run};
     use crate::tls::parse_records;
-    use crate::sim::wallet::{run, Transaction};
 
     #[test]
     fn captured_traffic_parses_back_into_records() {
@@ -76,10 +79,18 @@ mod tests {
             let exchanges = run(tx, &mut rng);
             for defense in [Defense::None, Defense::Padding(4096)] {
                 let records = parse_records(&capture(&exchanges, defense, &mut rng)).unwrap();
-                let up: usize = records.iter().filter(|r| r.dir == Direction::Up).map(|r| r.len).sum();
+                let up: usize = records
+                    .iter()
+                    .filter(|r| r.dir == Direction::Up)
+                    .map(|r| r.len)
+                    .sum();
                 let expected: usize = exchanges.iter().map(|e| e.request).sum();
                 assert!(up > expected, "{tx:?}: ciphertext must exceed plaintext");
-                assert!(records.iter().all(|r| r.kind == ContentType::ApplicationData));
+                assert!(
+                    records
+                        .iter()
+                        .all(|r| r.kind == ContentType::ApplicationData)
+                );
             }
         }
     }

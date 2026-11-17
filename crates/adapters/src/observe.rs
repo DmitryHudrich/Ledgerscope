@@ -158,7 +158,8 @@ impl ObservationStore for PgObservations {
                     chain_id: chain_of(row, "chain_id")?,
                     address: address_of(row, "address")?,
                     hits: u32::try_from(hits).map_err(|_| corrupt("link hits"))?,
-                    address_txs: u32::try_from(address_txs).map_err(|_| corrupt("link address txs"))?,
+                    address_txs: u32::try_from(address_txs)
+                        .map_err(|_| corrupt("link address txs"))?,
                     confidence: row.try_get("confidence").map_err(failed)?,
                     first_seen: seconds_of(row, "first_seen")?,
                     last_seen: seconds_of(row, "last_seen")?,
@@ -168,18 +169,19 @@ impl ObservationStore for PgObservations {
     }
 
     async fn watermark(&self, chain_id: u64) -> Result<Option<u64>, io::Error> {
-        let row = sqlx::query(
-            "select watermark_block from tls_correlation_state where chain_id = $1",
-        )
-        .bind(chain_param(chain_id)?)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(failed)?;
+        let row =
+            sqlx::query("select watermark_block from tls_correlation_state where chain_id = $1")
+                .bind(chain_param(chain_id)?)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(failed)?;
 
         match row {
             Some(row) => {
                 let block: i64 = row.try_get("watermark_block").map_err(failed)?;
-                Ok(Some(u64::try_from(block).map_err(|_| corrupt("watermark"))?))
+                Ok(Some(
+                    u64::try_from(block).map_err(|_| corrupt("watermark"))?,
+                ))
             }
             None => Ok(None),
         }

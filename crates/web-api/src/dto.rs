@@ -1,6 +1,7 @@
 pub mod account;
 pub mod info;
 pub mod monitor;
+pub mod taint;
 pub mod tls;
 
 use std::collections::HashMap;
@@ -14,7 +15,7 @@ use application::eth::{
 use domain::eth::{
     Actor, ActorKind, AddressLabel, BlockBucket, BlockRange, BlockSource, ContractAction,
     ContractKind, EthAddress, IndexCoverage, Interaction, InteractionEdge, InteractionKind,
-    LowLevelInteraction, Tag, TagSubject,
+    LowLevelInteraction, Tag, TagSource, TagSubject,
 };
 
 use crate::state::{AppState, ChainState};
@@ -22,6 +23,7 @@ use crate::state::{AppState, ChainState};
 const DEFAULT_DEPTH: u32 = 1;
 
 const DEFAULT_DECIMALS: u8 = 18;
+const NATIVE_SYMBOL: &str = "native";
 
 type Tokens<'a> = HashMap<&'a EthAddress, (&'a str, u8)>;
 
@@ -200,6 +202,16 @@ pub struct TagSourceResponse {
     version: u32,
 }
 
+impl From<&TagSource> for TagSourceResponse {
+    fn from(source: &TagSource) -> Self {
+        Self {
+            kind: source.kind().as_str().to_owned(),
+            name: source.name().to_owned(),
+            version: source.version(),
+        }
+    }
+}
+
 #[derive(Serialize, ToSchema)]
 pub struct TagResponse {
     subject_kind: TagSubjectKind,
@@ -224,11 +236,7 @@ impl From<&Tag> for TagResponse {
             key: tag.key().to_owned(),
             category: tag.category().to_owned(),
             confidence: tag.confidence(),
-            source: TagSourceResponse {
-                kind: tag.source().kind().as_str().to_owned(),
-                name: tag.source().name().to_owned(),
-                version: tag.source().version(),
-            },
+            source: TagSourceResponse::from(tag.source()),
             evidence: tag.evidence().iter().map(ToString::to_string).collect(),
             note: tag.note().to_owned(),
         }
@@ -605,6 +613,7 @@ pub struct EdgeResponse {
 
 #[derive(Serialize, ToSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)]
 pub enum InteractionResponse {
     Protocol,
     NativeTransfer {
@@ -647,6 +656,22 @@ pub enum ContractActionResponse {
         amount: String,
         token_name: String,
         decimals: u8,
+    },
+    Swap {
+        protocol: String,
+        family: String,
+        pool: String,
+        pool_id: Option<String>,
+        fee: Option<u32>,
+        token_in: String,
+        symbol_in: String,
+        decimals_in: u8,
+        amount_in: String,
+        token_out: String,
+        symbol_out: String,
+        decimals_out: u8,
+        amount_out: String,
+        source: TagSourceResponse,
     },
     Other,
 }
@@ -733,6 +758,37 @@ impl ContractActionResponse {
                     amount: amount.to_string(),
                     token_name,
                     decimals,
+                }
+            }
+            ContractAction::Swap(swap) => {
+                let token = |address: &EthAddress| {
+                    if *address == EthAddress::ZERO {
+                        return (NATIVE_SYMBOL.to_owned(), DEFAULT_DECIMALS);
+                    }
+                    tokens
+                        .get(address)
+                        .map(|(symbol, decimals)| ((*symbol).to_owned(), *decimals))
+                        .unwrap_or_else(|| (address.to_string(), DEFAULT_DECIMALS))
+                };
+                let (symbol_in, decimals_in) = token(swap.token_in());
+                let (symbol_out, decimals_out) = token(swap.token_out());
+                let pool = swap.pool();
+
+                Self::Swap {
+                    protocol: pool.protocol().to_owned(),
+                    family: pool.family().as_str().to_owned(),
+                    pool: pool.address().to_string(),
+                    pool_id: pool.key().pool_id().map(|id| id.to_string()),
+                    fee: pool.fee(),
+                    token_in: swap.token_in().to_string(),
+                    symbol_in,
+                    decimals_in,
+                    amount_in: swap.amount_in().to_string(),
+                    token_out: swap.token_out().to_string(),
+                    symbol_out,
+                    decimals_out,
+                    amount_out: swap.amount_out().to_string(),
+                    source: TagSourceResponse::from(pool.source()),
                 }
             }
             ContractAction::Other => Self::Other,
@@ -964,6 +1020,49 @@ mod tests {
                 "root": false,
                 "expanded": true
             })
+        );
+    }
+
+    #[test]
+    fn a_swap_edge_names_its_pool_and_the_provenance_of_the_pool() {
+        let address = |byte: u8| EthAddress::from([byte; 20]);
+        let pool = domain::eth::PoolInfo::new(
+            domain::eth::PoolKey::new(address(7), None),
+            domain::eth::SwapFamily::UniswapV3,
+            "Uniswap V3".to_owned(),
+            vec![address(10), address(11)],
+            Some(500),
+            Some(address(9)),
+            TagSource::heuristic("pool_registry.uniswap_v3", 1),
+        );
+        let swap = domain::eth::Swap::new(
+            pool,
+            address(10),
+            U256::from(1_000_000u64),
+            EthAddress::ZERO,
+            U256::from(300u64),
+        );
+        let usdc = address(10);
+        let tokens = Tokens::from([(&usdc, ("USDC", 6u8))]);
+
+        let encoded = serde_json::to_value(ContractActionResponse::new(
+            &ContractAction::Swap(swap),
+            &tokens,
+        ))
+        .unwrap();
+
+        assert_eq!(encoded["kind"], "swap");
+        assert_eq!(encoded["family"], "uniswap_v3");
+        assert_eq!(encoded["fee"], 500);
+        assert_eq!(encoded["pool_id"], serde_json::Value::Null);
+        assert_eq!(encoded["symbol_in"], "USDC");
+        assert_eq!(encoded["decimals_in"], 6);
+        assert_eq!(encoded["amount_in"], "1000000");
+        assert_eq!(encoded["symbol_out"], "native");
+        assert_eq!(encoded["amount_out"], "300");
+        assert_eq!(
+            encoded["source"],
+            json!({"kind": "heuristic", "name": "pool_registry.uniswap_v3", "version": 1})
         );
     }
 

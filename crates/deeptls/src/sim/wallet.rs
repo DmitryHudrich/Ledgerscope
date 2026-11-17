@@ -1,7 +1,6 @@
+use serde_json::{Value, json};
 
-use serde_json::{json, Value};
-
-use crate::sim::node::{hex, hex_raw, quantity, tron_address, TestNode, TRANSFER_TOPIC};
+use crate::sim::node::{TRANSFER_TOPIC, TestNode, hex, hex_raw, quantity, tron_address};
 use crate::sim::rng::Rng;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -39,7 +38,10 @@ impl Transaction {
     }
 
     fn is_tron(self) -> bool {
-        matches!(self, Self::TrxTransfer | Self::Trc20Transfer | Self::TronAccount)
+        matches!(
+            self,
+            Self::TrxTransfer | Self::Trc20Transfer | Self::TronAccount
+        )
     }
 }
 
@@ -54,7 +56,12 @@ pub struct Exchange {
 
 pub fn run(tx: Transaction, rng: &mut Rng) -> Vec<Exchange> {
     let node = TestNode::new(rng);
-    let mut wallet = Wallet { node, rng, next_id: 0, exchanges: Vec::new() };
+    let mut wallet = Wallet {
+        node,
+        rng,
+        next_id: 0,
+        exchanges: Vec::new(),
+    };
     let heartbeat = |w: &mut Wallet| {
         if tx.is_tron() {
             w.tron("/wallet/getnowblock", json!({}));
@@ -105,7 +112,13 @@ impl Wallet<'_> {
             Value::Array(batch) => format!("batch of {}", batch.len()),
             single => single["method"].as_str().unwrap_or(path).to_owned(),
         };
-        self.exchanges.push(Exchange { call, pause, request: request.len(), response: response.len(), server_time });
+        self.exchanges.push(Exchange {
+            call,
+            pause,
+            request: request.len(),
+            response: response.len(),
+            server_time,
+        });
         reply
     }
 
@@ -142,7 +155,11 @@ impl Wallet<'_> {
 
         let mut call = json!({"from": from, "to": hex(self.rng, 20)});
         if token {
-            let calldata = format!("0xa9059cbb{:0>64}{}", hex_raw(self.rng, 20), hex_raw(self.rng, 32));
+            let calldata = format!(
+                "0xa9059cbb{:0>64}{}",
+                hex_raw(self.rng, 20),
+                hex_raw(self.rng, 32)
+            );
             self.rpc("eth_call", json!([{"to": call["to"], "data": format!("0x70a08231{:0>64}", &from[2..])}, "latest"]));
             call["data"] = json!(calldata);
         } else {
@@ -154,7 +171,10 @@ impl Wallet<'_> {
         let hash = self.rpc("eth_sendRawTransaction", json!([raw]));
         for _ in 0..10 {
             let pause = self.rng.range(0.5, 2.0);
-            if !self.rpc_after(pause, "eth_getTransactionReceipt", json!([hash])).is_null() {
+            if !self
+                .rpc_after(pause, "eth_getTransactionReceipt", json!([hash]))
+                .is_null()
+            {
                 break;
             }
         }
@@ -164,7 +184,8 @@ impl Wallet<'_> {
         let owner = hex(self.rng, 20);
         let mut batch = vec![self.rpc_body("eth_getBalance", json!([owner, "latest"]))];
         for _ in 0..2 + self.rng.below(8) {
-            let call = json!({"to": hex(self.rng, 20), "data": format!("0x70a08231{:0>64}", &owner[2..])});
+            let call =
+                json!({"to": hex(self.rng, 20), "data": format!("0x70a08231{:0>64}", &owner[2..])});
             batch.push(self.rpc_body("eth_call", json!([call, "latest"])));
         }
         let pause = self.quick_pause();
@@ -173,7 +194,8 @@ impl Wallet<'_> {
 
     fn eth_log_scan(&mut self) {
         let head = self.rpc("eth_blockNumber", json!([]));
-        let head = u64::from_str_radix(head.as_str().unwrap_or("0x0").trim_start_matches("0x"), 16).unwrap_or(0);
+        let head = u64::from_str_radix(head.as_str().unwrap_or("0x0").trim_start_matches("0x"), 16)
+            .unwrap_or(0);
         let filter = json!({
             "fromBlock": quantity(head.saturating_sub(5000)), "toBlock": quantity(head),
             "address": hex(self.rng, 20), "topics": [TRANSFER_TOPIC, null, format!("0x{:0>64}", hex_raw(self.rng, 20))],
@@ -201,7 +223,11 @@ impl Wallet<'_> {
 
         for _ in 0..10 {
             let pause = self.rng.range(1.0, 3.0);
-            let info = self.post("/wallet/gettransactioninfobyid", json!({"value": txid, "visible": true}), pause);
+            let info = self.post(
+                "/wallet/gettransactioninfobyid",
+                json!({"value": txid, "visible": true}),
+                pause,
+            );
             if info.as_object().is_some_and(|o| !o.is_empty()) {
                 break;
             }
@@ -210,8 +236,14 @@ impl Wallet<'_> {
 
     fn tron_account(&mut self) {
         let address = tron_address(self.rng);
-        self.tron("/wallet/getaccount", json!({"address": address, "visible": true}));
-        self.tron("/wallet/getaccountresource", json!({"address": address, "visible": true}));
+        self.tron(
+            "/wallet/getaccount",
+            json!({"address": address, "visible": true}),
+        );
+        self.tron(
+            "/wallet/getaccountresource",
+            json!({"address": address, "visible": true}),
+        );
         let balance_of = json!({
             "owner_address": address, "contract_address": tron_address(self.rng),
             "function_selector": "balanceOf(address)", "parameter": format!("{:0>64}", hex_raw(self.rng, 21)), "visible": true,

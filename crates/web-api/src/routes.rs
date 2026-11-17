@@ -19,14 +19,19 @@ use utoipa::{IntoParams, OpenApi, ToSchema};
 use utoipa_scalar::{Scalar, Servable};
 
 use application::account::{AccountError, User};
-use application::eth::{Exploration, ExploreError, ExploreRequest, GraphRoot, SpanChoice};
+use application::eth::{
+    Exploration, ExploreError, ExploreRequest, GraphRoot, SpanChoice, TraceRequest,
+    taint::{self, TaintPolicy, wrapped_native},
+};
 use domain::eth::BlockRange;
 
 use crate::{
     auth::MaybeUser,
     dto::{
-        ChainsResponse, CoverageResponse, DatasetResponse, GraphRequest, GraphResponse, HistogramResponse,
-        LowLevelGraphResponse, RpcConfirmationResponse, ScopeRequest, parse_address,
+        ChainsResponse, CoverageResponse, DatasetResponse, GraphRequest, GraphResponse,
+        HistogramResponse, LowLevelGraphResponse, RpcConfirmationResponse, ScopeRequest,
+        parse_address,
+        taint::{TaintGraphResponse, TaintRequest},
     },
     openapi::ApiDoc,
     state::{AppState, ChainState},
@@ -55,6 +60,7 @@ pub fn router(state: AppState) -> Router {
         .route("/chains", get(chains))
         .route("/graph", post(graph))
         .route("/graph/low-level", post(low_level_graph))
+        .route("/graph/taint", post(taint_graph))
         .route("/coverage", get(coverage))
         .route("/head", get(head))
         .route("/coverage/histogram", get(histogram))
@@ -307,6 +313,86 @@ fn highest_wanted(request: &GraphRequest) -> u64 {
         .map(|range| range.to_block)
         .max()
         .unwrap_or(request.to_block)
+}
+
+#[utoipa::path(
+    post,
+    path = "/graph/taint",
+    tag = "graph",
+    request_body = TaintRequest,
+    responses(
+        (status = OK, description = "Haircut taint from the roots: only the transfers that carry tainted funds, in time order", body = TaintGraphResponse),
+        (status = CONFLICT, description = "Part of the span is not indexed, resend with confirm_rpc", body = RpcConfirmationResponse),
+        (status = BAD_REQUEST, description = "The request is malformed or over the limits", body = ErrorResponse),
+        (status = NOT_FOUND, description = "The chain is not served here", body = ErrorResponse),
+        (status = BAD_GATEWAY, description = "Clickhouse or the node did not answer", body = ErrorResponse),
+    ),
+)]
+pub(crate) async fn taint_graph(
+    State(state): State<AppState>,
+    MaybeUser(user): MaybeUser,
+    Json(request): Json<TaintRequest>,
+) -> Result<Response, ApiError> {
+    let personal = state.personal_rpc(user.as_ref()).await;
+    personal
+        .scope(trace_taint(&state, user.as_ref(), request))
+        .await
+}
+
+async fn trace_taint(
+    state: &AppState,
+    user: Option<&User>,
+    request: TaintRequest,
+) -> Result<Response, ApiError> {
+    let chain = chain(
+        state,
+        request
+            .graph
+            .chain
+            .as_ref()
+            .map(|chain| chain.selector())
+            .as_deref(),
+    )?;
+    if let ScopeRequest::Blocks = request.graph.scope {
+        return Err(ApiError::bad_request(
+            "taint starts from roots, not from a block sweep",
+        ));
+    }
+    let asked = explore_request(&request.graph)?;
+    ensure_mined(chain, &request.graph).await?;
+    let span = asked.span();
+
+    let min_share_bps = request
+        .min_share_bps
+        .unwrap_or(TaintPolicy::default().min_share_bps)
+        .min(taint::FULL_SHARE_BPS);
+    let mut stops = Vec::with_capacity(request.stops.len());
+    for stop in &request.stops {
+        stops.push(parse_address(stop).map_err(ApiError::bad_request)?);
+    }
+    let taint = TraceRequest {
+        policy: TaintPolicy { min_share_bps },
+        stops,
+        wrapped_native: wrapped_native(chain.meta().chain_id),
+    };
+
+    match chain.explorer().trace(asked, taint).await? {
+        Exploration::Graph(traced) => {
+            let addresses = traced
+                .graph()
+                .nodes()
+                .iter()
+                .map(|node| *node.address())
+                .collect();
+            let mine = labels::graph_labels(state, user, chain.meta().chain_id, addresses).await;
+            Ok(Json(TaintGraphResponse::new(&traced, span, &mine, min_share_bps)).into_response())
+        }
+        Exploration::RpcNeeded(plan) => Ok((
+            StatusCode::CONFLICT,
+            Json(RpcConfirmationResponse::new(&plan, span)),
+        )
+            .into_response()),
+    }
 }
 
 #[utoipa::path(

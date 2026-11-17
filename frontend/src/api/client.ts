@@ -60,19 +60,21 @@ export async function fetchGraph(
   query: GraphQuery,
   signal?: AbortSignal,
 ): Promise<GraphResponse> {
+  const taint = query.scope === 'taint';
   const response = await call(
-    '/graph',
+    taint ? '/graph/taint' : '/graph',
     {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         chain: query.chain,
-        scope: query.scope ?? 'roots',
+        scope: taint ? 'roots' : (query.scope ?? 'roots'),
         roots: query.scope === 'blocks' ? [] : query.roots,
         from_block: query.from_block,
         to_block: query.to_block,
         ranges: query.ranges ?? [],
         confirm_rpc: query.confirm_rpc ?? false,
+        ...(taint && query.min_share_bps !== undefined ? { min_share_bps: query.min_share_bps } : {}),
       }),
     },
     signal,

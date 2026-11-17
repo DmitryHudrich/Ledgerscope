@@ -25,6 +25,16 @@ impl SourceKind {
             SourceKind::Agent => "agent",
         }
     }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "heuristic" => Some(SourceKind::Heuristic),
+            "provider" => Some(SourceKind::Provider),
+            "user" => Some(SourceKind::User),
+            "agent" => Some(SourceKind::Agent),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]

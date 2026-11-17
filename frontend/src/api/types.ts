@@ -16,6 +16,23 @@ export type ContractAction =
       token_name: string;
       decimals: number;
     }
+  | {
+      kind: 'swap';
+      protocol: string;
+      family: 'uniswap_v2' | 'uniswap_v3' | 'uniswap_v4';
+      pool: string;
+      pool_id: string | null;
+      fee: number | null;
+      token_in: string;
+      symbol_in: string;
+      decimals_in: number;
+      amount_in: string;
+      token_out: string;
+      symbol_out: string;
+      decimals_out: number;
+      amount_out: string;
+      source: { kind: TagSourceKind; name: string; version: number };
+    }
   | { kind: 'other' };
 
 export type Interaction =
@@ -122,6 +139,44 @@ export interface GraphResponse {
   span: BlockRangeSpan;
   filled_from_rpc: BlockRangeSpan[];
   truncated: boolean;
+  taint?: TaintInfo;
+}
+
+export interface TaintAsset {
+  kind: 'native' | 'token' | 'issued';
+  id: string | null;
+}
+
+export interface TaintFlow {
+  tx_hash: string;
+  block_number: number;
+  timestamp: number;
+  slot: number;
+  kind: 'value' | 'transfer' | 'issued' | 'payout';
+  asset: TaintAsset;
+  from: string;
+  to: string;
+  amount: string;
+  tainted: string;
+  share_bps: number;
+  source: { kind: TagSourceKind; name: string; version: number } | null;
+}
+
+export interface TaintHolding {
+  address: string;
+  asset: TaintAsset;
+  total: string;
+  tainted: string;
+}
+
+export interface TaintInfo {
+  policy: string;
+  min_share_bps: number;
+  seeds: string[];
+  sinks: string[];
+  transit: string[];
+  flows: TaintFlow[];
+  holdings: TaintHolding[];
 }
 
 export interface GraphRoot {
@@ -149,7 +204,7 @@ export interface ChainsResponse {
   chains: ChainInfo[];
 }
 
-export type GraphScope = 'roots' | 'blocks';
+export type GraphScope = 'roots' | 'blocks' | 'taint';
 
 export interface GraphQuery {
   chain?: number;
@@ -159,6 +214,7 @@ export interface GraphQuery {
   to_block: number;
   ranges?: Array<{ from_block: number; to_block: number; source?: 'auto' | 'rpc' | 'dataset'; exact?: boolean }>;
   confirm_rpc?: boolean;
+  min_share_bps?: number;
 }
 
 export interface RpcConfirmation {

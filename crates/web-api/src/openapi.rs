@@ -33,6 +33,7 @@ impl utoipa::Modify for ObserverAuth {
         routes::chains,
         routes::graph,
         routes::low_level_graph,
+        routes::taint_graph,
         routes::coverage,
         routes::head,
         routes::histogram,
@@ -111,6 +112,7 @@ mod tests {
         assert!(spec["paths"]["/chains"]["get"].is_object());
         assert!(spec["paths"]["/graph"]["post"].is_object());
         assert!(spec["paths"]["/graph/low-level"]["post"].is_object());
+        assert!(spec["paths"]["/graph/taint"]["post"].is_object());
         assert!(spec["paths"]["/coverage"]["get"].is_object());
         assert!(spec["paths"]["/coverage/histogram"]["get"].is_object());
         assert!(spec["paths"]["/auth/login"]["post"].is_object());

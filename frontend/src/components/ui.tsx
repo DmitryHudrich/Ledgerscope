@@ -192,13 +192,14 @@ export function MetaList({ className, ...props }: HTMLAttributes<HTMLDListElemen
   );
 }
 
-export type DotTone = 'eoa' | 'contract' | 'focus' | 'token';
+export type DotTone = 'eoa' | 'contract' | 'focus' | 'token' | 'swap';
 
 const dotTone: Record<DotTone, string> = {
   eoa: 'bg-series-eoa text-series-eoa',
   contract: 'bg-series-contract text-series-contract',
   focus: 'bg-series-focus text-series-focus',
   token: 'bg-series-token text-series-token',
+  swap: 'bg-series-swap text-series-swap',
 };
 
 export function Dot({ tone, className }: { tone: DotTone; className?: string }) {

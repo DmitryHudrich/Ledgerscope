@@ -33,6 +33,8 @@
   --series-focus: #eb6834;
   --series-contract: #1baf7a;
   --series-token: #8b5cf6;
+  --series-swap: #d9a21b;
+  --series-taint: #e0342b;
   --edge: #9a9992;
 
   --accent: #2a78d6;
@@ -62,6 +64,8 @@
   --series-focus: #d95926;
   --series-contract: #199e70;
   --series-token: #a78bfa;
+  --series-swap: #e6b43a;
+  --series-taint: #f0524a;
   --edge: #6b6b66;
 
   --accent: #3987e5;
@@ -88,6 +92,8 @@
   --color-series-focus: var(--series-focus);
   --color-series-contract: var(--series-contract);
   --color-series-token: var(--series-token);
+  --color-series-swap: var(--series-swap);
+  --color-series-taint: var(--series-taint);
   --color-edge: var(--edge);
   --color-accent: var(--accent);
   --color-accent-ink: var(--accent-ink);

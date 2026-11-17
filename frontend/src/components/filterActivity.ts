@@ -24,6 +24,9 @@ export function getFilterActivity(
   if (filters.showTokens !== DEFAULT_FILTERS.showTokens) {
     labels.push(filters.showTokens ? 'Token transfers shown' : 'Token transfers hidden');
   }
+  if (filters.showSwaps !== DEFAULT_FILTERS.showSwaps) {
+    labels.push(filters.showSwaps ? 'Swaps shown' : 'Swaps hidden');
+  }
   if (filters.showCalls !== DEFAULT_FILTERS.showCalls) {
     labels.push(
       !filters.showCalls && filters.showNative && filters.showTokens

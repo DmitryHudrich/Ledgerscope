@@ -40,7 +40,7 @@ pub fn receipt(receipt: &AnyTransactionReceipt) -> EthReceipt {
     )
 }
 
-fn log(log: &Log) -> EthLog {
+pub fn log(log: &Log) -> EthLog {
     EthLog::new(
         EthAddress::from(log.inner.address),
         log.inner.topics().to_vec(),

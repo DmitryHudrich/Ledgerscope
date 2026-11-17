@@ -318,10 +318,9 @@ mod tests {
 
         async fn apply_link(&self, contribution: &LinkContribution) -> Result<(), io::Error> {
             let mut links = self.links.lock().unwrap();
-            if let Some(link) = links
-                .iter_mut()
-                .find(|link| link.src_ip == contribution.src_ip && link.address == contribution.address)
-            {
+            if let Some(link) = links.iter_mut().find(|link| {
+                link.src_ip == contribution.src_ip && link.address == contribution.address
+            }) {
                 link.confidence += (1.0 - link.confidence) * contribution.contribution;
                 link.hits += contribution.hits;
                 link.address_txs += contribution.address_txs;
@@ -363,15 +362,29 @@ mod tests {
         }
     }
 
-    fn link_for<'a>(links: &'a [IpWalletLink], who: IpAddr, what: EthAddress) -> Option<&'a IpWalletLink> {
-        links.iter().find(|link| link.src_ip == who && link.address == what)
+    fn link_for<'a>(
+        links: &'a [IpWalletLink],
+        who: IpAddr,
+        what: EthAddress,
+    ) -> Option<&'a IpWalletLink> {
+        links
+            .iter()
+            .find(|link| link.src_ip == who && link.address == what)
     }
 
     #[tokio::test]
     async fn repeated_cooccurrence_outweighs_single_and_respects_direction() {
         let broadcasts = vec![
-            ObservedBroadcast { src_ip: ip(1), observed_at: 100, confidence: 0.9 },
-            ObservedBroadcast { src_ip: ip(1), observed_at: 1000, confidence: 0.9 },
+            ObservedBroadcast {
+                src_ip: ip(1),
+                observed_at: 100,
+                confidence: 0.9,
+            },
+            ObservedBroadcast {
+                src_ip: ip(1),
+                observed_at: 1000,
+                confidence: 0.9,
+            },
         ];
         let source = Arc::new(MockSource {
             rows: vec![
@@ -381,8 +394,12 @@ mod tests {
                 (2, 1008, addr(0xAA)),
             ],
         });
-        let store = Arc::new(MockStore { broadcasts, ..MockStore::default() });
-        let service = TlsCorrelationService::new(store.clone(), source, TlsCorrelationConfig::default());
+        let store = Arc::new(MockStore {
+            broadcasts,
+            ..MockStore::default()
+        });
+        let service =
+            TlsCorrelationService::new(store.clone(), source, TlsCorrelationConfig::default());
 
         let run = service.correlate(1, None, 2).await.unwrap();
         assert_eq!(run.to_block, 2);
@@ -399,12 +416,19 @@ mod tests {
 
     #[tokio::test]
     async fn watermark_blocks_reprocessing() {
-        let source = Arc::new(MockSource { rows: vec![(1, 110, addr(0xAA))] });
+        let source = Arc::new(MockSource {
+            rows: vec![(1, 110, addr(0xAA))],
+        });
         let store = Arc::new(MockStore {
-            broadcasts: vec![ObservedBroadcast { src_ip: ip(1), observed_at: 100, confidence: 0.9 }],
+            broadcasts: vec![ObservedBroadcast {
+                src_ip: ip(1),
+                observed_at: 100,
+                confidence: 0.9,
+            }],
             ..MockStore::default()
         });
-        let service = TlsCorrelationService::new(store.clone(), source, TlsCorrelationConfig::default());
+        let service =
+            TlsCorrelationService::new(store.clone(), source, TlsCorrelationConfig::default());
 
         let first = service.correlate(1, None, 1).await.unwrap();
         assert_eq!(first.matched_pairs, 1);

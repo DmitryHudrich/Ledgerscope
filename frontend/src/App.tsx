@@ -399,7 +399,7 @@ export default function App() {
 
   const run = useCallback(
     async (confirmRpc = false, requestedRoots = roots): Promise<GraphResponse | null> => {
-      if (scope === 'roots' && requestedRoots.length === 0) return null;
+      if (scope !== 'blocks' && requestedRoots.length === 0) return null;
       const id = (requestId.current += 1);
       inFlight.current?.abort();
       const controller = new AbortController();
@@ -533,11 +533,12 @@ export default function App() {
   }, [primed]);
 
   const submitFromTopBar = useCallback(
-    (address: string | null) => {
-      const nextRoots =
-        address && !roots.some((root) => root.address === address)
-          ? [...roots, { address, depth: 1 }]
-          : roots;
+    (addresses: string[]) => {
+      const additions = addresses
+        .filter((address, index) => addresses.indexOf(address) === index)
+        .filter((address) => !roots.some((root) => root.address === address))
+        .map((address) => ({ address, depth: 1 }));
+      const nextRoots = additions.length > 0 ? [...roots, ...additions] : roots;
       if (nextRoots !== roots) setRoots(nextRoots);
       void run(false, nextRoots);
     },
@@ -584,6 +585,36 @@ export default function App() {
     },
     [limits.maxRoots, loading, roots, run],
   );
+
+  const scanFromSelected = useCallback(async () => {
+    if (loading || buildingFrom.current) return;
+    const fresh = [...selectedIds].filter((id) => !roots.some((root) => root.address === id));
+    if (fresh.length === 0) {
+      setNotice('Every selected address is already an investigation root.');
+      return;
+    }
+    const room = limits.maxRoots - roots.length;
+    if (room <= 0) {
+      setNotice(`At most ${limits.maxRoots} investigation roots are allowed.`);
+      return;
+    }
+    const added = fresh.slice(0, room);
+    const nextRoots = [...roots, ...added.map((address) => ({ address, depth: 1 }))];
+    buildingFrom.current = true;
+    setBuildingFromId(added[0]);
+    setRoots(nextRoots);
+    const payload = await run(false, nextRoots);
+    buildingFrom.current = false;
+    setBuildingFromId(null);
+    if (payload) {
+      setIncrementalLayoutVersion((version) => version + 1);
+      setNotice(
+        added.length < fresh.length
+          ? `Scanned from ${added.length} of ${fresh.length} selected addresses; the root limit is ${limits.maxRoots}.`
+          : `Scanned from ${added.length} selected address${added.length === 1 ? '' : 'es'}.`,
+      );
+    }
+  }, [limits.maxRoots, loading, roots, run, selectedIds]);
 
   const selectMany = useCallback((ids: Set<string>, mode: SelectMode = 'replace') => {
     setTemporaryPanel(null);
@@ -1444,6 +1475,9 @@ export default function App() {
             groups={groups}
             onGroup={(target) => groupItems(target, [...selectedIds], [])}
             onFade={() => dimNodes([...selectedIds], true)}
+            onScan={() => void scanFromSelected()}
+            scanning={loading || buildingFromId !== null}
+            scannable={[...selectedIds].filter((id) => !roots.some((root) => root.address === id)).length}
           />
         )}
 

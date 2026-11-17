@@ -1,11 +1,13 @@
-use std::{fmt, io};
+use std::{fmt, io, sync::Arc};
 
 use alloy_primitives::{B256, U256, b256};
 
 use domain::eth::{
-    EthAddress, EthLog, MinedTx,
+    EthAddress, EthLog, MinedTx, Swap,
     graph::{AssetTransfer, ContractAction, Interaction, InteractionKind, NativeTransfer},
 };
+
+use crate::eth::{ports::PoolRegistry, swaps::decode_swap};
 
 const TRANSFER_TOPIC_SIGNATURE: B256 =
     b256!("0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef");
@@ -37,11 +39,47 @@ impl std::error::Error for ClassificateError {
 }
 
 #[derive(Default)]
-pub struct FulliestEthTxClassificator;
+pub struct FulliestEthTxClassificator {
+    pools: Option<Arc<dyn PoolRegistry>>,
+}
 
 impl FulliestEthTxClassificator {
     pub fn new() -> Self {
-        Self
+        Self { pools: None }
+    }
+
+    pub fn with_pools(pools: Arc<dyn PoolRegistry>) -> Self {
+        Self { pools: Some(pools) }
+    }
+
+    async fn swaps_of(&self, receipt: &domain::eth::EthReceipt) -> Vec<Swap> {
+        let Some(pools) = self.pools.as_ref() else {
+            return Vec::new();
+        };
+
+        let decoded: Vec<_> = receipt.logs().iter().filter_map(decode_swap).collect();
+        if decoded.is_empty() {
+            return Vec::new();
+        }
+
+        let candidates: Vec<_> = decoded.iter().map(|swap| *swap.candidate()).collect();
+        let known = pools.resolve(&candidates).await;
+
+        decoded
+            .iter()
+            .filter_map(|swap| {
+                let pool = known.get(swap.candidate().key())?;
+                let oriented = swap.flow().orient(pool.tokens())?;
+
+                Some(Swap::new(
+                    pool.clone(),
+                    oriented.token_in,
+                    oriented.amount_in,
+                    oriented.token_out,
+                    oriented.amount_out,
+                ))
+            })
+            .collect()
     }
 }
 
@@ -138,7 +176,9 @@ impl EthTxClassificator for FulliestEthTxClassificator {
             .filter_map(decode_erc20_transfer)
             .collect();
 
-        if transfers.is_empty() {
+        let swaps = self.swaps_of(&receipt).await;
+
+        if transfers.is_empty() && swaps.is_empty() {
             return Ok(vec![Interaction::new(
                 receipt,
                 InteractionKind::ContractInteraction {
@@ -149,20 +189,26 @@ impl EthTxClassificator for FulliestEthTxClassificator {
             )]);
         }
 
-        let interactions = transfers
-            .into_iter()
-            .map(|transfer| {
+        let transfer_actions =
+            transfers
+                .into_iter()
+                .map(|transfer| ContractAction::Erc20Transfer {
+                    token: transfer.token,
+                    from: transfer.from,
+                    to: transfer.to,
+                    amount: transfer.amount,
+                });
+        let swap_actions = swaps.into_iter().map(ContractAction::Swap);
+
+        let interactions = transfer_actions
+            .chain(swap_actions)
+            .map(|action| {
                 Interaction::new(
                     receipt.clone(),
                     InteractionKind::ContractInteraction {
                         contract_address,
                         interactor,
-                        contract_interaction_type: ContractAction::Erc20Transfer {
-                            token: transfer.token,
-                            from: transfer.from,
-                            to: transfer.to,
-                            amount: transfer.amount,
-                        },
+                        contract_interaction_type: action,
                     },
                 )
             })
@@ -330,5 +376,137 @@ mod tests {
             interactions[0].kind(),
             InteractionKind::SystemAction { action, to: Some(_), .. } if action == "DelegateResourceContract"
         ));
+    }
+
+    struct FixedPools(Vec<domain::eth::PoolInfo>);
+
+    #[async_trait::async_trait]
+    impl PoolRegistry for FixedPools {
+        async fn resolve(
+            &self,
+            wanted: &[domain::eth::PoolCandidate],
+        ) -> std::collections::HashMap<domain::eth::PoolKey, domain::eth::PoolInfo> {
+            self.0
+                .iter()
+                .filter(|pool| wanted.iter().any(|candidate| candidate.key() == pool.key()))
+                .map(|pool| (*pool.key(), pool.clone()))
+                .collect()
+        }
+    }
+
+    fn v2_pool(pool: EthAddress) -> domain::eth::PoolInfo {
+        domain::eth::PoolInfo::new(
+            domain::eth::PoolKey::new(pool, None),
+            domain::eth::SwapFamily::UniswapV2,
+            "Uniswap V2".to_owned(),
+            vec![address(10), address(11)],
+            Some(3000),
+            Some(address(99)),
+            domain::eth::TagSource::heuristic("pool_registry.uniswap_v2", 1),
+        )
+    }
+
+    fn v2_swap_log(pool: EthAddress, amounts: [u64; 4]) -> EthLog {
+        let data: Vec<u8> = amounts
+            .iter()
+            .flat_map(|amount| U256::from(*amount).to_be_bytes::<32>())
+            .collect();
+
+        EthLog::new(
+            pool,
+            vec![
+                *crate::eth::swaps::V2_SWAP,
+                address(1).address().into_word(),
+                address(2).address().into_word(),
+            ],
+            Bytes::from(data),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_verified_swap_is_appended_after_the_transfers() {
+        let pool = address(7);
+        let receipt = EthReceipt::new(
+            true,
+            None,
+            vec![
+                transfer_log(address(10), address(1), pool, 100),
+                transfer_log(address(11), pool, address(1), 40),
+                v2_swap_log(pool, [100, 0, 0, 40]),
+            ],
+        );
+
+        let classificator =
+            FulliestEthTxClassificator::with_pools(Arc::new(FixedPools(vec![v2_pool(pool)])));
+        let interactions = classificator
+            .classificate(MinedTx::new(call_tx(address(9)), receipt))
+            .await
+            .unwrap();
+
+        assert_eq!(interactions.len(), 3);
+        assert_eq!(
+            erc20_of(&interactions[0]),
+            (address(1), pool, U256::from(100))
+        );
+        assert_eq!(
+            erc20_of(&interactions[1]),
+            (pool, address(1), U256::from(40))
+        );
+        match interactions[2].kind() {
+            InteractionKind::ContractInteraction {
+                interactor,
+                contract_interaction_type: ContractAction::Swap(swap),
+                ..
+            } => {
+                assert_eq!(*interactor, address(1));
+                assert_eq!(swap.token_in(), &address(10));
+                assert_eq!(swap.amount_in(), U256::from(100));
+                assert_eq!(swap.token_out(), &address(11));
+                assert_eq!(swap.amount_out(), U256::from(40));
+            }
+            other => panic!("expected a swap, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_swap_event_of_an_unverified_pool_makes_no_edge() {
+        let pool = address(7);
+        let receipt = EthReceipt::new(true, None, vec![v2_swap_log(pool, [100, 0, 0, 40])]);
+
+        let classificator =
+            FulliestEthTxClassificator::with_pools(Arc::new(FixedPools(Vec::new())));
+        let interactions = classificator
+            .classificate(MinedTx::new(call_tx(address(9)), receipt))
+            .await
+            .unwrap();
+
+        assert_eq!(interactions.len(), 1);
+        assert!(matches!(
+            interactions[0].kind(),
+            InteractionKind::ContractInteraction {
+                contract_interaction_type: ContractAction::Other,
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn without_a_registry_swaps_are_left_alone() {
+        let pool = address(7);
+        let receipt = EthReceipt::new(
+            true,
+            None,
+            vec![
+                transfer_log(address(10), address(1), pool, 100),
+                v2_swap_log(pool, [100, 0, 0, 40]),
+            ],
+        );
+
+        let interactions = FulliestEthTxClassificator::new()
+            .classificate(MinedTx::new(call_tx(address(9)), receipt))
+            .await
+            .unwrap();
+
+        assert_eq!(interactions.len(), 1);
     }
 }

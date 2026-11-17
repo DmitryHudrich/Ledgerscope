@@ -18,6 +18,9 @@ export function MultiSelectionInspector({
   groups,
   onGroup,
   onFade,
+  onScan,
+  scanning,
+  scannable,
 }: {
   ids: Set<string>;
   model: GraphModel;
@@ -26,6 +29,9 @@ export function MultiSelectionInspector({
   groups: GraphGroup[];
   onGroup: (target: string | { name: string }) => void;
   onFade: () => void;
+  onScan: () => void;
+  scanning: boolean;
+  scannable: number;
 }) {
   const connections = model.links.filter((link) => ids.has(link.source.id) || ids.has(link.target.id)).length;
   return (
@@ -38,6 +44,14 @@ export function MultiSelectionInspector({
         <MetaList className="mt-0"><div><dt>Visible connections</dt><dd>{formatCount(connections)}</dd></div></MetaList>
         <p className="mb-0 mt-3 text-xs leading-relaxed text-text-muted">Drag any selected node to move the group. Relative positions stay pinned.</p>
         <div className="mt-4 grid gap-2">
+          <Button
+            variant="primary"
+            onClick={onScan}
+            disabled={scanning || scannable === 0}
+            title="Add the selected addresses as investigation roots and scan from all of them at once"
+          >
+            {scanning ? 'Scanning…' : scannable === 0 ? 'Already scanned from these' : `Scan from ${formatCount(scannable)} selected`}
+          </Button>
           <GroupPicker groups={groups} onPick={onGroup} />
           <div className="grid grid-cols-2 gap-2">
             <Button onClick={onFade} title="Make them and their transactions dim, see Focus"><IconFocus size={14} /> Fade</Button>

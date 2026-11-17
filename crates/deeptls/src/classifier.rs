@@ -28,9 +28,9 @@ impl Intent {
             | Transaction::Erc20Transfer
             | Transaction::TrxTransfer
             | Transaction::Trc20Transfer => Intent::Broadcast,
-            Transaction::EthPortfolio
-            | Transaction::EthLogScan
-            | Transaction::TronAccount => Intent::Query,
+            Transaction::EthPortfolio | Transaction::EthLogScan | Transaction::TronAccount => {
+                Intent::Query
+            }
         }
     }
 }

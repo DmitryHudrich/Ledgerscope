@@ -107,7 +107,10 @@ fn capture_loop(
 
     let offset = l2_offset(capture.get_datalink().0)
         .context("unsupported link-layer type on this interface")?;
-    tracing::info!("sniffing {interface} ({} rpc host patterns)", shared.matcher.len());
+    tracing::info!(
+        "sniffing {interface} ({} rpc host patterns)",
+        shared.matcher.len()
+    );
 
     let mut flows: HashMap<Key, Flow> = HashMap::new();
     let mut since_sweep = 0usize;
@@ -172,8 +175,12 @@ fn handle_frame(
                     .map(|matched| matched.chain_id);
                 flow.decided = true;
                 match (flow.host.as_deref(), flow.chain) {
-                    (Some(host), Some(chain)) => tracing::debug!("{src}: rpc flow to {host} (chain {chain})"),
-                    (Some(host), None) => tracing::debug!("{src}: tls flow to {host}, not an rpc host"),
+                    (Some(host), Some(chain)) => {
+                        tracing::debug!("{src}: rpc flow to {host} (chain {chain})")
+                    }
+                    (Some(host), None) => {
+                        tracing::debug!("{src}: tls flow to {host}, not an rpc host")
+                    }
                     (None, _) => tracing::debug!("{src}: client hello without sni"),
                 }
             } else if flow.hello.len() > MAX_HELLO {
@@ -244,8 +251,12 @@ fn parse_ip(packet: &[u8]) -> Option<(IpAddr, IpAddr, &[u8], u8)> {
             }
             let ihl = (packet[0] & 0x0f) as usize * 4;
             let proto = packet[9];
-            let src = IpAddr::V4(Ipv4Addr::new(packet[12], packet[13], packet[14], packet[15]));
-            let dst = IpAddr::V4(Ipv4Addr::new(packet[16], packet[17], packet[18], packet[19]));
+            let src = IpAddr::V4(Ipv4Addr::new(
+                packet[12], packet[13], packet[14], packet[15],
+            ));
+            let dst = IpAddr::V4(Ipv4Addr::new(
+                packet[16], packet[17], packet[18], packet[19],
+            ));
             Some((src, dst, packet.get(ihl..)?, proto))
         }
         6 => {

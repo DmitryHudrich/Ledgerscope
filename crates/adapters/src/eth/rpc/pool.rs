@@ -16,7 +16,10 @@ use alloy::{
     rpc::json_rpc::{RequestPacket, ResponsePacket},
     transports::{TransportError, TransportErrorKind, TransportFut},
 };
-use reqwest::{Client, Url, header::CONTENT_TYPE};
+use reqwest::{
+    Client, Url,
+    header::{CONTENT_TYPE, RETRY_AFTER},
+};
 use serde_json::Value;
 use tokio::{sync::Semaphore, time::Instant};
 use tower::Service;
@@ -29,7 +32,8 @@ use crate::eth::{
     rpc::pool::{
         probe::{Candidate, Probed},
         retry::{
-            Retry, RetryKind, backoff, failed_response, http_answer, http_unreachable, retryable,
+            Retry, RetryKind, backoff, failed_response, http_answer, http_unreachable, retry_after,
+            retryable,
         },
     },
 };
@@ -623,15 +627,21 @@ impl RpcPool {
         };
 
         let status = response.status();
+        let after = response
+            .headers()
+            .get(RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(retry_after);
         let body = response.bytes().await;
         self.traffic
             .record(sent, body.as_ref().map_or(0, |body| body.len()));
         let body = body.map_err(TransportErrorKind::custom)?;
 
         if !status.is_success() {
-            return Err(TransportErrorKind::http_error(
+            return Err(TransportErrorKind::http_error_with_retry_after(
                 status.as_u16(),
                 String::from_utf8_lossy(&body).into_owned(),
+                after,
             ));
         }
         serde_json::from_slice(&body)
@@ -674,6 +684,7 @@ impl RpcPool {
 
             let retry = match answer {
                 Ok(answer) => {
+                    node.state.limiter.speed_up().await;
                     self.observe(&node, &shot, CallOutcome::Ok, None);
                     return Ok(answer);
                 }
@@ -689,7 +700,7 @@ impl RpcPool {
                 CallOutcome::GaveUp
             } else {
                 match retry.kind {
-                    RetryKind::Busy => CallOutcome::Busy,
+                    RetryKind::Busy | RetryKind::Limited => CallOutcome::Busy,
                     RetryKind::Unsupported => CallOutcome::Unsupported,
                     RetryKind::Shallow => CallOutcome::Shallow,
                 }
@@ -738,7 +749,10 @@ impl RpcPool {
                     );
                 }
             }
-            RetryKind::Busy => {
+            RetryKind::Busy | RetryKind::Limited => {
+                if retry.kind == RetryKind::Limited {
+                    node.state.limiter.slow_down().await;
+                }
                 let delay = retry.after.unwrap_or_else(|| backoff(attempt));
                 tracing::debug!(
                     "{method} attempt {attempt}/{MAX_ATTEMPTS} on {} failed ({}), resting it for {delay:?}",

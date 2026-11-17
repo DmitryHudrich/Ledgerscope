@@ -86,10 +86,7 @@ async fn handle_proxy(shared: &Shared, mut client: TcpStream, ip: IpAddr) -> any
     tunnel(shared, client, &host, port, leftover, ip).await
 }
 
-async fn socks5(
-    client: &mut TcpStream,
-    first: Vec<u8>,
-) -> anyhow::Result<(String, u16, Vec<u8>)> {
+async fn socks5(client: &mut TcpStream, first: Vec<u8>) -> anyhow::Result<(String, u16, Vec<u8>)> {
     let mut buf = first;
     while buf.len() < 2 || buf.len() < 2 + buf[1] as usize {
         read_more(client, &mut buf).await?;
@@ -271,10 +268,11 @@ async fn relay(
         if read == 0 {
             break;
         }
-        packets
-            .lock()
-            .unwrap()
-            .push(make_packet(started.elapsed().as_secs_f64(), up, buf[..read].to_vec()));
+        packets.lock().unwrap().push(make_packet(
+            started.elapsed().as_secs_f64(),
+            up,
+            buf[..read].to_vec(),
+        ));
         writer.write_all(&buf[..read]).await?;
     }
     let _ = writer.shutdown().await;

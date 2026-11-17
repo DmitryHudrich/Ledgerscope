@@ -65,6 +65,7 @@ impl EthTxIndex for FetchingTxIndex {
         &self,
         addresses: &[EthAddress],
         span: BlockRange,
+        limit: usize,
     ) -> Result<Vec<MinedTx>, io::Error> {
         let wanted: HashSet<EthAddress> = addresses.iter().copied().collect();
 
@@ -73,6 +74,7 @@ impl EthTxIndex for FetchingTxIndex {
             .await?
             .iter()
             .filter(|mined| mined.touches(&wanted))
+            .take(limit)
             .cloned()
             .collect())
     }
@@ -146,7 +148,7 @@ mod tests {
         let index = FetchingTxIndex::new(Arc::new(CountingSource::default()));
 
         let touching = index
-            .txs_touching(&[address(3)], BlockRange::new(10, 11))
+            .txs_touching(&[address(3)], BlockRange::new(10, 11), usize::MAX)
             .await
             .unwrap();
 
@@ -160,11 +162,11 @@ mod tests {
         let index = FetchingTxIndex::new(source.clone());
 
         index
-            .txs_touching(&[address(1)], BlockRange::new(10, 11))
+            .txs_touching(&[address(1)], BlockRange::new(10, 11), usize::MAX)
             .await
             .unwrap();
         index
-            .txs_touching(&[address(3)], BlockRange::new(10, 11))
+            .txs_touching(&[address(3)], BlockRange::new(10, 11), usize::MAX)
             .await
             .unwrap();
 
