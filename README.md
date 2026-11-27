@@ -1,6 +1,8 @@
 # Ledgerscope
 
-EVM and Tron transaction analysis: address graph, labels and actor classification, plus a passive TLS observer.
+Ledgerscope is an EVM and Tron transaction analysis tool: address graph, labels and actor classification, plus a passive TLS observer.
+Working today: RPC pool and AWS dataset loading into ClickHouse, graph building with filters and timeline, tags from heuristics and labels, Uniswap v2/v3/v4 swap decoding.
+Also working: accounts, teams, saved canvases with sharing and snapshots; still missing are traces, other DEX protocols, bridges and taint analysis (see the TODO below).
 
 ## TODO: tracer (swaps, DEX, labels)
 
